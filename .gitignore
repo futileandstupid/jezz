@@ -1,0 +1,28 @@
+# Python / Packaging
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+build/
+dist/
+*.egg-info/
+
+# Virtual environments
+.venv/
+
+# Tool caches & coverage
+.pytest_cache/
+.hypothesis/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Environment & OS
+.env
+.env.*
+!.env.example
+.DS_Store
+
+# JetBrains IDE
+.idea/
