@@ -6,9 +6,10 @@ from types import MappingProxyType
 from typing import Final, Self
 
 import icontract
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, Field, model_validator
 
 from jezz.behaviors.fibonacci import FIBONACCI_BASIS_CARDINALITY, is_fibonacci
+from jezz.guards import STRICT_FROZEN_CONFIG, jezz_callable
 
 
 class StateDomain(StrEnum):
@@ -78,16 +79,16 @@ class BehaviorKind(StrEnum):
 class BehaviorSpec(BaseModel):
     """Formal specification and state-transition contract of an atomic behavior."""
 
-    model_config = ConfigDict(frozen=True, extra="forbid")
+    model_config = STRICT_FROZEN_CONFIG
 
-    code: str = Field(pattern=r"^BHV-(?:0[1-9]|[1-9][0-9])$")
+    code: str = Field(min_length=6, max_length=6, pattern=r"^BHV-(?:0[1-9]|[1-9][0-9])$")
     kind: BehaviorKind
     stratum: BehaviorStratum
-    summary: str = Field(min_length=20)
-    reads: frozenset[StateDomain]
-    writes: frozenset[StateDomain]
+    summary: str = Field(min_length=20, max_length=512)
+    reads: frozenset[StateDomain] = Field(max_length=4)
+    writes: frozenset[StateDomain] = Field(min_length=1, max_length=4)
     workspace_effect: WorkspaceEffect
-    postcondition: str = Field(min_length=20)
+    postcondition: str = Field(min_length=20, max_length=512)
 
     @model_validator(mode="after")
     def _enforce_contract_invariants(self) -> Self:
@@ -373,7 +374,10 @@ _RAW_SPECS: tuple[BehaviorSpec, ...] = (
 
 
 @icontract.ensure(lambda basis, result: result is None and is_fibonacci(len(basis)))
-def validate_basis_invariants(basis: Mapping[BehaviorKind, BehaviorSpec]) -> None:
+@jezz_callable
+def validate_basis_invariants(
+    basis: Mapping[BehaviorKind, BehaviorSpec],
+) -> None:
     """Verify Pillar 1 structural invariants on a candidate behavior basis."""
     count = len(basis)
     if not is_fibonacci(count):
@@ -422,6 +426,7 @@ BEHAVIOR_BASIS: Final[Mapping[BehaviorKind, BehaviorSpec]] = _build_canonical_ba
 
 
 @icontract.ensure(lambda kind, result: result.kind == kind)
+@jezz_callable
 def get_behavior_spec(kind: BehaviorKind) -> BehaviorSpec:
     """Return the canonical ``BehaviorSpec`` for ``kind``."""
     return BEHAVIOR_BASIS[kind]

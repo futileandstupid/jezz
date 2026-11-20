@@ -3,10 +3,10 @@
 import itertools
 from abc import ABC
 from collections.abc import Sequence
-from typing import ClassVar, Never
+from typing import Annotated, ClassVar, Never
 
 import icontract
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, Field
 from pydantic_graph import BaseNode, GraphRunContext
 
 from jezz.behaviors.graph import (
@@ -17,74 +17,88 @@ from jezz.behaviors.graph import (
     verify_behavior_graph,
 )
 from jezz.behaviors.taxonomy import BehaviorKind
+from jezz.guards import (
+    STRICT_FROZEN_CONFIG,
+    STRICT_MUTABLE_CONFIG,
+    BoundedText,
+    IdentifierStr,
+    ShortText,
+    jezz_callable,
+)
+
+type StepIdentifier = Annotated[
+    str,
+    Field(min_length=1, max_length=128, pattern=r"^[A-Za-z][A-Za-z0-9_-]*$"),
+]
 
 
 class ProblemState(BaseModel):
     """StateDomain.PROBLEM (P): framed objective, disambiguations, and bound code IDs."""
 
-    model_config = ConfigDict(extra="forbid")
+    model_config = STRICT_MUTABLE_CONFIG
 
-    objective: str = ""
-    ambiguities: list[str] = Field(default_factory=list)
-    bound_code_ids: set[str] = Field(default_factory=set)
-    subtasks: list[str] = Field(default_factory=list)
+    objective: BoundedText = ""
+    ambiguities: list[ShortText] = Field(default_factory=list, max_length=256)
+    bound_code_ids: set[IdentifierStr] = Field(default_factory=set, max_length=256)
+    subtasks: list[ShortText] = Field(default_factory=list, max_length=256)
 
 
 class WorldModelState(BaseModel):
     """StateDomain.WORLD_MODEL (W): grounded facts, causal hypotheses, and negative knowledge."""
 
-    model_config = ConfigDict(extra="forbid")
+    model_config = STRICT_MUTABLE_CONFIG
 
-    observations: list[str] = Field(default_factory=list)
-    external_citations: list[str] = Field(default_factory=list)
-    active_hypotheses: list[str] = Field(default_factory=list)
-    falsified_paths: list[str] = Field(default_factory=list)
-    active_delegations: set[str] = Field(default_factory=set)
+    observations: list[BoundedText] = Field(default_factory=list, max_length=2048)
+    external_citations: list[ShortText] = Field(default_factory=list, max_length=512)
+    active_hypotheses: list[ShortText] = Field(default_factory=list, max_length=256)
+    falsified_paths: list[ShortText] = Field(default_factory=list, max_length=512)
+    active_delegations: set[IdentifierStr] = Field(default_factory=set, max_length=128)
 
 
 class WorkspaceState(BaseModel):
     """StateDomain.WORKSPACE (Omega): checkpoints and mutated artifact ledger."""
 
-    model_config = ConfigDict(extra="forbid")
+    model_config = STRICT_MUTABLE_CONFIG
 
-    checkpoints: list[str] = Field(default_factory=list)
-    modified_artifacts: set[str] = Field(default_factory=set)
-    sealed_commit: str | None = None
+    checkpoints: list[IdentifierStr] = Field(default_factory=list, max_length=256)
+    modified_artifacts: set[IdentifierStr] = Field(default_factory=set, max_length=1024)
+    sealed_commit: IdentifierStr | None = None
 
 
 class EvidenceState(BaseModel):
     """StateDomain.EVIDENCE (E): static/dynamic verdicts and code-compliance seal."""
 
-    model_config = ConfigDict(extra="forbid")
+    model_config = STRICT_MUTABLE_CONFIG
 
     static_checks_passed: bool = False
     dynamic_checks_passed: bool = False
-    verification_records: list[str] = Field(default_factory=list)
+    verification_records: list[ShortText] = Field(default_factory=list, max_length=512)
     certified: bool = False
 
 
 class ExecutionStep(BaseModel):
     """Immutable record of a single atomic behavior step executed at runtime."""
 
-    model_config = ConfigDict(frozen=True, extra="forbid")
+    model_config = STRICT_FROZEN_CONFIG
 
-    step_id: str = Field(min_length=1, pattern=r"^[A-Za-z][A-Za-z0-9_-]*$")
+    step_id: StepIdentifier
     kind: BehaviorKind
-    summary: str = Field(min_length=1)
+    summary: ShortText
 
 
 class AgentExecutionState(BaseModel):
     """Composite runtime state Sigma = (P, W, Omega, E) threaded through pydantic-graph."""
 
-    model_config = ConfigDict(extra="forbid")
+    model_config = STRICT_MUTABLE_CONFIG
 
     problem: ProblemState = Field(default_factory=ProblemState)
     world_model: WorldModelState = Field(default_factory=WorldModelState)
     workspace: WorkspaceState = Field(default_factory=WorkspaceState)
     evidence: EvidenceState = Field(default_factory=EvidenceState)
-    trace: list[ExecutionStep] = Field(default_factory=list)
+    trace: list[ExecutionStep] = Field(default_factory=list, max_length=10_000)
 
-    def record_step(self, step_id: str, kind: BehaviorKind, summary: str) -> None:
+    @jezz_callable
+    def record_step(self, step_id: StepIdentifier, kind: BehaviorKind, summary: ShortText) -> None:
         """Append a behavior transition to the runtime trace."""
         self.trace.append(ExecutionStep(step_id=step_id, kind=kind, summary=summary))
 
@@ -105,11 +119,12 @@ class AtomicBehaviorGraphNode[DepsT = None, OutputT = Never](
                 msg = f"{cls.__name__}.behavior_kind must be an instance of BehaviorKind."
                 raise TypeError(msg)
 
+    @jezz_callable
     def record_into_context(
         self,
         ctx: GraphRunContext[AgentExecutionState, DepsT],
-        step_id: str,
-        summary: str,
+        step_id: StepIdentifier,
+        summary: ShortText,
     ) -> None:
         """Record this node's execution into the shared AgentExecutionState trace."""
         ctx.state.record_step(
@@ -120,16 +135,14 @@ class AtomicBehaviorGraphNode[DepsT = None, OutputT = Never](
 
 
 @icontract.require(lambda trace: len(trace) >= 1, "Trace must contain at least one step.")
+@icontract.ensure(lambda trace, result: result.entry_id == trace[0].step_id)
+@jezz_callable
 def trace_to_behavior_graph(
-    trace: Sequence[ExecutionStep],
+    trace: Annotated[Sequence[ExecutionStep], Field(min_length=1, max_length=10_000)],
     *,
-    name: str = "runtime_trace",
+    name: IdentifierStr = "runtime_trace",
 ) -> BehaviorGraph:
-    """Project an observed runtime ``ExecutionStep`` sequence into its induced BehaviorGraph.
-
-    Repeated visits to the same ``step_id`` (e.g., cyclic retry loops) collapse onto a single
-    vertex while preserving all traversed directed transitions.
-    """
+    """Project an observed runtime ``ExecutionStep`` sequence into its induced BehaviorGraph."""
     nodes_by_id: dict[str, BehaviorNode] = {}
     ordered_nodes: list[BehaviorNode] = []
     edges_seen: set[tuple[str, str]] = set()
@@ -164,10 +177,12 @@ def trace_to_behavior_graph(
 
 
 @icontract.require(lambda trace: len(trace) >= 1)
+@icontract.ensure(lambda result: result.is_valid == (len(result.violations) == 0))
+@jezz_callable
 def verify_execution_trace(
-    trace: Sequence[ExecutionStep],
+    trace: Annotated[Sequence[ExecutionStep], Field(min_length=1, max_length=10_000)],
     *,
-    name: str = "runtime_trace",
+    name: IdentifierStr = "runtime_trace",
 ) -> GraphVerificationReport:
     """Verify that a recorded runtime trace obeys all Pillar 1 graph and dataflow invariants."""
     induced = trace_to_behavior_graph(trace, name=name)

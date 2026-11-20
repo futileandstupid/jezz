@@ -2,8 +2,10 @@
 
 from jezz.behaviors.graph import BehaviorEdge, BehaviorGraph, BehaviorNode
 from jezz.behaviors.taxonomy import BehaviorKind
+from jezz.guards import jezz_callable
 
 
+@jezz_callable
 def build_readonly_audit_graph() -> BehaviorGraph:
     """Archetype 1: Read-only architectural & security compliance audit (no Stratum IV edits)."""
     return BehaviorGraph(
@@ -58,6 +60,7 @@ def build_readonly_audit_graph() -> BehaviorGraph:
     )
 
 
+@jezz_callable
 def build_abductive_bugfix_graph() -> BehaviorGraph:
     """Archetype 2: Cyclic abductive debugging with deterministic repro and rollback loop."""
     return BehaviorGraph(
@@ -165,6 +168,7 @@ def build_abductive_bugfix_graph() -> BehaviorGraph:
     )
 
 
+@jezz_callable
 def build_greenfield_contract_first_graph() -> BehaviorGraph:
     """Archetype 3: Ambiguity elicitation followed by contract-first greenfield construction."""
     return BehaviorGraph(
@@ -251,6 +255,7 @@ def build_greenfield_contract_first_graph() -> BehaviorGraph:
     )
 
 
+@jezz_callable
 def build_ast_refactor_graph() -> BehaviorGraph:
     """Archetype 4: Behavior-preserving structural refactoring across symbol graph."""
     return BehaviorGraph(
@@ -313,6 +318,7 @@ def build_ast_refactor_graph() -> BehaviorGraph:
     )
 
 
+@jezz_callable
 def build_delegated_migration_graph() -> BehaviorGraph:
     """Archetype 5: Dependency provisioning + parallel subagent delegation & reconciliation."""
     return BehaviorGraph(
@@ -399,6 +405,7 @@ def build_delegated_migration_graph() -> BehaviorGraph:
     )
 
 
+@jezz_callable
 def all_canonical_archetypes() -> tuple[BehaviorGraph, ...]:
     """Return all five canonical reference BehaviorGraphs."""
     return (
