@@ -6,7 +6,14 @@ from pathlib import Path
 from types import TracebackType
 from typing import Annotated, Final, Self
 
-from pydantic import BaseModel, ConfigDict, Field, validate_call
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    GetCoreSchemaHandler,
+    PlainValidator,
+    validate_call,
+)
 
 STRICT_FROZEN_CONFIG: Final[ConfigDict] = ConfigDict(
     frozen=True,
@@ -72,6 +79,31 @@ def jezz_callable[**P, R](func: Callable[P, R]) -> Callable[P, R]:
 def jezz_generator[**P, R](func: Callable[P, R]) -> Callable[P, R]:
     """Attach a strict runtime input breaker without consuming lazy generator returns."""
     return _build_lazy_breaker(func, check_return=False)
+
+
+class InstanceGuard:
+    """Pydantic annotation enforcing runtime isinstance(v, cls) without dataclass recursion."""
+
+    @jezz_callable
+    def __init__(self, expected_type: type[object]) -> None:
+        self._expected_type = expected_type
+
+    def _validate_instance(self, value: object) -> object:
+        if not isinstance(value, self._expected_type):
+            msg = (
+                f"Expected instance of '{self._expected_type.__name__}', "
+                f"got '{type(value).__name__}'."
+            )
+            raise TypeError(msg)
+        return value
+
+    def __get_pydantic_core_schema__(
+        self,
+        source_type: object,
+        handler: GetCoreSchemaHandler,
+    ) -> object:
+        _ = source_type
+        return handler.generate_schema(Annotated[object, PlainValidator(self._validate_instance)])
 
 
 class BudgetExceededError(RuntimeError):

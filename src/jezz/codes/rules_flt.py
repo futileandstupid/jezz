@@ -459,21 +459,43 @@ def _async_fn_has_deadline_scope(func: ast.AsyncFunctionDef) -> bool:
     return False
 
 
+def _task_group_var_names(tree: ast.Module) -> set[str]:
+    names: set[str] = set()
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.AsyncWith):
+            continue
+        for item in node.items:
+            tail = dotted_expr_name(item.context_expr).rsplit(".", maxsplit=1)[-1]
+            if tail == "TaskGroup" and isinstance(item.optional_vars, ast.Name):
+                names.add(item.optional_vars.id)
+    return names
+
+
+def _is_unstructured_spawn_call(call: ast.Call, tg_vars: set[str]) -> bool:
+    callee = dotted_expr_name(call.func)
+    is_tg_spawn = (
+        isinstance(call.func, ast.Attribute)
+        and call.func.attr == "create_task"
+        and isinstance(call.func.value, ast.Name)
+        and call.func.value.id in tg_vars
+    )
+    if not is_tg_spawn and (callee in _FIRE_AND_FORGET_CALLS or callee.endswith(".create_task")):
+        return True
+    return (
+        isinstance(call.func, ast.Attribute)
+        and call.func.attr == "start"
+        and dotted_expr_name(call.func.value).rsplit(".", maxsplit=1)[-1] == "Thread"
+    )
+
+
 @jezz_callable
 def check_flt_005(unit: SourceUnit) -> list[RawDiscrepancy]:
     """Inspect ``unit`` for JBC-FLT-005 (structured concurrency & async wall-clock deadlines)."""
     discrepancies: list[RawDiscrepancy] = []
+    tg_vars = _task_group_var_names(unit.tree)
     for node in ast.walk(unit.tree):
-        if not isinstance(node, ast.Call):
-            continue
-        callee = dotted_expr_name(node.func)
-        is_unstructured_task = callee in _FIRE_AND_FORGET_CALLS or callee.endswith(".create_task")
-        is_raw_thread_start = (
-            isinstance(node.func, ast.Attribute)
-            and node.func.attr == "start"
-            and dotted_expr_name(node.func.value).rsplit(".", maxsplit=1)[-1] == "Thread"
-        )
-        if is_unstructured_task or is_raw_thread_start:
+        if isinstance(node, ast.Call) and _is_unstructured_spawn_call(node, tg_vars):
+            callee = dotted_expr_name(node.func)
             discrepancies.append(
                 RawDiscrepancy(
                     code_id="JBC-FLT-005",
