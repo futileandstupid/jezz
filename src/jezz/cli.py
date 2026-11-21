@@ -18,8 +18,15 @@ from pydantic_ai.models import Model, ModelRequestParameters, infer_model
 from pydantic_ai.models.wrapper import WrapperModel
 from pydantic_ai.settings import ModelSettings
 
+from jezz.agents.nodes import ElicitationCallback
 from jezz.agents.orchestrator import PceWorkflowOrchestrator
-from jezz.agents.schemas import PceRunStatus, PceRuntimeBudget, PceWorkflowResult
+from jezz.agents.schemas import (
+    ElicitationTicket,
+    PceRunStatus,
+    PceRuntimeBudget,
+    PceWorkflowMode,
+    PceWorkflowResult,
+)
 from jezz.agents.specialists import GuardedModel, uniform_model_suite
 from jezz.agents.workspace import DynamicGatePort, InProcessGateRunner, UvSubprocessGateRunner
 from jezz.codes.ast_utils import SourceUnit, parse_source_unit
@@ -141,6 +148,7 @@ def format_workflow_markdown(result: PceWorkflowResult) -> BoundedText:
     """Render a structured Markdown summary of a ``PceWorkflowResult``."""
     lines = [
         f"# PCE Workflow Execution — `{result.mandate.mandate_id}`",
+        f"- **Mode:** `{result.workflow_mode.upper()}`",
         f"- **Status:** `{result.status.upper()}`",
         f"- **Behavior Graph Valid:** `{result.graph_verification.is_valid}` "
         f"(`{len(result.induced_graph.nodes)}` nodes)",
@@ -489,10 +497,53 @@ def _instantiate_cli_model(model_name: str, api_key: GuardedSecretStr | None) ->
     return resolve_cli_model(model_name, api_key=api_key)
 
 
+def _one_shot_clarification_callback(
+    clarifications: Sequence[str] | None,
+) -> ElicitationCallback | None:
+    if not clarifications:
+        return None
+    pending: list[tuple[str, ...]] = [tuple(clarifications)]
+
+    def _supply(_mandate: EngineeringMandate) -> Sequence[str] | None:
+        return pending.pop(0) if pending else None
+
+    return _supply
+
+
+def _dispatch_orchestrator_coro(
+    orchestrator: PceWorkflowOrchestrator,
+    ns: argparse.Namespace,
+    resolved_repo: Path,
+    permit: CodePermit | None,
+    mode: PceWorkflowMode,
+) -> Coroutine[object, object, PceWorkflowResult]:
+    if ns.resume_elicitation is not None:
+        if not ns.clarifications:
+            msg = "--resume-elicitation requires at least one --clarification answer."
+            raise ValueError(msg)
+        ticket = ElicitationTicket.model_validate_json(_read_json_file(ns.resume_elicitation))
+        return orchestrator.resume_elicitation(
+            resolved_repo,
+            ticket,
+            tuple(str(c) for c in ns.clarifications),
+            permit=permit,
+        )
+    if ns.mandate is not None:
+        mandate = EngineeringMandate.model_validate_json(_read_json_file(ns.mandate))
+        if mode == PceWorkflowMode.RENOVATE:
+            return orchestrator.renovate_mandate(resolved_repo, mandate, permit=permit)
+        return orchestrator.execute_mandate(resolved_repo, mandate, permit=permit)
+    if mode == PceWorkflowMode.RENOVATE:
+        return orchestrator.renovate_prompt(resolved_repo, str(ns.prompt), permit=permit)
+    return orchestrator.execute_prompt(resolved_repo, str(ns.prompt), permit=permit)
+
+
 def _execute_pce_run(
     ns: argparse.Namespace,
     resolved_repo: Path,
     permit: CodePermit | None,
+    *,
+    mode: PceWorkflowMode = PceWorkflowMode.GREENFIELD,
 ) -> PceWorkflowResult:
     timeout_sec = float(ns.timeout_sec)
     if timeout_sec <= 0.0 or timeout_sec > 3600.0:
@@ -517,16 +568,18 @@ def _execute_pce_run(
         tool_calls_limit_per_step=48,
         total_tokens_limit_per_step=524_288,
     )
+    callback = (
+        _one_shot_clarification_callback(ns.clarifications)
+        if ns.resume_elicitation is None
+        else None
+    )
     orchestrator = PceWorkflowOrchestrator(
         uniform_model_suite(model),
         gate_runner=runner,
         budget=budget,
+        elicitation_callback=callback,
     )
-    if ns.mandate is not None:
-        mandate = EngineeringMandate.model_validate_json(_read_json_file(ns.mandate))
-        coro = orchestrator.execute_mandate(resolved_repo, mandate, permit=permit)
-        return asyncio.run(_await_with_deadline(coro, timeout_sec))
-    coro = orchestrator.execute_prompt(resolved_repo, str(ns.prompt), permit=permit)
+    coro = _dispatch_orchestrator_coro(orchestrator, ns, resolved_repo, permit, mode)
     return asyncio.run(_await_with_deadline(coro, timeout_sec))
 
 
@@ -557,14 +610,34 @@ def _persist_run_dossier(
         fh.write(dossier.model_dump_json(indent=2) + "\n")
 
 
-def _handle_run(ns: argparse.Namespace, out_stream: io.TextIOBase) -> CliExitCode:
+def _persist_elicitation_ticket(target_path: Path, result: PceWorkflowResult) -> None:
+    if result.elicitation_ticket is None:
+        return
+    resolved_parent = target_path.resolve().parent
+    resolved_parent.mkdir(parents=True, exist_ok=True)
+    contained = ContainedPath.from_parts(resolved_parent, target_path.name)
+    with contained.resolved_path.open("w", encoding="utf-8") as fh:
+        fh.write(result.elicitation_ticket.model_dump_json(indent=2) + "\n")
+
+
+def _run_workflow_command(
+    ns: argparse.Namespace,
+    out_stream: io.TextIOBase,
+    mode: PceWorkflowMode,
+) -> CliExitCode:
     resolved_repo = ns.repo_path.resolve()
     if not resolved_repo.is_dir():
         msg = f"Workspace directory does not exist: '{ns.repo_path}'."
         raise FileNotFoundError(msg)
     permit = _load_optional_permit(ns.permit)
-    result = _execute_pce_run(ns, resolved_repo, permit)
-    if ns.write_dossier is not None:
+    result = (
+        _execute_pce_run(ns, resolved_repo, permit)
+        if mode == PceWorkflowMode.GREENFIELD
+        else _execute_pce_run(ns, resolved_repo, permit, mode=mode)
+    )
+    if ns.write_elicitation is not None:
+        _persist_elicitation_ticket(ns.write_elicitation, result)
+    if ns.write_dossier is not None and result.inspection_report is not None:
         _persist_run_dossier(resolved_repo, str(ns.write_dossier), result)
     rendered = (
         result.model_dump_json(indent=2)
@@ -573,6 +646,14 @@ def _handle_run(ns: argparse.Namespace, out_stream: io.TextIOBase) -> CliExitCod
     )
     _write_line(out_stream, rendered)
     return 0 if result.status == PceRunStatus.OCCUPANCY_CERTIFIED else 1
+
+
+def _handle_run(ns: argparse.Namespace, out_stream: io.TextIOBase) -> CliExitCode:
+    return _run_workflow_command(ns, out_stream, PceWorkflowMode.GREENFIELD)
+
+
+def _handle_renovate(ns: argparse.Namespace, out_stream: io.TextIOBase) -> CliExitCode:
+    return _run_workflow_command(ns, out_stream, PceWorkflowMode.RENOVATE)
 
 
 def _select_benchmark_dataset(case_ids: Sequence[str] | None) -> GuardedDataset:
@@ -641,6 +722,7 @@ _COMMAND_HANDLERS: Final[Mapping[str, _CommandHandler]] = MappingProxyType(
         "inspect": _handle_inspect,
         "audit": _handle_audit,
         "run": _handle_run,
+        "renovate": _handle_renovate,
         "benchmark": _handle_benchmark,
     }
 )
@@ -661,23 +743,43 @@ def _register_secret_flags(parser: argparse.ArgumentParser) -> None:
     )
 
 
-def _register_run_subparser(
+def _register_workflow_subparser(
     sub: argparse._SubParsersAction[argparse.ArgumentParser],
+    *,
+    name: str,
+    help_text: str,
 ) -> None:
-    p_run = sub.add_parser(
-        "run", help="Execute a PCE mandate or prompt via PceWorkflowOrchestrator."
-    )
-    p_run.add_argument("repo_path", type=Path, help="Target workspace root directory.")
-    p_run.add_argument("--model", required=True, help="Pydantic AI model ID (e.g. provider:model).")
-    src_grp = p_run.add_mutually_exclusive_group(required=True)
+    p_wf = sub.add_parser(name, help=help_text)
+    p_wf.add_argument("repo_path", type=Path, help="Target workspace root directory.")
+    p_wf.add_argument("--model", required=True, help="Pydantic AI model ID (e.g. provider:model).")
+    src_grp = p_wf.add_mutually_exclusive_group(required=True)
     src_grp.add_argument("--prompt", default=None, help="Raw engineering task prompt.")
     src_grp.add_argument("--mandate", type=Path, default=None, help="EngineeringMandate JSON file.")
-    p_run.add_argument("--permit", type=Path, default=None, help="Optional CodePermit JSON file.")
-    p_run.add_argument("--gate-runner", choices=("subprocess", "in-process"), default="subprocess")
-    p_run.add_argument("--timeout-sec", type=float, default=600.0)
-    p_run.add_argument("--write-dossier", default=None, help="Relative path to save dossier JSON.")
-    _register_secret_flags(p_run)
-    p_run.add_argument(
+    src_grp.add_argument(
+        "--resume-elicitation",
+        type=Path,
+        default=None,
+        help="Path to halted ElicitationTicket JSON to resume via ELICIT -> FRAME.",
+    )
+    p_wf.add_argument(
+        "--clarification",
+        dest="clarifications",
+        action="append",
+        default=None,
+        help="Authoritative answer resolving open ambiguity (repeatable).",
+    )
+    p_wf.add_argument(
+        "--write-elicitation",
+        type=Path,
+        default=None,
+        help="File path to save ElicitationTicket JSON if halted at BHV-02 ELICIT.",
+    )
+    p_wf.add_argument("--permit", type=Path, default=None, help="Optional CodePermit JSON file.")
+    p_wf.add_argument("--gate-runner", choices=("subprocess", "in-process"), default="subprocess")
+    p_wf.add_argument("--timeout-sec", type=float, default=600.0)
+    p_wf.add_argument("--write-dossier", default=None, help="Relative path to save dossier JSON.")
+    _register_secret_flags(p_wf)
+    p_wf.add_argument(
         "--format", dest="output_format", choices=("markdown", "json"), default="markdown"
     )
 
@@ -725,7 +827,16 @@ def _build_cli_parser() -> argparse.ArgumentParser:
         "--format", dest="output_format", choices=("markdown", "json"), default="markdown"
     )
 
-    _register_run_subparser(sub)
+    _register_workflow_subparser(
+        sub,
+        name="run",
+        help_text="Execute a greenfield PCE mandate or prompt via PceWorkflowOrchestrator.",
+    )
+    _register_workflow_subparser(
+        sub,
+        name="renovate",
+        help_text="Renovate a brownfield workspace via BHV-17 REFACTOR to JBC v1.1 occupancy.",
+    )
     _register_benchmark_subparser(sub)
     return parser
 

@@ -22,6 +22,7 @@ from jezz.agents.schemas import (
     FramedMandateProposal,
     InstrumentationSuiteBundle,
     PceRuntimeBudget,
+    RefactorPatchBundle,
     RemediationHypothesis,
     ToolsetAccessLevel,
 )
@@ -245,6 +246,7 @@ class PceModelSuite:
     instrument_model: Model
     synthesize_model: Model
     hypothesize_model: Model
+    refactor_model: Model | None = None
 
 
 type GuardedModel = Annotated[Model, InstanceGuard(Model)]
@@ -264,6 +266,7 @@ def uniform_model_suite(
         instrument_model=model,
         synthesize_model=model,
         hypothesize_model=model,
+        refactor_model=model,
     )
 
 
@@ -355,11 +358,12 @@ def _validate_synthesize_output(
     ctx: RunContext[JezzAgentDeps],
     bundle: ConstructionPatchBundle,
 ) -> ConstructionPatchBundle:
-    allowed = (
+    raw_allowed = (
         ctx.deps.active_scope.owned_files
         if ctx.deps.active_scope is not None
         else ctx.deps.sandbox.authorized_files
     )
+    allowed = frozenset(p for p in raw_allowed if not p.startswith(("tests/", "test/")))
     patch_units = _enforce_patch_scope_and_parse(bundle.implementation_patches, allowed)
     if ctx.deps.mandate is not None:
         compiled = _combined_workspace_symbols(ctx.deps, patch_units)
@@ -384,6 +388,44 @@ def _validate_synthesize_output(
     )
     if runtime_err is not None:
         raise ModelRetry(f"Implementation failed runtime import gate: {runtime_err}")
+    return bundle
+
+
+def _expected_scope_symbols(deps: JezzAgentDeps) -> list[str]:
+    if deps.mandate is None:
+        return []
+    if deps.active_scope is not None:
+        return list(deps.active_scope.contract_symbols)
+    return [
+        *[inv.verification_symbol for inv in deps.mandate.invariants],
+        *[sym for s in deps.mandate.write_scopes for sym in s.contract_symbols],
+    ]
+
+
+def _validate_refactor_output(
+    ctx: RunContext[JezzAgentDeps],
+    bundle: RefactorPatchBundle,
+) -> RefactorPatchBundle:
+    raw_allowed = (
+        ctx.deps.active_scope.owned_files
+        if ctx.deps.active_scope is not None
+        else ctx.deps.sandbox.authorized_files
+    )
+    allowed = frozenset(p for p in raw_allowed if not p.startswith(("tests/", "test/")))
+    patch_units = _enforce_patch_scope_and_parse(bundle.refactored_patches, allowed)
+    _parse_and_rough_in_check(ctx.deps, bundle.refactored_patches, "Phase IV brownfield refactor")
+    compiled = _combined_workspace_symbols(ctx.deps, patch_units)
+    required = [*bundle.preserved_symbols, *_expected_scope_symbols(ctx.deps)]
+    missing = [sym for sym in required if sym not in compiled]
+    if missing:
+        raise ModelRetry(f"Refactored output omits required/preserved symbol(s): {missing}.")
+    runtime_err = verify_runtime_importable_patches(
+        ctx.deps.sandbox,
+        bundle.refactored_patches,
+        ignore_missing_local_imports=(ctx.deps.active_scope is not None),
+    )
+    if runtime_err is not None:
+        raise ModelRetry(f"Refactored output failed runtime import gate: {runtime_err}")
     return bundle
 
 
@@ -443,26 +485,51 @@ _JBC_STATUTORY_BRIEF: Final[str] = (
 )
 
 
+def _validate_frame_output(
+    ctx: RunContext[JezzAgentDeps],
+    proposal: FramedMandateProposal,
+) -> FramedMandateProposal:
+    _ = ctx
+    for scope in proposal.mandate.write_scopes:
+        has_src = any(not rel.startswith(("tests/", "test/")) for rel in scope.owned_files)
+        if not has_src:
+            raise ModelRetry(
+                f"ModuleWriteScope '{scope.scope_id}' owns only test files "
+                f"{sorted(scope.owned_files)}. Include each tests/... file inside the same "
+                "ModuleWriteScope as the non-test src/... module it verifies."
+            )
+    return proposal
+
+
 @jezz_callable
 def build_frame_agent(model: GuardedModel) -> GuardedAgent[FramedMandateProposal]:
     """Build BHV-01 FRAME specialist producing typed anti-Agile EngineeringMandates."""
-    return Agent[JezzAgentDeps, FramedMandateProposal](
+    agent = Agent[JezzAgentDeps, FramedMandateProposal](
         model,
         output_type=FramedMandateProposal,
         deps_type=JezzAgentDeps,
         name="jezz_mandate_framer",
-        retries=2,
+        retries=3,
         toolsets=(build_readonly_toolset(),),
         instructions=(
             "Convert the engineering request into a concise EngineeringMandate (mandate_id "
             "matching ^MND-[A-Za-z0-9_-]+$, invariant_id matching ^INV-[0-9]{3,6}$). "
-            "State invariants as strict falsifiable conditions; never emit Agile user stories "
-            "('As a ..., I want ...'), Markdown checkboxes ('- [ ]'), ceremony jargon, or weasel "
-            "modals ('should'/'might'/'ideally'/'maybe'/'try to'). Populate open_ambiguities "
-            "whenever material domain constraints, bounds, failure policies, or edge-case "
-            "semantics are under-determined rather than guessing."
+            "Use pure Python identifiers for verification_symbol (e.g. 'test_quota_limit') and "
+            "contract_symbols (never file paths or 'file.py:sym' pytest nodeids). Every "
+            "ModuleWriteScope must own at least one non-test src/.../*.py file (place paired "
+            "tests/test_*.py files inside the same ModuleWriteScope rather than a separate "
+            "test-only scope). State invariants as strict falsifiable conditions; never emit "
+            "Agile user stories ('As a ..., I want ...'), Markdown checkboxes ('- [ ]'), "
+            "ceremony jargon, or weasel modals ('should'/'might'/'ideally'/'maybe'/'try to'). "
+            "Populate open_ambiguities whenever material domain constraints, bounds, failure "
+            "policies, or edge-case semantics are under-determined rather than guessing. When "
+            "'Authoritative Clarifications Resolving Open Ambiguities' is provided, integrate "
+            "those answers into concrete invariants/write_scopes and set open_ambiguities=() "
+            "once resolved."
         ),
     )
+    agent.output_validator(_validate_frame_output)
+    return agent
 
 
 @jezz_callable
@@ -565,6 +632,34 @@ def build_synthesize_agent(model: GuardedModel) -> GuardedAgent[ConstructionPatc
         ),
     )
     agent.output_validator(_validate_synthesize_output)
+    return agent
+
+
+@jezz_callable
+def build_refactor_agent(model: GuardedModel) -> GuardedAgent[RefactorPatchBundle]:
+    """Build BHV-17 REFACTOR specialist renovating brownfield modules to JBC v1.1 occupancy."""
+    agent = Agent[JezzAgentDeps, RefactorPatchBundle](
+        model,
+        output_type=RefactorPatchBundle,
+        deps_type=JezzAgentDeps,
+        name="jezz_structural_refactorer",
+        retries=3,
+        toolsets=(build_scoped_write_toolset(),),
+        instructions=(
+            "Renovate the existing non-test src/... file(s) shown in 'Existing Authorized File "
+            "Snapshots' so every file achieves zero JBC v1.1 violations while preserving public "
+            "symbol names, call signatures compatible with locked tests, and observable domain "
+            "semantics. Do NOT modify tests/... files or call read/list tools on already-inlined "
+            "files. Remediate every cited baseline RED_TAG finding (attach @jezz_callable, "
+            "STRICT_FROZEN_CONFIG, bounded jezz.guards / Annotated[..., Field(...)] types, "
+            "falsifiable @icontract.require/@icontract.ensure, LoopBudget on while loops, "
+            "MappingProxyType dispatch / <=1 elif, LCOM4 == 1 cohesion, narrow chained exceptions, "
+            "and ContainedPath filesystem containment). Preview each complete candidate file once "
+            f"via _tool_preview_rough_in before returning. {_JBC_STATUTORY_BRIEF}\n"
+            f"{_JBC_CANONICAL_EXEMPLAR}"
+        ),
+    )
+    agent.output_validator(_validate_refactor_output)
     return agent
 
 

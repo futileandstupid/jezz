@@ -63,18 +63,23 @@ Every `BehaviorKind` in the $F_8 = 21$ basis is mapped bijectively inside `BEHAV
 
 ```mermaid
 flowchart TD
-    Frame["BHV-01 FRAME\nFrameNode"] -->|"open_ambiguities > 0"| Elicit["BHV-02 ELICIT\nElicitNode (Halt)"]
+    Frame["BHV-01 FRAME\nFrameNode"] -->|"open_ambiguities > 0"| Elicit["BHV-02 ELICIT\nElicitNode"]
+    Elicit -->|"clarifications supplied"| Frame
     Frame -->|"unambiguous"| Bind["BHV-03 BIND_CODES\nBindCodesNode"]
     Bind --> Inspect["BHV-04 INSPECT_CODE\nInspectCodeNode"]
     Inspect --> Decompose["BHV-09 DECOMPOSE\nDecomposeNode"]
-    Decompose --> CkptC["BHV-12 CHECKPOINT\nCheckpointContractNode"]
-    CkptC --> Specify["BHV-14 SPECIFY\nSpecifyNode"]
-    Specify --> Instrument["BHV-15 INSTRUMENT\nInstrumentNode"]
-    Instrument --> CkptI["BHV-12 CHECKPOINT\nCheckpointImplNode"]
-    CkptI -->|"1 scope"| Synth["BHV-16 SYNTHESIZE\nSynthesizeNode"]
+    Decompose -->|"greenfield or brownfield+tests"| CkptC["BHV-12 CHECKPOINT\nCheckpointContractNode"]
+    Decompose -->|"brownfield (locked tests)"| CkptI["BHV-12 CHECKPOINT\nCheckpointImplNode"]
+    CkptC -->|"greenfield"| Specify["BHV-14 SPECIFY\nSpecifyNode"]
+    CkptC -->|"renovate"| Instrument["BHV-15 INSTRUMENT\nInstrumentNode"]
+    Specify --> Instrument
+    Instrument --> CkptI
+    CkptI -->|"1 scope (greenfield)"| Synth["BHV-16 SYNTHESIZE\nSynthesizeNode"]
+    CkptI -->|"1 scope (renovate)"| Refactor["BHV-17 REFACTOR\nRefactorNode"]
     CkptI -->|">1 disjoint scopes"| Delegate["BHV-10 DELEGATE\nDelegateNode (asyncio.TaskGroup)"]
     Delegate --> Reconcile["BHV-11 RECONCILE\nReconcileNode"]
     Synth --> VStatic["BHV-18 VERIFY_STATIC\nVerifyStaticNode (inspect_rough_in)"]
+    Refactor --> VStatic
     Reconcile --> VStatic
     VStatic -->|"APPROVED"| VDyn["BHV-19 VERIFY_DYNAMIC\nVerifyDynamicNode (inspect_final)"]
     VStatic -->|"RED_TAG"| Revert["BHV-20 REVERT\nRevertNode (restore checkpoint_impl)"]
@@ -86,7 +91,8 @@ flowchart TD
 ```
 
 ### Key Runtime Guarantees
-1. **Ambiguity Dominance (`FRAME -> ELICIT`):** Any `EngineeringMandate` with non-empty `open_ambiguities` halts immediately at `ElicitNode` (`PceRunStatus.HALTED_FOR_ELICITATION`) without touching disk.
-2. **Disjoint Parallel Subagent Construction (`DELEGATE -> RECONCILE`):** Multi-scope mandates fan out one `synthesize_agent` per `ModuleWriteScope` inside `async with asyncio.TaskGroup() as tg:`, each confined to `sandbox.scoped_view(scope)`. `ReconcileNode` proves pairwise file-set disjointness before writing to the parent workspace.
-3. **Anti-Blind-Retry Remediation (`RED_TAG -> REVERT -> HYPOTHESIZE -> CHECKPOINT`):** If Rough-In or Final inspection issues a `RED_TAG`, `RevertNode` restores `checkpoint_impl` (wiping defective implementation edits while preserving Phase III contracts and tests), records the `RED_TAG` citations in `WorldModelState.falsified_paths`, ticks a deterministic `LoopBudget`, and forces causal diagnosis through `HypothesizeNode` (`BHV-08`) before re-attempting construction. If the `LoopBudget` is exhausted, `RevertNode` leaves the workspace clean and escalates via `ElicitNode` (`PceRunStatus.ESCALATED_AFTER_RED_TAG`).
-4. **Trace & Dossier Soundness:** Every terminating execution path—whether `HALTED_FOR_ELICITATION`, `ESCALATED_AFTER_RED_TAG`, 1-pass `OCCUPANCY_CERTIFIED`, or multi-cycle self-healed `OCCUPANCY_CERTIFIED`—induces a mathematically valid Pillar 1 `BehaviorGraph` (`verify_behavior_graph(result.induced_graph).is_valid == True`), and every certified run passes `audit_pce_dossier` across all five `PCE` phases.
+1. **Ambiguity Dominance & Resumable Authority Loop (`FRAME -> ELICIT -> FRAME`):** Any `EngineeringMandate` with non-empty `open_ambiguities` transitions immediately to `ElicitNode` without touching disk. When authoritative clarifications are supplied (either in-process via `elicitation_callback` bounded by `LoopBudget`, or out-of-process via a serialized `ElicitationTicket` and `orchestrator.resume_elicitation` / `jezz run --resume-elicitation ... --clarification ...`), execution re-enters `FrameNode` (`reframe_resolved`) in strict compliance with Pillar 1's `ELICIT -> FRAME` transition law.
+2. **Brownfield Renovation (`PceWorkflowMode.RENOVATE` / `BHV-17 REFACTOR` / `jezz renovate`):** Renovates existing `RED_TAG` Python repositories to zero-variance `JBC` v1.1 occupancy while preserving observable public behavior—recording baseline `BuildingInspector` citations during `InspectCodeNode`, optionally locking/upgrading `tests/...` via `InstrumentNode`, and executing `RefactorNode` (`build_refactor_agent`) or parallel `DelegateNode` workers against locked tests.
+3. **Disjoint Parallel Subagent Construction (`DELEGATE -> RECONCILE`):** Multi-scope mandates fan out one `synthesize_agent` (or `refactor_agent` in `RENOVATE` mode) per `ModuleWriteScope` inside `async with asyncio.TaskGroup() as tg:`, each confined to `sandbox.scoped_view(scope)`. `ReconcileNode` proves pairwise file-set disjointness before writing to the parent workspace.
+4. **Anti-Blind-Retry Remediation (`RED_TAG -> REVERT -> HYPOTHESIZE -> CHECKPOINT`):** If Rough-In or Final inspection issues a `RED_TAG`, `RevertNode` restores `checkpoint_impl` (wiping defective implementation edits while preserving Phase III contracts and tests), records the `RED_TAG` citations in `WorldModelState.falsified_paths`, ticks a deterministic `LoopBudget`, and forces causal diagnosis through `HypothesizeNode` (`BHV-08`) before re-attempting construction. If the `LoopBudget` is exhausted, `RevertNode` leaves the workspace clean and escalates via `ElicitNode` (`PceRunStatus.ESCALATED_AFTER_RED_TAG`).
+5. **Trace & Dossier Soundness:** Every terminating execution path—whether `HALTED_FOR_ELICITATION`, `ESCALATED_AFTER_RED_TAG`, 1-pass `OCCUPANCY_CERTIFIED`, `ELICIT -> FRAME` resumed `OCCUPANCY_CERTIFIED`, brownfield `RENOVATE` `OCCUPANCY_CERTIFIED`, or multi-cycle self-healed `OCCUPANCY_CERTIFIED`—induces a mathematically valid Pillar 1 `BehaviorGraph` (`verify_behavior_graph(result.induced_graph).is_valid == True`), and every certified run passes `audit_pce_dossier` across all five `PCE` phases.

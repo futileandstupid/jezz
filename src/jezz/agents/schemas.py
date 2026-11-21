@@ -7,11 +7,13 @@ from typing import Annotated, Self
 from pydantic import BaseModel, Field, model_validator
 
 from jezz.behaviors.graph import BehaviorGraph, GraphVerificationReport
+from jezz.behaviors.runtime import ExecutionStep
 from jezz.behaviors.taxonomy import BehaviorKind
 from jezz.codes.permits import CertificateOfOccupancy, CodePermit, InspectionReport
 from jezz.guards import (
     STRICT_FROZEN_CONFIG,
     WIRE_TUPLE_VALIDATOR,
+    BoundedText,
     IdentifierStr,
     NonNegativeInt,
     ShortText,
@@ -42,6 +44,13 @@ class PceRunStatus(StrEnum):
     OCCUPANCY_CERTIFIED = "occupancy_certified"
     HALTED_FOR_ELICITATION = "halted_for_elicitation"
     ESCALATED_AFTER_RED_TAG = "escalated_after_red_tag"
+
+
+class PceWorkflowMode(StrEnum):
+    """Execution topology mode enacted by ``PceWorkflowOrchestrator``."""
+
+    GREENFIELD = "greenfield"
+    RENOVATE = "renovate"
 
 
 class BehaviorExecutionBinding(BaseModel):
@@ -173,6 +182,24 @@ class ConstructionPatchBundle(BaseModel):
     summary: ShortText
 
 
+class RefactorPatchBundle(BaseModel):
+    """Structured output of BHV-17 REFACTOR applying semantics-preserving renovations."""
+
+    model_config = STRICT_FROZEN_CONFIG
+
+    refactored_patches: Annotated[
+        tuple[FilePatchArtifact, ...],
+        WIRE_TUPLE_VALIDATOR,
+        Field(min_length=1, max_length=32),
+    ]
+    preserved_symbols: Annotated[
+        tuple[IdentifierStr, ...],
+        WIRE_TUPLE_VALIDATOR,
+        Field(min_length=1, max_length=256),
+    ]
+    summary: ShortText
+
+
 class AgentInvocationTelemetry(BaseModel):
     """Bounded token, tool-call, and request telemetry for a single Pydantic AI step."""
 
@@ -186,12 +213,49 @@ class AgentInvocationTelemetry(BaseModel):
     output_tokens: NonNegativeInt
 
 
+class ElicitationTicket(BaseModel):
+    """Serializable suspension state emitted when BHV-02 ELICIT halts for human answers."""
+
+    model_config = STRICT_FROZEN_CONFIG
+
+    workflow_mode: PceWorkflowMode = PceWorkflowMode.GREENFIELD
+    mandate: EngineeringMandate
+    original_prompt: BoundedText = ""
+    prior_trace: Annotated[
+        tuple[ExecutionStep, ...],
+        WIRE_TUPLE_VALIDATOR,
+        Field(min_length=1, max_length=1024),
+    ]
+    prior_telemetry: Annotated[
+        tuple[AgentInvocationTelemetry, ...],
+        WIRE_TUPLE_VALIDATOR,
+        Field(max_length=256),
+    ] = ()
+
+    @model_validator(mode="after")
+    def _enforce_elicitation_frontier(self) -> Self:
+        if not self.mandate.requires_elicitation:
+            msg = (
+                f"ElicitationTicket for '{self.mandate.mandate_id}' requires non-empty "
+                "open_ambiguities."
+            )
+            raise ValueError(msg)
+        if self.prior_trace[-1].kind != BehaviorKind.ELICIT:
+            msg = (
+                "ElicitationTicket.prior_trace must end at BHV-02 ELICIT so resumption "
+                "traverses ELICIT -> FRAME."
+            )
+            raise ValueError(msg)
+        return self
+
+
 class PceRuntimeBudget(BaseModel):
     """Deterministic step, token, and wall-clock ceilings for PCE agent execution."""
 
     model_config = STRICT_FROZEN_CONFIG
 
     max_remediation_cycles: Annotated[int, Field(ge=1, le=10)] = 3
+    max_elicitation_rounds: Annotated[int, Field(ge=1, le=8)] = 3
     agent_timeout_sec: Annotated[float, Field(gt=0.0, le=600.0, allow_inf_nan=False)] = 30.0
     request_limit_per_step: Annotated[int, Field(ge=1, le=32)] = 6
     tool_calls_limit_per_step: Annotated[int, Field(ge=0, le=64)] = 12
@@ -204,6 +268,7 @@ class PceWorkflowResult(BaseModel):
     model_config = STRICT_FROZEN_CONFIG
 
     status: PceRunStatus
+    workflow_mode: PceWorkflowMode = PceWorkflowMode.GREENFIELD
     mandate: EngineeringMandate
     permit: CodePermit
     induced_graph: BehaviorGraph
@@ -211,5 +276,6 @@ class PceWorkflowResult(BaseModel):
     inspection_report: InspectionReport | None = None
     certificate: CertificateOfOccupancy | None = None
     dossier_audit: DossierAuditReport | None = None
+    elicitation_ticket: ElicitationTicket | None = None
     telemetry: Annotated[tuple[AgentInvocationTelemetry, ...], Field(max_length=256)] = ()
     falsified_paths: Annotated[tuple[ShortText, ...], Field(max_length=128)] = ()

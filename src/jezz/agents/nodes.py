@@ -1,7 +1,7 @@
 """Pillar 4: Typed pydantic-graph AtomicBehaviorGraphNodes enacting the 5-phase PCE lifecycle."""
 
 import asyncio
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import ClassVar
@@ -11,9 +11,11 @@ from pydantic_graph import End, GraphRunContext
 from jezz.agents.schemas import (
     AgentInvocationTelemetry,
     ConstructionPatchBundle,
+    ElicitationTicket,
     FilePatchArtifact,
     PceRunStatus,
     PceRuntimeBudget,
+    PceWorkflowMode,
     PceWorkflowResult,
 )
 from jezz.agents.specialists import (
@@ -22,6 +24,7 @@ from jezz.agents.specialists import (
     build_hypothesize_agent,
     build_inspect_agent,
     build_instrument_agent,
+    build_refactor_agent,
     build_specify_agent,
     build_synthesize_agent,
     run_bounded_agent,
@@ -31,6 +34,7 @@ from jezz.behaviors.graph import verify_behavior_graph
 from jezz.behaviors.runtime import (
     AgentExecutionState,
     AtomicBehaviorGraphNode,
+    ExecutionStep,
     trace_to_behavior_graph,
 )
 from jezz.behaviors.taxonomy import BehaviorKind
@@ -43,10 +47,16 @@ from jezz.codes.inspector import (
 )
 from jezz.codes.permits import CodePermit, GateAttestation, InspectionReport
 from jezz.guards import BudgetExceededError, ContainedPath, LoopBudget
-from jezz.methodology.dossier import EngineeringDossier, audit_pce_dossier
+from jezz.methodology.dossier import (
+    EngineeringDossier,
+    audit_pce_dossier,
+    extract_compiled_symbols,
+)
 from jezz.methodology.mandate import EngineeringMandate, ModuleWriteScope
 
 _IMPL_CHECKPOINT_ID = "checkpoint_impl"
+
+type ElicitationCallback = Callable[[EngineeringMandate], Sequence[str] | None]
 
 
 @dataclass
@@ -61,8 +71,14 @@ class PceGraphDeps:
     permit: CodePermit
     budget: PceRuntimeBudget
     remediation_loop: LoopBudget
+    workflow_mode: PceWorkflowMode = PceWorkflowMode.GREENFIELD
+    elicitation_loop: LoopBudget = field(default_factory=lambda: LoopBudget(max_steps=3))
     task_prompt: str = ""
     mandate: EngineeringMandate | None = None
+    prior_draft_mandate: EngineeringMandate | None = None
+    clarifications: tuple[str, ...] = ()
+    elicitation_callback: ElicitationCallback | None = None
+    baseline_red_tag_summary: str = ""
     latest_report: InspectionReport | None = None
     attestations: tuple[GateAttestation, ...] = ()
     telemetry: list[AgentInvocationTelemetry] = field(default_factory=list)
@@ -159,21 +175,111 @@ def _format_mandate_prompt(
     return base
 
 
+def _format_baseline_red_tags(report: InspectionReport) -> str:
+    violations = report.unwaived_violations()
+    if not violations:
+        return "0 baseline JBC violations."
+    lines = [
+        f"- {f.code_id} ({f.location.file_path}:L{f.location.line}): "
+        f"{f.message} -> Fix: {f.remediation}"
+        for f in violations[:24]
+    ]
+    return f"{len(violations)} baseline JBC violation(s):\n" + "\n".join(lines)
+
+
+def _render_brownfield_frame_context(deps: PceGraphDeps) -> str:
+    if deps.workflow_mode != PceWorkflowMode.RENOVATE:
+        return ""
+    units = deps.sandbox.load_units()
+    if not units:
+        return ""
+    files = [u.file_path for u in units]
+    pub_syms = sorted(
+        sym for sym in extract_compiled_symbols(units) if "." not in sym and not sym.startswith("_")
+    )[:48]
+    rough = deps.inspector.inspect_rough_in(units, permit=deps.permit)
+    return (
+        f"\nBrownfield Workspace Files: {files}\n"
+        f"Existing Public Symbols: {pub_syms}\n"
+        f"Baseline Inspection:\n{_format_baseline_red_tags(rough)}"
+    )
+
+
+def _build_frame_prompt(deps: PceGraphDeps) -> str:
+    base = deps.task_prompt.strip() or "Frame engineering mandate."
+    context = _render_brownfield_frame_context(deps)
+    if deps.prior_draft_mandate is None or not deps.clarifications:
+        return f"{base}{context}"[:60_000]
+    answers = "\n".join(f"- {item}" for item in deps.clarifications)
+    draft_json = deps.prior_draft_mandate.model_dump_json(indent=2)
+    return (
+        f"{base}{context}\n\n"
+        f"Prior Draft EngineeringMandate (halted at BHV-02 ELICIT):\n{draft_json}\n\n"
+        f"Authoritative Clarifications Resolving Open Ambiguities:\n{answers}"
+    )[:60_000]
+
+
+def _frame_step_id(trace: Sequence[ExecutionStep]) -> str:
+    elicit_count = sum(1 for step in trace if step.kind == BehaviorKind.ELICIT)
+    if elicit_count == 0:
+        return "frame"
+    if elicit_count == 1:
+        return "reframe_resolved"
+    return f"reframe_resolved_{elicit_count}"
+
+
+def _try_in_process_elicitation(deps: PceGraphDeps) -> bool:
+    callback = deps.elicitation_callback
+    if callback is None:
+        return False
+    try:
+        deps.elicitation_loop.tick()
+    except BudgetExceededError:
+        return False
+    mandate = _require_mandate(deps)
+    raw_answers: Sequence[str] | None = callback(mandate)
+    if raw_answers is None:
+        return False
+    cleaned = tuple(ans.strip() for ans in raw_answers if ans.strip())
+    if not cleaned:
+        return False
+    deps.prior_draft_mandate = mandate
+    deps.clarifications = cleaned
+    deps.mandate = None
+    return True
+
+
+def _has_authorized_tests(mandate: EngineeringMandate) -> bool:
+    return any(rel.startswith(("tests/", "test/")) for rel in mandate.authorized_files())
+
+
+def _implementation_scopes(mandate: EngineeringMandate) -> tuple[ModuleWriteScope, ...]:
+    return tuple(
+        scope
+        for scope in mandate.write_scopes
+        if any(not rel.startswith(("tests/", "test/")) for rel in scope.owned_files)
+    )
+
+
 def _assemble_halted_result(
     state: AgentExecutionState,
     deps: PceGraphDeps,
     status: PceRunStatus,
+    *,
+    ticket: ElicitationTicket | None = None,
 ) -> PceWorkflowResult:
     mandate = _require_mandate(deps)
     induced = trace_to_behavior_graph(state.trace, name=f"pce_{mandate.mandate_id}")
     verdict = verify_behavior_graph(induced)
     return PceWorkflowResult(
         status=status,
+        workflow_mode=deps.workflow_mode,
         mandate=mandate,
         permit=deps.permit,
         induced_graph=induced,
         graph_verification=verdict,
         inspection_report=deps.latest_report,
+        elicitation_ticket=ticket,
         telemetry=tuple(deps.telemetry),
         falsified_paths=tuple(state.world_model.falsified_paths),
     )
@@ -190,22 +296,24 @@ class FrameNode(AtomicBehaviorGraphNode[PceGraphDeps, PceWorkflowResult]):
         ctx: GraphRunContext[AgentExecutionState, PceGraphDeps],
     ) -> ElicitNode | BindCodesNode:
         if ctx.deps.mandate is None:
-            prompt = ctx.deps.task_prompt.strip() or "Frame engineering mandate."
             proposal, tel = await run_bounded_agent(
                 build_frame_agent(ctx.deps.models.frame_model),
                 behavior_kind=BehaviorKind.FRAME,
-                prompt=prompt,
+                prompt=_build_frame_prompt(ctx.deps),
                 deps=_make_agent_deps(ctx.deps),
                 budget=ctx.deps.budget,
             )
             ctx.deps.telemetry.append(tel)
             ctx.deps.mandate = proposal.mandate
+            ctx.deps.prior_draft_mandate = None
+            ctx.deps.clarifications = ()
 
         mandate = _require_mandate(ctx.deps)
         ctx.deps.sandbox = WorkspaceSandbox(ctx.deps.repo_root, mandate.authorized_files())
         ctx.state.problem.objective = mandate.objective
         ctx.state.problem.ambiguities = list(mandate.open_ambiguities)
-        self.record_into_context(ctx, "frame", f"Framed mandate {mandate.mandate_id}")
+        step_id = _frame_step_id(ctx.state.trace)
+        self.record_into_context(ctx, step_id, f"Framed mandate {mandate.mandate_id}")
 
         if mandate.requires_elicitation:
             return ElicitNode(reason="Open domain ambiguities require human resolution.")
@@ -214,7 +322,7 @@ class FrameNode(AtomicBehaviorGraphNode[PceGraphDeps, PceWorkflowResult]):
 
 @dataclass
 class ElicitNode(AtomicBehaviorGraphNode[PceGraphDeps, PceWorkflowResult]):
-    """Terminal Authority Gate (BHV-02 ELICIT): Halt cleanly rather than guessing."""
+    """Authority Gate (BHV-02 ELICIT): Re-enter FRAME with answers or halt with ticket."""
 
     behavior_kind: ClassVar[BehaviorKind] = BehaviorKind.ELICIT
     reason: str
@@ -223,14 +331,31 @@ class ElicitNode(AtomicBehaviorGraphNode[PceGraphDeps, PceWorkflowResult]):
     async def run(
         self,
         ctx: GraphRunContext[AgentExecutionState, PceGraphDeps],
-    ) -> End[PceWorkflowResult]:
-        self.record_into_context(ctx, "elicit", self.reason[:240])
-        status = (
-            PceRunStatus.ESCALATED_AFTER_RED_TAG
-            if self.escalated_red_tag
-            else PceRunStatus.HALTED_FOR_ELICITATION
+    ) -> FrameNode | End[PceWorkflowResult]:
+        elicit_idx = sum(1 for step in ctx.state.trace if step.kind == BehaviorKind.ELICIT) + 1
+        step_id = "elicit" if elicit_idx == 1 else f"elicit_{elicit_idx}"
+        self.record_into_context(ctx, step_id, self.reason[:240])
+        if self.escalated_red_tag:
+            return End(
+                _assemble_halted_result(ctx.state, ctx.deps, PceRunStatus.ESCALATED_AFTER_RED_TAG)
+            )
+        if _try_in_process_elicitation(ctx.deps):
+            return FrameNode()
+        ticket = ElicitationTicket(
+            workflow_mode=ctx.deps.workflow_mode,
+            mandate=_require_mandate(ctx.deps),
+            original_prompt=ctx.deps.task_prompt,
+            prior_trace=tuple(ctx.state.trace),
+            prior_telemetry=tuple(ctx.deps.telemetry),
         )
-        return End(_assemble_halted_result(ctx.state, ctx.deps, status))
+        return End(
+            _assemble_halted_result(
+                ctx.state,
+                ctx.deps,
+                PceRunStatus.HALTED_FOR_ELICITATION,
+                ticket=ticket,
+            )
+        )
 
 
 @dataclass
@@ -263,6 +388,13 @@ class InspectCodeNode(AtomicBehaviorGraphNode[PceGraphDeps, PceWorkflowResult]):
         ctx: GraphRunContext[AgentExecutionState, PceGraphDeps],
     ) -> DecomposeNode:
         mandate = _require_mandate(ctx.deps)
+        if ctx.deps.workflow_mode == PceWorkflowMode.RENOVATE:
+            rough = ctx.deps.inspector.inspect_rough_in(
+                ctx.deps.sandbox.load_units(),
+                permit=ctx.deps.permit,
+            )
+            ctx.deps.baseline_red_tag_summary = _format_baseline_red_tags(rough)
+            ctx.state.world_model.observations.append(ctx.deps.baseline_red_tag_summary[:1000])
         obs, tel = await run_bounded_agent(
             build_inspect_agent(ctx.deps.models.inspect_model),
             behavior_kind=BehaviorKind.INSPECT_CODE,
@@ -285,7 +417,7 @@ class DecomposeNode(AtomicBehaviorGraphNode[PceGraphDeps, PceWorkflowResult]):
     async def run(
         self,
         ctx: GraphRunContext[AgentExecutionState, PceGraphDeps],
-    ) -> CheckpointContractNode:
+    ) -> CheckpointContractNode | CheckpointImplNode:
         mandate = _require_mandate(ctx.deps)
         ctx.state.problem.subtasks = [
             f"{s.scope_id}:{sorted(s.owned_files)}" for s in mandate.write_scopes
@@ -295,6 +427,10 @@ class DecomposeNode(AtomicBehaviorGraphNode[PceGraphDeps, PceWorkflowResult]):
             "decompose",
             f"Partitioned {len(mandate.write_scopes)} disjoint write scope(s)",
         )
+        if ctx.deps.workflow_mode == PceWorkflowMode.RENOVATE and not _has_authorized_tests(
+            mandate
+        ):
+            return CheckpointImplNode()
         return CheckpointContractNode()
 
 
@@ -307,10 +443,12 @@ class CheckpointContractNode(AtomicBehaviorGraphNode[PceGraphDeps, PceWorkflowRe
     async def run(
         self,
         ctx: GraphRunContext[AgentExecutionState, PceGraphDeps],
-    ) -> SpecifyNode:
+    ) -> SpecifyNode | InstrumentNode:
         ckpt = ctx.deps.sandbox.create_checkpoint("checkpoint_contract")
         ctx.state.workspace.checkpoints.append(ckpt)
         self.record_into_context(ctx, "checkpoint_contract", "Captured pre-contract snapshot")
+        if ctx.deps.workflow_mode == PceWorkflowMode.RENOVATE:
+            return InstrumentNode()
         return SpecifyNode()
 
 
@@ -349,10 +487,17 @@ class InstrumentNode(AtomicBehaviorGraphNode[PceGraphDeps, PceWorkflowResult]):
         ctx: GraphRunContext[AgentExecutionState, PceGraphDeps],
     ) -> CheckpointImplNode:
         mandate = _require_mandate(ctx.deps)
+        prompt = _format_mandate_prompt(mandate, ctx.deps.sandbox)
+        if ctx.deps.workflow_mode == PceWorkflowMode.RENOVATE:
+            prompt = (
+                f"{prompt}\nBrownfield Renovation Mode: Preserve/lock existing observable "
+                "public behavior from src/... snapshots while defining every mandated "
+                "verification_symbol under full JBC v1.1 test compliance."
+            )[:60_000]
         bundle, tel = await run_bounded_agent(
             build_instrument_agent(ctx.deps.models.instrument_model),
             behavior_kind=BehaviorKind.INSTRUMENT,
-            prompt=_format_mandate_prompt(mandate, ctx.deps.sandbox),
+            prompt=prompt,
             deps=_make_agent_deps(ctx.deps),
             budget=ctx.deps.budget,
         )
@@ -371,13 +516,15 @@ class CheckpointImplNode(AtomicBehaviorGraphNode[PceGraphDeps, PceWorkflowResult
     async def run(
         self,
         ctx: GraphRunContext[AgentExecutionState, PceGraphDeps],
-    ) -> SynthesizeNode | DelegateNode:
+    ) -> SynthesizeNode | RefactorNode | DelegateNode:
         mandate = _require_mandate(ctx.deps)
         ckpt = ctx.deps.sandbox.create_checkpoint(_IMPL_CHECKPOINT_ID)
         ctx.state.workspace.checkpoints.append(ckpt)
         self.record_into_context(ctx, "checkpoint_impl", "Captured pre-implementation snapshot")
-        if len(mandate.write_scopes) > 1:
+        if len(_implementation_scopes(mandate)) > 1:
             return DelegateNode()
+        if ctx.deps.workflow_mode == PceWorkflowMode.RENOVATE:
+            return RefactorNode()
         return SynthesizeNode()
 
 
@@ -405,15 +552,65 @@ class SynthesizeNode(AtomicBehaviorGraphNode[PceGraphDeps, PceWorkflowResult]):
         return VerifyStaticNode()
 
 
+def _format_refactor_prompt(deps: PceGraphDeps, mandate: EngineeringMandate) -> str:
+    base = _format_mandate_prompt(mandate, deps.sandbox, deps.remediation_guidance)
+    if deps.baseline_red_tag_summary:
+        return f"{base}\nBaseline JBC RED_TAG Findings:\n{deps.baseline_red_tag_summary}"[:60_000]
+    return base[:60_000]
+
+
+@dataclass
+class RefactorNode(AtomicBehaviorGraphNode[PceGraphDeps, PceWorkflowResult]):
+    """Phase IV Brownfield Renovation (BHV-17 REFACTOR): Behavior-preserving JBC remediation."""
+
+    behavior_kind: ClassVar[BehaviorKind] = BehaviorKind.REFACTOR
+
+    async def run(
+        self,
+        ctx: GraphRunContext[AgentExecutionState, PceGraphDeps],
+    ) -> VerifyStaticNode:
+        mandate = _require_mandate(ctx.deps)
+        active_model = ctx.deps.models.refactor_model or ctx.deps.models.synthesize_model
+        bundle, tel = await run_bounded_agent(
+            build_refactor_agent(active_model),
+            behavior_kind=BehaviorKind.REFACTOR,
+            prompt=_format_refactor_prompt(ctx.deps, mandate),
+            deps=_make_agent_deps(ctx.deps),
+            budget=ctx.deps.budget,
+        )
+        ctx.deps.telemetry.append(tel)
+        _apply_patches_to_state(ctx.state, ctx.deps.sandbox, bundle.refactored_patches)
+        self.record_into_context(ctx, "refactor", bundle.summary[:240])
+        return VerifyStaticNode()
+
+
 async def _run_scoped_slice(
     deps: PceGraphDeps,
     mandate: EngineeringMandate,
     scope: ModuleWriteScope,
 ) -> tuple[ModuleWriteScope, ConstructionPatchBundle, AgentInvocationTelemetry]:
-    prompt = (
-        f"{_format_mandate_prompt(mandate, deps.sandbox, deps.remediation_guidance)}\n"
+    slice_footer = (
         f"Active Slice Scope: {scope.scope_id} owning {sorted(scope.owned_files)} "
         f"for symbols {list(scope.contract_symbols)}."
+    )
+    if deps.workflow_mode == PceWorkflowMode.RENOVATE:
+        ref_prompt = f"{_format_refactor_prompt(deps, mandate)}\n{slice_footer}"[:60_000]
+        ref_model = deps.models.refactor_model or deps.models.synthesize_model
+        ref_bundle, ref_tel = await run_bounded_agent(
+            build_refactor_agent(ref_model),
+            behavior_kind=BehaviorKind.DELEGATE,
+            prompt=ref_prompt,
+            deps=_make_agent_deps(deps, scope=scope),
+            budget=deps.budget,
+        )
+        adapted = ConstructionPatchBundle(
+            implementation_patches=ref_bundle.refactored_patches,
+            summary=ref_bundle.summary,
+        )
+        return scope, adapted, ref_tel
+    prompt = (
+        f"{_format_mandate_prompt(mandate, deps.sandbox, deps.remediation_guidance)}\n"
+        f"{slice_footer}"
     )
     bundle, tel = await run_bounded_agent(
         build_synthesize_agent(deps.models.synthesize_model),
@@ -440,7 +637,7 @@ class DelegateNode(AtomicBehaviorGraphNode[PceGraphDeps, PceWorkflowResult]):
             asyncio.Task[tuple[ModuleWriteScope, ConstructionPatchBundle, AgentInvocationTelemetry]]
         ] = []
         async with asyncio.TaskGroup() as tg:
-            for scope in mandate.write_scopes:
+            for scope in _implementation_scopes(mandate):
                 ctx.state.world_model.active_delegations.add(scope.scope_id)
                 tasks.append(tg.create_task(_run_scoped_slice(ctx.deps, mandate, scope)))
 
@@ -662,6 +859,7 @@ class CertifyNode(AtomicBehaviorGraphNode[PceGraphDeps, PceWorkflowResult]):
         return End(
             PceWorkflowResult(
                 status=PceRunStatus.OCCUPANCY_CERTIFIED,
+                workflow_mode=ctx.deps.workflow_mode,
                 mandate=mandate,
                 permit=ctx.deps.permit,
                 induced_graph=induced,

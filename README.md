@@ -27,8 +27,11 @@ uv run jezz inspect <repo_path> [--permit permit.json] [--format markdown|json]
 # Audit a 5-phase PCE EngineeringDossier against compiled workspace symbols and SHA-256 digest
 uv run jezz audit <dossier.json> [--repo <repo_path>] [--format markdown|json]
 
-# Execute a PCE prompt or mandate via PceWorkflowOrchestrator
-uv run jezz run <repo_path> --model <provider:model> [--api-key-uri pass://Vault/Item/Field] (--prompt "..." | --mandate mandate.json)
+# Execute a greenfield PCE prompt or mandate (or resume a halted ElicitationTicket via ELICIT -> FRAME)
+uv run jezz run <repo_path> --model <provider:model> (--prompt "..." | --mandate mandate.json | --resume-elicitation elicit.json --clarification "...")
+
+# Renovate an existing brownfield repository to zero-variance JBC v1.1 occupancy via BHV-17 REFACTOR
+uv run jezz renovate <repo_path> --model <provider:model> (--prompt "..." | --mandate mandate.json) [--write-dossier dossier.json]
 
 # Execute Track 4 controlled pydantic-evals A/B benchmark (Prose SDD vs. Jezz PCE)
 uv run jezz benchmark <work_dir> --model <provider:model> [--api-key-uri pass://Vault/Item/Field] [--max-concurrency 2] [--write-json ab.json]

@@ -34,6 +34,18 @@ _WEASEL_MODAL_RE: Final[re.Pattern[str]] = re.compile(
     r"\b(?:should|ideally|maybe|might|nice\s+to\s+have|try\s+to)\b",
     re.IGNORECASE,
 )
+_PYTHON_SYMBOL_RE: Final[re.Pattern[str]] = re.compile(
+    r"^[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*$"
+)
+
+
+def _validate_python_symbol_ref(symbol: str, *, field_label: str) -> None:
+    if _PYTHON_SYMBOL_RE.fullmatch(symbol) is None:
+        msg = (
+            f"{field_label} '{symbol}' must be a valid Python identifier or dotted qualname "
+            "(e.g. 'test_quota' or 'pkg.mod.ClassName'), never a file path or 'file.py:symbol'."
+        )
+        raise ValueError(msg)
 
 
 class PcePhase(StrEnum):
@@ -81,6 +93,10 @@ class DomainInvariant(BaseModel):
     @model_validator(mode="after")
     def _enforce_falsifiable_wording(self) -> Self:
         validate_engineering_prose(self.statement, field_label=f"Invariant {self.invariant_id}")
+        _validate_python_symbol_ref(
+            self.verification_symbol,
+            field_label=f"Invariant {self.invariant_id} verification_symbol",
+        )
         if _WEASEL_MODAL_RE.search(self.statement) is not None:
             msg = (
                 f"Invariant '{self.invariant_id}' uses non-normative weasel wording "
@@ -106,6 +122,15 @@ class ModuleWriteScope(BaseModel):
         WIRE_TUPLE_VALIDATOR,
         Field(min_length=1, max_length=128),
     ]
+
+    @model_validator(mode="after")
+    def _enforce_valid_contract_symbols(self) -> Self:
+        for sym in self.contract_symbols:
+            _validate_python_symbol_ref(
+                sym,
+                field_label=f"ModuleWriteScope '{self.scope_id}' contract_symbol",
+            )
+        return self
 
 
 def _verify_disjoint_scopes(scopes: tuple[ModuleWriteScope, ...]) -> None:
