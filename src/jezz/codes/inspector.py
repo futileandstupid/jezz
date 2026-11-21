@@ -1,6 +1,7 @@
 """Automated Software Building Inspector (JBC v1.1) and Pillar 1 runtime governance bridge."""
 
 import ast
+import configparser
 import hashlib
 import re
 import tomllib
@@ -81,12 +82,25 @@ from jezz.guards import (
 _PEP508_NAME_RE: Final[re.Pattern[str]] = re.compile(r"^\s*([A-Za-z0-9][A-Za-z0-9._-]*)")
 _PYPI_IMPORT_ALIASES: Final[Mapping[str, str]] = MappingProxyType(
     {
+        "agent_client_protocol": "acp",
         "attrs": "attr",
         "beautifulsoup4": "bs4",
+        "gitpython": "git",
+        "logfire_api": "logfire",
+        "opencv_python": "cv2",
         "pillow": "PIL",
+        "py_key_value_aio": "key_value",
+        "pydantic_ai_backend": "pydantic_ai_backends",
+        "pydantic_ai_slim": "pydantic_ai",
+        "pyjwt": "jwt",
+        "python_dotenv": "dotenv",
+        "python_multipart": "multipart",
         "pyyaml": "yaml",
         "scikit_learn": "sklearn",
     }
+)
+_DEV_EXTRA_GROUP_NAMES: Final[frozenset[str]] = frozenset(
+    {"dev", "test", "tests", "testing", "lint", "docs", "typing", "typecheck"}
 )
 
 type _RuleFn = Callable[[SourceUnit], list[RawDiscrepancy]]
@@ -162,22 +176,71 @@ def _collect_group_deps(section: object) -> list[str]:
     return collected
 
 
+def _partition_optional_deps(section: object) -> tuple[list[str], list[str]]:
+    if not isinstance(section, dict):
+        return [], []
+    runtime_extras: list[str] = []
+    dev_extras: list[str] = []
+    for group_name, group_items in section.items():
+        specs = _extract_dep_strings(group_items)
+        target = dev_extras if str(group_name).lower() in _DEV_EXTRA_GROUP_NAMES else runtime_extras
+        target.extend(specs)
+    return runtime_extras, dev_extras
+
+
+def _expand_import_roots(specs: Sequence[str]) -> set[str]:
+    roots: set[str] = set()
+    for spec in specs:
+        match = _PEP508_NAME_RE.match(spec)
+        if match is None:
+            continue
+        raw_norm = re.sub(r"[-.]+", "_", match.group(1)).lower()
+        roots.add(raw_norm)
+        roots.add(_PYPI_IMPORT_ALIASES.get(raw_norm, raw_norm))
+    return roots
+
+
+@jezz_callable
+def load_setup_cfg_dependencies(
+    setup_cfg_target: ContainedPath,
+) -> tuple[frozenset[IdentifierStr], frozenset[IdentifierStr]]:
+    """Parse ``setup.cfg`` ``[options]`` and ``[options.extras_require]`` dependency roots."""
+    raw_cfg = read_bounded_text(setup_cfg_target, max_bytes=524_288)
+    parser = configparser.ConfigParser()
+    parser.read_string(raw_cfg)
+    raw_install = parser.get("options", "install_requires", fallback="")
+    runtime_lines = [ln.strip() for ln in raw_install.splitlines() if ln.strip()]
+    dev_lines: list[str] = []
+    if parser.has_section("options.extras_require"):
+        for group_name, raw_val in parser.items("options.extras_require"):
+            specs = [ln.strip() for ln in raw_val.splitlines() if ln.strip()]
+            dest = dev_lines if group_name.lower() in _DEV_EXTRA_GROUP_NAMES else runtime_lines
+            dest.extend(specs)
+    return frozenset(_expand_import_roots(runtime_lines)), frozenset(
+        _expand_import_roots(dev_lines)
+    )
+
+
 @jezz_callable
 def load_pyproject_dependencies(pyproject_target: ContainedPath) -> ManifestDependencies:
     """Parse ``pyproject.toml`` to extract runtime, dev, and project import roots."""
     raw_toml = read_bounded_text(pyproject_target, max_bytes=524_288)
     data = tomllib.loads(raw_toml)
     project = data.get("project", {})
-    runtime_specs = _extract_dep_strings(project.get("dependencies", []))
-    runtime_roots = {
-        root for spec in runtime_specs if (root := normalize_pep508_to_import_root(spec))
-    }
+    opt_runtime_specs, opt_dev_specs = _partition_optional_deps(
+        project.get("optional-dependencies", {})
+    )
+    runtime_specs = [
+        *_extract_dep_strings(project.get("dependencies", [])),
+        *opt_runtime_specs,
+    ]
+    runtime_roots = _expand_import_roots(runtime_specs)
 
     dev_specs = [
         *_collect_group_deps(data.get("dependency-groups", {})),
-        *_collect_group_deps(project.get("optional-dependencies", {})),
+        *opt_dev_specs,
     ]
-    dev_roots = {root for spec in dev_specs if (root := normalize_pep508_to_import_root(spec))}
+    dev_roots = _expand_import_roots(dev_specs)
 
     ws_roots: set[str] = {"tests"}
     proj_name = project.get("name")
@@ -216,7 +279,7 @@ def load_workspace_units(
 @icontract.ensure(lambda result: len(result) == 64)
 @jezz_callable
 def compute_units_digest(
-    units: Annotated[Sequence[SourceUnit], Field(min_length=1, max_length=10_000)],
+    units: Annotated[Sequence[SourceUnit], Field(min_length=1, max_length=100_000)],
 ) -> Annotated[str, Field(min_length=64, max_length=64)]:
     """Compute a deterministic SHA-256 hex digest over sorted ``(file_path, source)`` pairs."""
     hasher = hashlib.sha256()
@@ -354,14 +417,23 @@ class BuildingInspector:
     @classmethod
     @jezz_callable
     def from_workspace(cls, repo_root: Path) -> BuildingInspector:
-        """Create a ``BuildingInspector`` grounded in ``repo_root / 'pyproject.toml'``."""
+        """Create a ``BuildingInspector`` grounded in ``pyproject.toml`` and ``setup.cfg``."""
         pyproject = ContainedPath.from_parts(repo_root, "pyproject.toml")
-        manifest = (
+        base = (
             load_pyproject_dependencies(pyproject)
-            if pyproject.resolved_path.exists()
+            if pyproject.resolved_path.is_file()
             else ManifestDependencies()
         )
-        return BuildingInspector(manifest=manifest)
+        setup_cfg = ContainedPath.from_parts(repo_root, "setup.cfg")
+        if not setup_cfg.resolved_path.is_file():
+            return BuildingInspector(manifest=base)
+        cfg_run, cfg_dev = load_setup_cfg_dependencies(setup_cfg)
+        merged = ManifestDependencies(
+            runtime_roots=frozenset(base.runtime_roots | cfg_run),
+            dev_roots=frozenset(base.dev_roots | cfg_dev),
+            workspace_roots=base.workspace_roots,
+        )
+        return BuildingInspector(manifest=merged)
 
     def _run_single_static_code(
         self,

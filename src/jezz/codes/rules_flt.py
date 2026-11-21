@@ -11,12 +11,16 @@ from jezz.codes.ast_utils import (
     SourceSpan,
     SourceUnit,
     dotted_expr_name,
+    is_abstract_or_overload,
     is_node_visitor_class,
     iter_local_scope_nodes,
 )
 from jezz.guards import LoopBudget, jezz_callable
 
 _BROAD_EXCEPTIONS: Final[frozenset[str]] = frozenset({"Exception", "BaseException"})
+_CONTROL_FLOW_EXITS: Final[frozenset[str]] = frozenset(
+    {"SystemExit", "Exit", "Abort", "StopIteration", "StopAsyncIteration", "KeyboardInterrupt"}
+)
 _MANAGED_RESOURCE_CALLS: Final[frozenset[str]] = frozenset(
     {"open", "socket.socket", "tempfile.NamedTemporaryFile"}
 )
@@ -152,9 +156,11 @@ def _iter_handler_raises(handler: ast.ExceptHandler) -> list[ast.Raise]:
 def _inspect_raise_expr(unit: SourceUnit, node: ast.Raise) -> list[RawDiscrepancy]:
     if node.exc is None:
         return []
+    tail = dotted_expr_name(node.exc).rsplit(".", maxsplit=1)[-1]
+    if tail in _CONTROL_FLOW_EXITS:
+        return []
     discrepancies: list[RawDiscrepancy] = []
     span = SourceSpan(file_path=unit.file_path, line=node.lineno, column=node.col_offset)
-    tail = dotted_expr_name(node.exc).rsplit(".", maxsplit=1)[-1]
     if tail in _BROAD_EXCEPTIONS:
         discrepancies.append(
             RawDiscrepancy(
@@ -206,8 +212,16 @@ def _inspect_handler_chaining(
 @jezz_callable
 def check_flt_002(unit: SourceUnit) -> list[RawDiscrepancy]:
     """Inspect ``unit`` for JBC-FLT-002 (causal exception chaining & diagnostic messages)."""
+    abstract_ids = {
+        id(sub)
+        for ctx in unit.callables
+        if is_abstract_or_overload(ctx)
+        for sub in ast.walk(ctx.node)
+    }
     discrepancies: list[RawDiscrepancy] = []
     for node in ast.walk(unit.tree):
+        if id(node) in abstract_ids:
+            continue
         if isinstance(node, ast.Raise):
             discrepancies.extend(_inspect_raise_expr(unit, node))
         if isinstance(node, ast.ExceptHandler):

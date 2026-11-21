@@ -148,7 +148,41 @@ def check_sec_001(unit: SourceUnit) -> list[RawDiscrepancy]:
     return discrepancies
 
 
+_NON_SECRET_NAME_PREFIXES: Final[tuple[str, ...]] = (
+    "method_",
+    "rpc_",
+    "route_",
+    "event_",
+    "metric_",
+)
+_NON_SECRET_NAME_SUFFIXES: Final[tuple[str, ...]] = (
+    "_env",
+    "_env_var",
+    "_var",
+    "_header",
+    "_key_name",
+    "_field_name",
+    "_param_name",
+    "_id",
+    "_ids",
+    "_prefix",
+    "_get",
+    "_store",
+    "_delete",
+    "_list",
+    "_count",
+    "_type",
+    "_kind",
+    "_status",
+    "_mode",
+    "_path",
+)
+
+
 def _is_sensitive_identifier(name: str) -> bool:
+    low = name.lower().lstrip("_")
+    if low.startswith(_NON_SECRET_NAME_PREFIXES) or low.endswith(_NON_SECRET_NAME_SUFFIXES):
+        return False
     return _SENSITIVE_NAME_RE.search(name) is not None
 
 
@@ -563,13 +597,14 @@ def check_obs_002(unit: SourceUnit) -> list[RawDiscrepancy]:
                 )
     for node in ast.walk(unit.tree):
         if isinstance(node, ast.Global):
+            names_preview = ", ".join(node.names[:8])
             discrepancies.append(
                 RawDiscrepancy(
                     code_id="JBC-OBS-002",
                     location=SourceSpan(
                         file_path=unit.file_path, line=node.lineno, column=node.col_offset
                     ),
-                    message=f"'global {', '.join(node.names)}' mutates module-level state.",
+                    message=f"'global {names_preview}' mutates module-level state.",
                     remediation="Thread explicit state parameters or return immutable values.",
                 )
             )

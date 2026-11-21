@@ -267,7 +267,7 @@ def _resolve_highest_phase(violations: Sequence[DossierViolation]) -> PcePhase:
 @jezz_callable
 def audit_pce_dossier(
     dossier: EngineeringDossier,
-    units: Annotated[Sequence[SourceUnit], Field(min_length=1, max_length=10_000)],
+    units: Annotated[Sequence[SourceUnit], Field(min_length=1, max_length=100_000)],
 ) -> DossierAuditReport:
     """Verify all five Permit-and-Contract Engineering (PCE) gates on ``dossier``."""
     compiled = extract_compiled_symbols(units)

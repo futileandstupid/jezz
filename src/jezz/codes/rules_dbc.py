@@ -106,6 +106,30 @@ def _guarded_parameter_names(func: ast.FunctionDef | ast.AsyncFunctionDef) -> se
     return guarded
 
 
+_PATH_VAR_EXACT: Final[frozenset[str]] = frozenset(
+    {"path", "dir", "root", "repo", "folder", "tmp_path", "cwd"}
+)
+_PATH_VAR_SUFFIXES: Final[tuple[str, ...]] = (
+    "_path",
+    "_dir",
+    "_root",
+    "_repo",
+    "_folder",
+    "_file",
+    "_filename",
+)
+_SEGMENT_PARAM_SUFFIXES: Final[tuple[str, ...]] = (
+    "_name",
+    "_filename",
+    "_file",
+    "_path",
+    "_dir",
+    "_slug",
+    "_rel",
+    "_subpath",
+)
+
+
 def _non_path_param_names(func: ast.FunctionDef | ast.AsyncFunctionDef) -> set[str]:
     """Return parameter names excluding Path/PurePath/str path-join operands."""
     names: set[str] = set()
@@ -116,6 +140,33 @@ def _non_path_param_names(func: ast.FunctionDef | ast.AsyncFunctionDef) -> set[s
                 continue
         names.add(arg.arg)
     return names
+
+
+def _expr_is_path_like(expr: ast.expr, *, remaining_depth: int = 8) -> bool:
+    if remaining_depth <= 0:
+        return False
+    if isinstance(expr, ast.Name):
+        low = expr.id.lower()
+        return low in _PATH_VAR_EXACT or low.endswith(_PATH_VAR_SUFFIXES)
+    if isinstance(expr, ast.Attribute):
+        low = expr.attr.lower()
+        return low in _PATH_VAR_EXACT or low.endswith(_PATH_VAR_SUFFIXES)
+    if isinstance(expr, ast.Call):
+        tail = dotted_expr_name(expr.func).rsplit(".", maxsplit=1)[-1]
+        return tail in {"Path", "PurePath", "PurePosixPath", "PureWindowsPath"}
+    if isinstance(expr, ast.BinOp) and isinstance(expr.op, ast.Div):
+        return _expr_is_path_like(expr.left, remaining_depth=remaining_depth - 1)
+    return False
+
+
+def _is_path_join_div(node: ast.BinOp) -> bool:
+    if not isinstance(node.op, ast.Div):
+        return False
+    if _expr_is_path_like(node.left):
+        return True
+    return isinstance(node.right, ast.Name) and node.right.id.lower().endswith(
+        _SEGMENT_PARAM_SUFFIXES
+    )
 
 
 @jezz_callable
@@ -130,6 +181,7 @@ def check_dbc_001(unit: SourceUnit) -> list[RawDiscrepancy]:
             if (
                 isinstance(node, ast.BinOp)
                 and isinstance(node.op, ast.Div | ast.FloorDiv | ast.Mod)
+                and not _is_path_join_div(node)
                 and isinstance(node.right, ast.Name)
                 and node.right.id in param_names
                 and node.right.id not in guarded
@@ -315,6 +367,18 @@ def _block_terminates(stmts: Sequence[ast.stmt], *, remaining_depth: int = 64) -
     return any(_stmt_always_terminates(stmt, remaining_depth=remaining_depth - 1) for stmt in stmts)
 
 
+def _is_side_effect_visitor_method(
+    ctx: CallableContext,
+    returns: Sequence[ast.Return],
+) -> bool:
+    return (
+        ctx.enclosing_class is not None
+        and is_node_visitor_class(ctx.enclosing_class)
+        and ctx.node.name.startswith("visit_")
+        and not any(r.value is not None for r in returns)
+    )
+
+
 @jezz_callable
 def check_dbc_003(unit: SourceUnit) -> list[RawDiscrepancy]:
     """Inspect ``unit`` for JBC-DBC-003 (total return paths & no mixed bare/value returns)."""
@@ -342,6 +406,8 @@ def check_dbc_003(unit: SourceUnit) -> list[RawDiscrepancy]:
                 )
             )
 
+        if _is_side_effect_visitor_method(ctx, returns):
+            continue
         body = strip_leading_docstring(ctx.node.body)
         expects_value = ctx.node.returns is not None and not _is_void_return_annotation(
             ctx.node.returns

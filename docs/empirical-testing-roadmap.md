@@ -16,14 +16,11 @@ With Pillars 1–4 implemented, self-audited, and passing (`jezz.behaviors`, `je
 
 ---
 
-## Track 2 — Brownfield Inspector Field Trial (Zero LLM Cost)
+## Track 2 — Brownfield Inspector Field Trial (Zero LLM Cost) — *Completed (Waves 2A & 2B)*
 
-**Goal:** Stress-test the 28 static `JBC` Edition 1.1 AST/lexical/graph rules against 1–3 existing real-world Python repositories (user's existing PyCharm projects and/or OSS Python packages) to calibrate rule precision before live agent benchmarking.
+**Goal:** Stress-test the 28 static `JBC` Edition 1.1 AST/lexical/graph rules against **6 real-world Python repositories** (`github/spec-kit`, `pydantic-graph`, `vstorm-co/pydantic-deepagents`, `pydantic/pydantic`, `kirodotdev/KiroCrew`, and `aws-samples/sample-e2e-product-development-with-kiro` — **17,609 files / 7,414,726 LOC**) to calibrate rule precision and monorepo scaling before live agent benchmarking.
 
-- **Measured Signals:**
-  1. **True-Positive Defect Discovery:** Latent `LIFE_SAFETY` / `STRUCTURAL` bugs caught immediately (silent `except:` blocks, unparameterized SQL/shell sinks, unbounded `while`/stream slurps, `LCOM4 > 1` multi-duty classes, `> 1` `elif` chains, untyped `dict[str, object]` bags).
-  2. **False-Positive / Idiom Calibration:** Legitimate Python 3.12–3.14 constructs where static AST rules require refinement (continuing the precision upgrades already applied for `Path / str` in `JBC-DBC-001` and `TaskGroup.create_task` in `JBC-FLT-005`).
-  3. **Variance Workflow Validation:** Exercising `CodeVariance` permits on brownfield legacy modules while confirming `LIFE_SAFETY` provisions remain non-waivable.
+- **Report & Calibrations:** [track-2-brownfield-field-trial.md](track-2-brownfield-field-trial.md) — Upgraded `JBC-COG-003` cycle detection to $O(V + E)$ iterative Tarjan SCC, added `setup.cfg` + PEP 621 feature-extra manifest parsing, singular `test/` suite discovery, stdlib `ast.NodeVisitor` idiom awareness, and 7 AST precision refinements with zero crashes across 7.41M LOC.
 
 ---
 

@@ -15,11 +15,11 @@ from jezz.codes.taxonomy import CodeSeverity, CodeTrigger
 from jezz.guards import (
     STRICT_FROZEN_CONFIG,
     BoundedInt,
-    BoundedText,
     FiniteFloat,
     IdentifierStr,
     NonNegativeInt,
     ShortText,
+    SourceCodeText,
     jezz_callable,
 )
 
@@ -258,7 +258,7 @@ class InspectionReport(BaseModel):
     auto_detected_triggers: Annotated[frozenset[CodeTrigger], Field(min_length=1, max_length=5)]
     effective_code_ids: Annotated[frozenset[IdentifierStr], Field(min_length=1, max_length=256)]
     section_verdicts: Annotated[tuple[CodeSectionVerdict, ...], Field(min_length=1, max_length=256)]
-    findings: Annotated[tuple[InspectionFinding, ...], Field(max_length=10_000)] = ()
+    findings: Annotated[tuple[InspectionFinding, ...], Field(max_length=1_000_000)] = ()
 
     @model_validator(mode="after")
     def _validate_report_integrity(self) -> Self:
@@ -284,7 +284,11 @@ class InspectionReport(BaseModel):
         return tuple(f for f in self.findings if f.disposition == FindingDisposition.VIOLATION)
 
     @jezz_callable
-    def to_markdown(self) -> BoundedText:
+    def to_markdown(
+        self,
+        *,
+        max_findings: Annotated[int, Field(ge=1, le=5_000)] = 200,
+    ) -> SourceCodeText:
         """Render a structured Markdown Building Inspection Report."""
         lines = [
             f"# Building Inspection Report — `{self.permit_id}`",
@@ -304,11 +308,17 @@ class InspectionReport(BaseModel):
             )
         if self.findings:
             lines.extend(["", "## Cited Findings"])
-            for f in self.findings:
+            for f in self.findings[:max_findings]:
                 loc = f"{f.location.file_path}:{f.location.line}"
                 lines.append(
                     f"- **[{f.disposition.upper()}] `{f.code_id}`** (`{loc}`): "
                     f"{f.message} — *Remediation:* {f.remediation}"
+                )
+            omitted = len(self.findings) - max_findings
+            if omitted > 0:
+                lines.append(
+                    f"- *... and {omitted} additional finding(s) omitted; "
+                    "use `--format json` for the complete ledger.*"
                 )
         return "\n".join(lines)
 

@@ -7,7 +7,7 @@ import io
 import sys
 from collections.abc import Callable, Coroutine, Mapping, Sequence
 from enum import StrEnum
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from types import MappingProxyType
 from typing import Annotated, Final
 
@@ -79,7 +79,7 @@ def _resolve_scan_dirs(resolved_root: Path, target_dirs: Sequence[str]) -> tuple
         return tuple(target_dirs)
     src_candidate = ContainedPath.from_parts(resolved_root, "src")
     if src_candidate.resolved_path.is_dir():
-        return "src", "tests"
+        return "src", "tests", "test"
     return (".",)
 
 
@@ -180,16 +180,27 @@ def _require_units(
     return resolved_repo, units
 
 
+def _extract_local_unit_roots(units: Sequence[SourceUnit]) -> set[str]:
+    roots: set[str] = set()
+    for unit in units:
+        if not unit.module_name or unit.is_test_file:
+            continue
+        top = unit.module_name.split(".", maxsplit=1)[0]
+        if top.isidentifier():
+            roots.add(top)
+            continue
+        stem = PurePosixPath(unit.file_path).stem
+        if stem.isidentifier():
+            roots.add(stem)
+    return roots
+
+
 def _build_workspace_inspector(
     resolved_repo: Path,
     units: Sequence[SourceUnit],
 ) -> BuildingInspector:
     base = BuildingInspector.from_workspace(resolved_repo)
-    local_roots = {
-        u.module_name.split(".", maxsplit=1)[0]
-        for u in units
-        if u.module_name and not u.is_test_file
-    }
+    local_roots = _extract_local_unit_roots(units)
     manifest = ManifestDependencies(
         runtime_roots=base.manifest.runtime_roots,
         dev_roots=base.manifest.dev_roots,

@@ -853,3 +853,173 @@ async def test_pydantic_graph_red_tags_ungrounded_code_and_certifies_remediated_
 
     trace_report = verify_execution_trace(state.trace, name="inspector_red_tag_remediation")
     assert trace_report.is_valid, f"Induced behavior trace invalid: {trace_report.violations}"
+
+
+# ---------------------------------------------------------------------------
+# 8. Track 2 Brownfield Calibration Regression Suite
+# ---------------------------------------------------------------------------
+
+
+def test_track2_calibrations_eliminate_idiom_false_positives(tmp_path: Path) -> None:
+    pyproject_toml = textwrap.dedent(
+        """\
+        [project]
+        name = "demo-app"
+        version = "0.1.0"
+        dependencies = ["pydantic-ai-slim>=2.50.0", "logfire-api>=3.14.0"]
+
+        [project.optional-dependencies]
+        cli = ["typer>=0.12.0"]
+        dev = ["pytest>=9.0.0"]
+        """
+    )
+    pyproject_path = tmp_path / "pyproject.toml"
+    with pyproject_path.open("w", encoding="utf-8") as fh:
+        fh.write(pyproject_toml)
+
+    inspector = BuildingInspector.from_workspace(tmp_path)
+    assert {"pydantic_ai", "logfire", "logfire_api", "typer"} <= inspector.manifest.runtime_roots
+    assert "pytest" in inspector.manifest.dev_roots
+
+    submod_unit = parse_source_unit(
+        "src/demo_app/_helpers.py",
+        "from jezz.guards import PositiveInt, jezz_callable\n\n"
+        "@jezz_callable\ndef double(x: PositiveInt) -> PositiveInt:\n    return x * 2\n",
+    )
+    prod_unit = parse_source_unit(
+        "src/demo_app/service.py",
+        textwrap.dedent(
+            """\
+            from pathlib import Path
+            from typing import Protocol
+            import logfire
+            import typer
+            from demo_app import _helpers
+            from jezz.guards import IdentifierStr, PositiveInt, jezz_callable
+
+            API_KEY_ENV = "DEMO_API_KEY"
+
+            # The TODO list panel renders placeholder IDs cleanly.
+            class RunnerPort(Protocol):
+                def execute(self, name: IdentifierStr) -> PositiveInt:
+                    raise NotImplementedError
+
+            class StepHandle:
+                @jezz_callable
+                def __init__(self, step_id: IdentifierStr) -> None:
+                    self._step_id = step_id
+
+                @property
+                def step_id(self) -> IdentifierStr:
+                    return self._step_id
+
+                @jezz_callable
+                def clone(self) -> "StepHandle":
+                    return StepHandle(self._step_id)
+
+                @jezz_callable
+                def register_into(self, sink: list[object]) -> None:
+                    sink.append(self)
+
+            def _join_target(root_dir: Path, child_name: IdentifierStr) -> Path:
+                if not child_name.strip():
+                    raise typer.Exit()
+                _ = logfire
+                _ = _helpers
+                return root_dir / child_name
+            """
+        ),
+    )
+    test_unit = parse_source_unit(
+        "tests/test_service.py",
+        textwrap.dedent(
+            """\
+            from pathlib import Path
+
+            def _assert_equal_paths(left: Path, right: Path) -> None:
+                assert left == right
+
+            class TestSuiteGrouping:
+                def test_path_join_via_private_assert_helper(self, tmp_path: Path) -> None:
+                    _assert_equal_paths(tmp_path / "a", tmp_path / "a")
+            """
+        ),
+    )
+    manifest = ManifestDependencies(
+        runtime_roots=inspector.manifest.runtime_roots | frozenset({"jezz"}),
+        dev_roots=inspector.manifest.dev_roots,
+        workspace_roots=frozenset({"demo_app", "tests"}),
+    )
+    calibrated = BuildingInspector(manifest)
+    report = calibrated.inspect_rough_in((submod_unit, prod_unit, test_unit))
+    assert report.ruling == OccupancyRuling.APPROVED, report.to_markdown()
+
+
+def test_track2b_setup_cfg_visitor_and_singular_test_calibrations(tmp_path: Path) -> None:
+    setup_cfg = textwrap.dedent(
+        """\
+        [options]
+        install_requires =
+            httpx>=0.28.0
+            PyJWT>=2.10.0
+
+        [options.extras_require]
+        teams =
+            slack-sdk>=3.27.0
+        dev =
+            pytest>=9.0.0
+        """
+    )
+    cfg_path = tmp_path / "setup.cfg"
+    with cfg_path.open("w", encoding="utf-8") as fh:
+        fh.write(setup_cfg)
+
+    inspector = BuildingInspector.from_workspace(tmp_path)
+    assert {"httpx", "jwt", "slack_sdk"} <= inspector.manifest.runtime_roots
+    assert "pytest" in inspector.manifest.dev_roots
+
+    visitor_src = textwrap.dedent(
+        """\
+        import ast
+        import httpx
+        from pydantic import BaseModel
+        from jezz.guards import STRICT_FROZEN_CONFIG, IdentifierStr, RecursionBudget
+
+        METHOD_SECRET_GET = "_rpc/secret/get"
+        SECRET_URI_PREFIX = "vault://"
+
+        class KeyRecord(BaseModel):
+            model_config = STRICT_FROZEN_CONFIG
+            api_key_id: IdentifierStr
+
+        class PruningVisitor(ast.NodeVisitor):
+            def __init__(self) -> None:
+                self.seen: list[str] = []
+                self._budget = RecursionBudget(max_depth=64)
+
+            def visit(self, node: ast.AST) -> object:
+                with self._budget:
+                    return super().visit(node)
+
+            def visit_Name(self, node: ast.Name) -> object:
+                _ = httpx
+                self.seen.append(node.id)
+
+            def visit_ClassDef(self, node: ast.ClassDef) -> object:
+                pass
+        """
+    )
+    prod_unit = parse_source_unit("src/crew/visitor.py", visitor_src)
+    singular_test = parse_source_unit(
+        "test/helpers/sample_case.py",
+        "def test_singular_dir_is_test_unit() -> None:\n    assert 2 + 2 == 4\n",
+    )
+    assert singular_test.is_test_file is True
+
+    manifest = ManifestDependencies(
+        runtime_roots=inspector.manifest.runtime_roots | frozenset({"jezz", "pydantic"}),
+        dev_roots=inspector.manifest.dev_roots,
+        workspace_roots=frozenset({"crew", "test"}),
+    )
+    report = BuildingInspector(manifest).inspect_rough_in((prod_unit, singular_test))
+    assert report.ruling == OccupancyRuling.APPROVED, report.to_markdown()

@@ -14,6 +14,7 @@ from jezz.codes.ast_utils import (
     SourceUnit,
     dotted_expr_name,
     is_abstract_or_overload,
+    is_node_visitor_class,
     iter_local_scope_nodes,
 )
 from jezz.codes.complexity import strip_leading_docstring
@@ -21,8 +22,10 @@ from jezz.codes.permits import GateAttestation, GateKind
 from jezz.guards import IdentifierStr, jezz_callable
 
 _DEFERRED_COMMENT_RE: Final[re.Pattern[str]] = re.compile(
-    r"\b(?:TODO|FIXME|XXX|HACK|PLACEHOLDER)\b",
-    re.IGNORECASE,
+    r"^#\s*(?:"
+    r"(?:TODO|FIXME|XXX|HACK)(?:\([^)]*\))?(?:\s*:|\s+(?!list\b|items?\b|panel\b|widget\b)|$)|"
+    r"(?i:todo|fixme|xxx|hack|placeholder)(?:\([^)]*\))?\s*:"
+    r")"
 )
 _SUPPRESSION_COMMENT_RE: Final[re.Pattern[str]] = re.compile(
     r"#\s*(?:noqa|type:\s*ignore|pyright:\s*ignore|pragma:\s*no\s*cover)\b",
@@ -50,9 +53,9 @@ def _callable_has_real_verification(ctx: CallableContext) -> bool:
         if isinstance(node, ast.Assert):
             return True
         if isinstance(node, ast.Call):
-            tail = dotted_expr_name(node.func).rsplit(".", maxsplit=1)[-1]
-            if tail in {"raises", "warns", "fail"} or tail.startswith(
-                ("assert_", "verify_", "validate_")
+            tail = dotted_expr_name(node.func).rsplit(".", maxsplit=1)[-1].lstrip("_")
+            if tail in {"raises", "warns", "fail", "assert"} or tail.startswith(
+                ("assert_", "verify_", "validate_", "check_")
             ):
                 return True
     return False
@@ -116,7 +119,12 @@ def check_vrf_002(unit: SourceUnit) -> list[RawDiscrepancy]:
     discrepancies: list[RawDiscrepancy] = []
     if not unit.is_test_file:
         for ctx in unit.callables:
-            if is_abstract_or_overload(ctx):
+            is_visitor_hook = (
+                ctx.enclosing_class is not None
+                and is_node_visitor_class(ctx.enclosing_class)
+                and ctx.node.name.startswith("visit_")
+            )
+            if is_abstract_or_overload(ctx) or is_visitor_hook:
                 continue
             if _is_stub_body(strip_leading_docstring(ctx.node.body)):
                 discrepancies.append(
@@ -134,13 +142,14 @@ def check_vrf_002(unit: SourceUnit) -> list[RawDiscrepancy]:
                 )
     for comment in unit.comments:
         if _DEFERRED_COMMENT_RE.search(comment.text) is not None:
+            preview = comment.text.strip()[:200]
             discrepancies.append(
                 RawDiscrepancy(
                     code_id="JBC-VRF-002",
                     location=SourceSpan(
                         file_path=unit.file_path, line=comment.line, column=comment.column
                     ),
-                    message=f"Deferred placeholder comment '{comment.text.strip()}' in source.",
+                    message=f"Deferred placeholder comment '{preview}' in source.",
                     remediation="Complete deferred work or track external scope via ELICIT/FRAME.",
                 )
             )
@@ -205,13 +214,14 @@ def check_vrf_004(unit: SourceUnit) -> list[RawDiscrepancy]:
     discrepancies: list[RawDiscrepancy] = []
     for comment in unit.comments:
         if _SUPPRESSION_COMMENT_RE.search(comment.text) is not None:
+            preview = comment.text.strip()[:200]
             discrepancies.append(
                 RawDiscrepancy(
                     code_id="JBC-VRF-004",
                     location=SourceSpan(
                         file_path=unit.file_path, line=comment.line, column=comment.column
                     ),
-                    message=f"Gate-silencing directive '{comment.text.strip()}' requires variance.",
+                    message=f"Gate-silencing directive '{preview}' requires variance.",
                     remediation="Fix underlying diagnostic or attach a signed CodeVariance.",
                 )
             )

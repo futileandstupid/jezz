@@ -15,7 +15,7 @@ from jezz.codes.ast_utils import (
     is_pydantic_model_class,
     iter_local_scope_nodes,
 )
-from jezz.codes.complexity import compute_callable_metrics
+from jezz.codes.complexity import compute_callable_metrics, strip_leading_docstring
 from jezz.guards import (
     STRICT_FROZEN_CONFIG,
     IdentifierStr,
@@ -64,7 +64,7 @@ class ClassCohesionMetrics(BaseModel):
     public_method_count: NonNegativeInt
     instance_field_count: NonNegativeInt
     lcom4: NonNegativeInt
-    stateless_methods: Annotated[tuple[IdentifierStr, ...], Field(max_length=128)]
+    stateless_methods: Annotated[tuple[IdentifierStr, ...], Field(max_length=1024)]
 
 
 def _direct_methods(cls_node: ast.ClassDef) -> list[ast.FunctionDef | ast.AsyncFunctionDef]:
@@ -120,17 +120,45 @@ def _collect_written_instance_fields(
     return fields
 
 
+def _is_not_implemented_sentinel(method: ast.FunctionDef | ast.AsyncFunctionDef) -> bool:
+    body = strip_leading_docstring(method.body)
+    if len(body) != 1:
+        return False
+    first = body[0]
+    if not isinstance(first, ast.Raise) or first.exc is None:
+        return False
+    return dotted_expr_name(first.exc).rsplit(".", maxsplit=1)[-1] == "NotImplementedError"
+
+
+def _collect_attr_self_ids(scope_nodes: Sequence[ast.AST]) -> set[int]:
+    ids: set[int] = set()
+    for node in scope_nodes:
+        if (
+            isinstance(node, ast.Attribute)
+            and isinstance(node.value, ast.Name)
+            and node.value.id == "self"
+        ):
+            ids.add(id(node.value))
+    return ids
+
+
 def _extract_method_self_footprint(
     method: ast.FunctionDef | ast.AsyncFunctionDef,
     all_method_names: frozenset[str],
+    written_fields: frozenset[str],
 ) -> tuple[set[str], set[str], bool]:
     """Return ``(accessed_fields, called_self_methods, uses_super_or_self_ref)``."""
+    scope_nodes = list(iter_local_scope_nodes(method))
+    attr_self_ids = _collect_attr_self_ids(scope_nodes)
     fields: set[str] = set()
     calls: set[str] = set()
     uses_self_or_super = False
-    for node in iter_local_scope_nodes(method):
+    for node in scope_nodes:
         if isinstance(node, ast.Call) and dotted_expr_name(node.func) == "super":
             uses_self_or_super = True
+        if isinstance(node, ast.Name) and node.id == "self" and id(node) not in attr_self_ids:
+            uses_self_or_super = True
+            fields |= set(written_fields)
         if (
             isinstance(node, ast.Attribute)
             and isinstance(node.value, ast.Name)
@@ -186,6 +214,7 @@ def _build_method_adjacency(
 def _analyze_lcom4_and_stateless(
     methods: Sequence[ast.FunctionDef | ast.AsyncFunctionDef],
     *,
+    written_fields: frozenset[str],
     is_visitor: bool,
 ) -> tuple[int, tuple[str, ...]]:
     all_names = frozenset(m.name for m in methods)
@@ -196,9 +225,13 @@ def _analyze_lcom4_and_stateless(
     for m in methods:
         is_dunder = m.name.startswith("__") and m.name.endswith("__")
         decs = _decorator_tails(m)
-        if is_dunder or (decs & {"classmethod", "staticmethod", "abstractmethod", "overload"}):
+        if (
+            is_dunder
+            or (decs & {"classmethod", "staticmethod", "abstractmethod", "overload"})
+            or _is_not_implemented_sentinel(m)
+        ):
             continue
-        fields, calls, touched = _extract_method_self_footprint(m, all_names)
+        fields, calls, touched = _extract_method_self_footprint(m, all_names, written_fields)
         if not touched:
             if not (is_visitor and m.name.startswith("visit_")):
                 stateless.append(m.name)
@@ -240,7 +273,13 @@ def compute_class_cohesion(cls_node: ast.ClassDef) -> ClassCohesionMetrics:
     )
     fields = _collect_written_instance_fields(cls_node, methods)
     lcom4, stateless = (
-        (0, ()) if is_schema else _analyze_lcom4_and_stateless(methods, is_visitor=is_visitor)
+        (0, ())
+        if is_schema
+        else _analyze_lcom4_and_stateless(
+            methods,
+            written_fields=frozenset(fields),
+            is_visitor=is_visitor,
+        )
     )
     return ClassCohesionMetrics(
         class_name=cls_node.name,

@@ -1,8 +1,8 @@
 """Inspectors for Article IV (COG — Complexity, Dispatch Tables & Class Duty Isolation)."""
 
 import ast
-from collections import deque
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterator, Mapping, Sequence
+from dataclasses import dataclass
 from typing import Final
 
 from jezz.codes.ast_utils import (
@@ -157,35 +157,139 @@ class _RuntimeImportVisitor(ast.NodeVisitor):
         self._record_from_aliases(node)
 
 
-def _reachable_modules(start: str, graph: Mapping[str, frozenset[str]]) -> set[str]:
-    visited: set[str] = set()
-    queue: deque[str] = deque(graph.get(start, frozenset()))
-    budget = LoopBudget(max_steps=max(32, len(graph) * 8))
-    while queue:
-        budget.tick()
-        curr = queue.popleft()
-        if curr not in visited:
-            visited.add(curr)
-            queue.extend(graph.get(curr, frozenset()))
-    return visited
+@dataclass
+class _TarjanState:
+    """Mutable bookkeeping state for iterative O(V + E) Tarjan SCC discovery."""
+
+    next_index: int
+    indices: dict[str, int]
+    lowlink: dict[str, int]
+    stack: list[str]
+    on_stack: set[str]
+
+
+def _enter_tarjan_vertex(
+    vertex: str,
+    graph: Mapping[str, frozenset[str]],
+    state: _TarjanState,
+    frames: list[tuple[str, Iterator[str]]],
+) -> None:
+    state.indices[vertex] = state.next_index
+    state.lowlink[vertex] = state.next_index
+    state.next_index += 1
+    state.stack.append(vertex)
+    state.on_stack.add(vertex)
+    frames.append((vertex, iter(sorted(graph.get(vertex, frozenset())))))
+
+
+def _pop_tarjan_scc(root: str, state: _TarjanState) -> tuple[str, ...]:
+    members: list[str] = []
+    pop_budget = LoopBudget(max_steps=max(16, len(state.stack) + 4))
+    while state.stack:
+        pop_budget.tick()
+        member = state.stack.pop()
+        state.on_stack.discard(member)
+        members.append(member)
+        if member == root:
+            break
+    return tuple(sorted(members))
+
+
+def _finish_tarjan_vertex(
+    curr: str,
+    state: _TarjanState,
+    frames: list[tuple[str, Iterator[str]]],
+    cycles: list[tuple[str, ...]],
+) -> None:
+    if frames:
+        parent = frames[-1][0]
+        state.lowlink[parent] = min(state.lowlink[parent], state.lowlink[curr])
+    if state.lowlink[curr] == state.indices[curr]:
+        scc = _pop_tarjan_scc(curr, state)
+        if len(scc) >= 2:
+            cycles.append(scc)
+
+
+def _step_tarjan_edge(
+    curr: str,
+    nxt: str,
+    graph: Mapping[str, frozenset[str]],
+    state: _TarjanState,
+    frames: list[tuple[str, Iterator[str]]],
+) -> None:
+    if nxt not in state.indices:
+        _enter_tarjan_vertex(nxt, graph, state, frames)
+        return
+    if nxt in state.on_stack:
+        state.lowlink[curr] = min(state.lowlink[curr], state.indices[nxt])
 
 
 def _find_module_cycles(graph: Mapping[str, frozenset[str]]) -> list[tuple[str, ...]]:
-    """Return canonical sorted module cycles without recursion."""
-    reach_map = {mod: _reachable_modules(mod, graph) for mod in graph}
-    seen_cycles: set[tuple[str, ...]] = set()
-    for mod in sorted(graph):
-        if mod not in reach_map[mod]:
+    """Return canonical sorted module cycles in O(V + E) time without recursion."""
+    state = _TarjanState(next_index=0, indices={}, lowlink={}, stack=[], on_stack=set())
+    cycles: list[tuple[str, ...]] = []
+    edge_total = sum(len(targets) for targets in graph.values())
+    dfs_budget = LoopBudget(max_steps=max(64, len(graph) * 4 + edge_total * 4))
+
+    for seed in sorted(graph):
+        if seed in state.indices:
             continue
-        component = tuple(
-            sorted(
-                peer
-                for peer in graph
-                if peer == mod or (peer in reach_map[mod] and mod in reach_map[peer])
-            )
+        frames: list[tuple[str, Iterator[str]]] = []
+        _enter_tarjan_vertex(seed, graph, state, frames)
+        while frames:
+            dfs_budget.tick()
+            curr, neighbors = frames[-1]
+            nxt = next(neighbors, None)
+            if nxt is None:
+                frames.pop()
+                _finish_tarjan_vertex(curr, state, frames, cycles)
+                continue
+            _step_tarjan_edge(curr, nxt, graph, state, frames)
+    return sorted(cycles)
+
+
+def _format_bounded_list(items: Sequence[str], *, limit: int = 6, sep: str = ", ") -> str:
+    if len(items) <= limit:
+        return sep.join(items)
+    shown = sep.join(items[:limit])
+    return f"{shown}{sep}... (+{len(items) - limit} more)"
+
+
+def _resolve_relative_import_base(unit: SourceUnit, level: int) -> str:
+    base_parts = (
+        unit.module_name.split(".")
+        if unit.file_path.endswith("__init__.py")
+        else unit.module_name.split(".")[:-1]
+    )
+    up_steps = max(0, level - 1)
+    if up_steps > len(base_parts):
+        return ""
+    kept = base_parts[: len(base_parts) - up_steps]
+    return ".".join(kept)
+
+
+def _is_intra_package_submodule_import(
+    unit: SourceUnit,
+    imp_node: ast.ImportFrom,
+    priv_name: str,
+    known_mods: set[str],
+) -> bool:
+    if not unit.module_name:
+        return False
+    unit_root = unit.module_name.split(".", maxsplit=1)[0]
+    if imp_node.level == 0 and imp_node.module:
+        target_mod = f"{imp_node.module}.{priv_name}"
+        return target_mod in known_mods and imp_node.module.split(".", maxsplit=1)[0] == unit_root
+    if imp_node.level >= 1:
+        rel_base = _resolve_relative_import_base(unit, imp_node.level)
+        prefix = (
+            f"{rel_base}.{imp_node.module}"
+            if (rel_base and imp_node.module)
+            else (rel_base or imp_node.module or "")
         )
-        seen_cycles.add(component)
-    return sorted(seen_cycles)
+        candidate = f"{prefix}.{priv_name}" if prefix else priv_name
+        return candidate in known_mods and candidate.split(".", maxsplit=1)[0] == unit_root
+    return False
 
 
 @jezz_callable
@@ -211,6 +315,8 @@ def check_cog_003(units: Sequence[SourceUnit]) -> list[RawDiscrepancy]:
                 )
             )
         for imp_node, priv_name in visitor.private_imports:
+            if _is_intra_package_submodule_import(unit, imp_node, priv_name, known_mods):
+                continue
             discrepancies.append(
                 RawDiscrepancy(
                     code_id="JBC-COG-003",
@@ -234,11 +340,12 @@ def check_cog_003(units: Sequence[SourceUnit]) -> list[RawDiscrepancy]:
 
     for cycle in _find_module_cycles(graph):
         anchor_unit = units_by_mod[cycle[0]]
+        cycle_text = _format_bounded_list(cycle, limit=8, sep=" <-> ")
         discrepancies.append(
             RawDiscrepancy(
                 code_id="JBC-COG-003",
                 location=SourceSpan(file_path=anchor_unit.file_path, line=1, symbol=cycle[0]),
-                message=f"Cyclic runtime module dependency detected: {' <-> '.join(cycle)}.",
+                message=f"Cyclic runtime module dependency detected: {cycle_text}.",
                 remediation="Break import cycle by extracting shared types into a lower layer.",
             )
         )
@@ -371,7 +478,7 @@ def _evaluate_class_metrics(
             )
         )
     if m.stateless_methods:
-        joined = ", ".join(m.stateless_methods)
+        joined = _format_bounded_list(m.stateless_methods, limit=6)
         discrepancies.append(
             RawDiscrepancy(
                 code_id="JBC-COG-005",
@@ -412,6 +519,8 @@ def check_cog_005(unit: SourceUnit) -> list[RawDiscrepancy]:
     """Inspect ``unit`` for JBC-COG-005 (LCOM4 == 1, role purity, & class panel capacity)."""
     discrepancies: list[RawDiscrepancy] = []
     for cls_node in unit.classes:
+        if unit.is_test_file and cls_node.name.startswith("Test"):
+            continue
         metrics = compute_class_cohesion(cls_node)
         discrepancies.extend(_evaluate_class_metrics(unit.file_path, cls_node.col_offset, metrics))
     return discrepancies

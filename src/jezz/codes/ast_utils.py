@@ -265,7 +265,7 @@ def infer_is_test_file(file_path: IdentifierStr) -> bool:
     posix = PurePosixPath(file_path.replace("\\", "/"))
     name = posix.name
     return (
-        "tests" in posix.parts
+        bool({"tests", "test"} & set(posix.parts))
         or name.startswith("test_")
         or name.endswith("_test.py")
         or name == "conftest.py"
