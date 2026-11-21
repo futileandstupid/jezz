@@ -12,6 +12,9 @@
 4. **[Pillar 4 — Pydantic AI & Pydantic-Graph Runtime (`jezz.agents`)](docs/pillar-4-pydantic-ai-runtime.md):**
    Executable agent runtime combining least-privilege `WorkspaceSandbox` toolsets, `@output_validator` (`ModelRetry`) contract breakers, parallel `asyncio.TaskGroup` `DELEGATE`/`RECONCILE` slices, mandatory `RED_TAG` $\to$ `REVERT` $\to$ `HYPOTHESIZE` self-healing, and full `PCE` Dossier certification.
 
+## Empirical Validation Roadmap
+- **[Empirical Validation & Early Testing Roadmap](docs/empirical-testing-roadmap.md):** CLI harness, zero-cost brownfield `BuildingInspector` field trials, live-LLM `PceWorkflowOrchestrator` occupancy probes, and controlled `pydantic-evals` A/B benchmarks against prose "SDD".
+
 ## Verification Gates
 
 ```bash
