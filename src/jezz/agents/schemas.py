@@ -11,6 +11,7 @@ from jezz.behaviors.taxonomy import BehaviorKind
 from jezz.codes.permits import CertificateOfOccupancy, CodePermit, InspectionReport
 from jezz.guards import (
     STRICT_FROZEN_CONFIG,
+    WIRE_TUPLE_VALIDATOR,
     IdentifierStr,
     NonNegativeInt,
     ShortText,
@@ -92,8 +93,16 @@ class EpistemicObservation(BaseModel):
 
     model_config = STRICT_FROZEN_CONFIG
 
-    inspected_files: Annotated[tuple[IdentifierStr, ...], Field(max_length=128)]
-    discovered_symbols: Annotated[tuple[IdentifierStr, ...], Field(max_length=256)]
+    inspected_files: Annotated[
+        tuple[IdentifierStr, ...],
+        WIRE_TUPLE_VALIDATOR,
+        Field(max_length=128),
+    ]
+    discovered_symbols: Annotated[
+        tuple[IdentifierStr, ...],
+        WIRE_TUPLE_VALIDATOR,
+        Field(max_length=256),
+    ]
     summary: ShortText
 
 
@@ -102,8 +111,16 @@ class RemediationHypothesis(BaseModel):
 
     model_config = STRICT_FROZEN_CONFIG
 
-    root_causes: Annotated[tuple[ShortText, ...], Field(min_length=1, max_length=32)]
-    cited_code_ids: Annotated[tuple[IdentifierStr, ...], Field(min_length=1, max_length=64)]
+    root_causes: Annotated[
+        tuple[ShortText, ...],
+        WIRE_TUPLE_VALIDATOR,
+        Field(min_length=1, max_length=32),
+    ]
+    cited_code_ids: Annotated[
+        tuple[IdentifierStr, ...],
+        WIRE_TUPLE_VALIDATOR,
+        Field(min_length=1, max_length=64),
+    ]
     remediation_plan: ShortText
 
 
@@ -112,8 +129,16 @@ class ContractSpecificationBundle(BaseModel):
 
     model_config = STRICT_FROZEN_CONFIG
 
-    contract_patches: Annotated[tuple[FilePatchArtifact, ...], Field(min_length=1, max_length=32)]
-    declared_symbols: Annotated[tuple[IdentifierStr, ...], Field(min_length=1, max_length=128)]
+    contract_patches: Annotated[
+        tuple[FilePatchArtifact, ...],
+        WIRE_TUPLE_VALIDATOR,
+        Field(min_length=1, max_length=32),
+    ]
+    declared_symbols: Annotated[
+        tuple[IdentifierStr, ...],
+        WIRE_TUPLE_VALIDATOR,
+        Field(min_length=1, max_length=128),
+    ]
     summary: ShortText
 
 
@@ -122,9 +147,14 @@ class InstrumentationSuiteBundle(BaseModel):
 
     model_config = STRICT_FROZEN_CONFIG
 
-    test_patches: Annotated[tuple[FilePatchArtifact, ...], Field(min_length=1, max_length=32)]
+    test_patches: Annotated[
+        tuple[FilePatchArtifact, ...],
+        WIRE_TUPLE_VALIDATOR,
+        Field(min_length=1, max_length=32),
+    ]
     covered_invariant_ids: Annotated[
         tuple[IdentifierStr, ...],
+        WIRE_TUPLE_VALIDATOR,
         Field(min_length=1, max_length=128),
     ]
     summary: ShortText
@@ -137,6 +167,7 @@ class ConstructionPatchBundle(BaseModel):
 
     implementation_patches: Annotated[
         tuple[FilePatchArtifact, ...],
+        WIRE_TUPLE_VALIDATOR,
         Field(min_length=1, max_length=32),
     ]
     summary: ShortText

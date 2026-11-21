@@ -6,7 +6,14 @@ from typing import Annotated, Final, Self
 
 from pydantic import BaseModel, Field, model_validator
 
-from jezz.guards import STRICT_FROZEN_CONFIG, IdentifierStr, ShortText, jezz_callable
+from jezz.guards import (
+    STRICT_FROZEN_CONFIG,
+    WIRE_FROZENSET_VALIDATOR,
+    WIRE_TUPLE_VALIDATOR,
+    IdentifierStr,
+    ShortText,
+    jezz_callable,
+)
 
 METHODOLOGY_NAME: Final[str] = "Permit-and-Contract Engineering"
 METHODOLOGY_ACRONYM: Final[str] = "PCE"
@@ -89,8 +96,16 @@ class ModuleWriteScope(BaseModel):
     model_config = STRICT_FROZEN_CONFIG
 
     scope_id: IdentifierStr
-    owned_files: Annotated[frozenset[IdentifierStr], Field(min_length=1, max_length=256)]
-    contract_symbols: Annotated[tuple[IdentifierStr, ...], Field(min_length=1, max_length=128)]
+    owned_files: Annotated[
+        frozenset[IdentifierStr],
+        WIRE_FROZENSET_VALIDATOR,
+        Field(min_length=1, max_length=256),
+    ]
+    contract_symbols: Annotated[
+        tuple[IdentifierStr, ...],
+        WIRE_TUPLE_VALIDATOR,
+        Field(min_length=1, max_length=128),
+    ]
 
 
 def _verify_disjoint_scopes(scopes: tuple[ModuleWriteScope, ...]) -> None:
@@ -123,10 +138,26 @@ class EngineeringMandate(BaseModel):
     ]
     title: ShortText
     objective: ShortText
-    invariants: Annotated[tuple[DomainInvariant, ...], Field(min_length=1, max_length=128)]
-    write_scopes: Annotated[tuple[ModuleWriteScope, ...], Field(min_length=1, max_length=64)]
-    out_of_scope: Annotated[tuple[ShortText, ...], Field(max_length=64)] = ()
-    open_ambiguities: Annotated[tuple[ShortText, ...], Field(max_length=64)] = ()
+    invariants: Annotated[
+        tuple[DomainInvariant, ...],
+        WIRE_TUPLE_VALIDATOR,
+        Field(min_length=1, max_length=128),
+    ]
+    write_scopes: Annotated[
+        tuple[ModuleWriteScope, ...],
+        WIRE_TUPLE_VALIDATOR,
+        Field(min_length=1, max_length=64),
+    ]
+    out_of_scope: Annotated[
+        tuple[ShortText, ...],
+        WIRE_TUPLE_VALIDATOR,
+        Field(max_length=64),
+    ] = ()
+    open_ambiguities: Annotated[
+        tuple[ShortText, ...],
+        WIRE_TUPLE_VALIDATOR,
+        Field(max_length=64),
+    ] = ()
 
     @model_validator(mode="after")
     def _enforce_mandate_integrity(self) -> Self:

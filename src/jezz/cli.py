@@ -12,11 +12,11 @@ from types import MappingProxyType
 from typing import Annotated, Final
 
 from pydantic import Field, ValidationError
-from pydantic_ai.exceptions import UserError
+from pydantic_ai.exceptions import AgentRunError, ModelAPIError, UserError
 from pydantic_ai.models import infer_model
 
 from jezz.agents.orchestrator import PceWorkflowOrchestrator
-from jezz.agents.schemas import PceRunStatus, PceWorkflowResult
+from jezz.agents.schemas import PceRunStatus, PceRuntimeBudget, PceWorkflowResult
 from jezz.agents.specialists import GuardedModel, uniform_model_suite
 from jezz.agents.workspace import DynamicGatePort, InProcessGateRunner, UvSubprocessGateRunner
 from jezz.codes.ast_utils import SourceUnit, parse_source_unit
@@ -266,7 +266,17 @@ def _execute_pce_run(
         if ns.gate_runner == GateRunnerChoice.SUBPROCESS
         else InProcessGateRunner()
     )
-    orchestrator = PceWorkflowOrchestrator(uniform_model_suite(model), gate_runner=runner)
+    budget = PceRuntimeBudget(
+        agent_timeout_sec=min(240.0, timeout_sec),
+        request_limit_per_step=24,
+        tool_calls_limit_per_step=48,
+        total_tokens_limit_per_step=524_288,
+    )
+    orchestrator = PceWorkflowOrchestrator(
+        uniform_model_suite(model),
+        gate_runner=runner,
+        budget=budget,
+    )
     if ns.mandate is not None:
         mandate = EngineeringMandate.model_validate_json(_read_json_file(ns.mandate))
         coro = orchestrator.execute_mandate(resolved_repo, mandate, permit=permit)
@@ -362,7 +372,7 @@ def _build_cli_parser() -> argparse.ArgumentParser:
     src_grp.add_argument("--mandate", type=Path, default=None, help="EngineeringMandate JSON file.")
     p_run.add_argument("--permit", type=Path, default=None, help="Optional CodePermit JSON file.")
     p_run.add_argument("--gate-runner", choices=("subprocess", "in-process"), default="subprocess")
-    p_run.add_argument("--timeout-sec", type=float, default=180.0)
+    p_run.add_argument("--timeout-sec", type=float, default=600.0)
     p_run.add_argument("--write-dossier", default=None, help="Relative path to save dossier JSON.")
     p_run.add_argument(
         "--format", dest="output_format", choices=("markdown", "json"), default="markdown"
@@ -417,9 +427,12 @@ def main(
         ValidationError,
         ValueError,
         UserError,
+        AgentRunError,
+        ModelAPIError,
         BudgetExceededError,
         TimeoutError,
         OSError,
     ) as exc:
-        _write_line(err_stream, f"jezz error: {exc}")
+        detail = str(exc) or type(exc).__name__
+        _write_line(err_stream, f"jezz error: {detail}")
         return 2

@@ -42,7 +42,7 @@ from jezz.codes.inspector import (
     record_inspection_to_state,
 )
 from jezz.codes.permits import CodePermit, GateAttestation, InspectionReport
-from jezz.guards import BudgetExceededError, LoopBudget
+from jezz.guards import BudgetExceededError, ContainedPath, LoopBudget
 from jezz.methodology.dossier import EngineeringDossier, audit_pce_dossier
 from jezz.methodology.mandate import EngineeringMandate, ModuleWriteScope
 
@@ -104,7 +104,19 @@ def _apply_patches_to_state(
         state.workspace.modified_artifacts.add(contained.relative_posix)
 
 
-def _format_mandate_prompt(mandate: EngineeringMandate, guidance: str = "") -> str:
+def _existing_authorized_files(sandbox: WorkspaceSandbox) -> list[str]:
+    return [
+        rel
+        for rel in sorted(sandbox.authorized_files)
+        if ContainedPath.from_parts(sandbox.repo_root, rel).resolved_path.is_file()
+    ]
+
+
+def _format_mandate_prompt(
+    mandate: EngineeringMandate,
+    sandbox: WorkspaceSandbox,
+    guidance: str = "",
+) -> str:
     inv_lines = "; ".join(
         f"{inv.invariant_id} ({inv.verification_symbol}): {inv.statement}"
         for inv in mandate.invariants
@@ -113,11 +125,13 @@ def _format_mandate_prompt(mandate: EngineeringMandate, guidance: str = "") -> s
         f"{s.scope_id} -> files={sorted(s.owned_files)}, symbols={list(s.contract_symbols)}"
         for s in mandate.write_scopes
     )
+    existing = _existing_authorized_files(sandbox)
     base = (
         f"Mandate {mandate.mandate_id}: {mandate.title}\n"
         f"Objective: {mandate.objective}\n"
         f"Invariants: {inv_lines}\n"
-        f"Write Scopes: {scope_lines}"
+        f"Write Scopes: {scope_lines}\n"
+        f"Existing Authorized Files On Disk: {existing}"
     )
     if guidance:
         return f"{base}\nRemediation Guidance: {guidance}"
@@ -231,7 +245,7 @@ class InspectCodeNode(AtomicBehaviorGraphNode[PceGraphDeps, PceWorkflowResult]):
         obs, tel = await run_bounded_agent(
             build_inspect_agent(ctx.deps.models.inspect_model),
             behavior_kind=BehaviorKind.INSPECT_CODE,
-            prompt=_format_mandate_prompt(mandate),
+            prompt=_format_mandate_prompt(mandate, ctx.deps.sandbox),
             deps=_make_agent_deps(ctx.deps),
             budget=ctx.deps.budget,
         )
@@ -293,7 +307,7 @@ class SpecifyNode(AtomicBehaviorGraphNode[PceGraphDeps, PceWorkflowResult]):
         bundle, tel = await run_bounded_agent(
             build_specify_agent(ctx.deps.models.specify_model),
             behavior_kind=BehaviorKind.SPECIFY,
-            prompt=_format_mandate_prompt(mandate),
+            prompt=_format_mandate_prompt(mandate, ctx.deps.sandbox),
             deps=_make_agent_deps(ctx.deps),
             budget=ctx.deps.budget,
         )
@@ -317,7 +331,7 @@ class InstrumentNode(AtomicBehaviorGraphNode[PceGraphDeps, PceWorkflowResult]):
         bundle, tel = await run_bounded_agent(
             build_instrument_agent(ctx.deps.models.instrument_model),
             behavior_kind=BehaviorKind.INSTRUMENT,
-            prompt=_format_mandate_prompt(mandate),
+            prompt=_format_mandate_prompt(mandate, ctx.deps.sandbox),
             deps=_make_agent_deps(ctx.deps),
             budget=ctx.deps.budget,
         )
@@ -360,7 +374,7 @@ class SynthesizeNode(AtomicBehaviorGraphNode[PceGraphDeps, PceWorkflowResult]):
         bundle, tel = await run_bounded_agent(
             build_synthesize_agent(ctx.deps.models.synthesize_model),
             behavior_kind=BehaviorKind.SYNTHESIZE,
-            prompt=_format_mandate_prompt(mandate, ctx.deps.remediation_guidance),
+            prompt=_format_mandate_prompt(mandate, ctx.deps.sandbox, ctx.deps.remediation_guidance),
             deps=_make_agent_deps(ctx.deps),
             budget=ctx.deps.budget,
         )
@@ -376,7 +390,7 @@ async def _run_scoped_slice(
     scope: ModuleWriteScope,
 ) -> tuple[ModuleWriteScope, ConstructionPatchBundle, AgentInvocationTelemetry]:
     prompt = (
-        f"{_format_mandate_prompt(mandate, deps.remediation_guidance)}\n"
+        f"{_format_mandate_prompt(mandate, deps.sandbox, deps.remediation_guidance)}\n"
         f"Active Slice Scope: {scope.scope_id} owning {sorted(scope.owned_files)} "
         f"for symbols {list(scope.contract_symbols)}."
     )
@@ -569,7 +583,8 @@ class HypothesizeNode(AtomicBehaviorGraphNode[PceGraphDeps, PceWorkflowResult]):
         ctx: GraphRunContext[AgentExecutionState, PceGraphDeps],
     ) -> CheckpointImplNode:
         mandate = _require_mandate(ctx.deps)
-        prompt = f"{_format_mandate_prompt(mandate)}\nRED_TAG Citations: {self.red_tag_summary}"
+        base_prompt = _format_mandate_prompt(mandate, ctx.deps.sandbox)
+        prompt = f"{base_prompt}\nRED_TAG Citations: {self.red_tag_summary}"
         hypothesis, tel = await run_bounded_agent(
             build_hypothesize_agent(ctx.deps.models.hypothesize_model),
             behavior_kind=BehaviorKind.HYPOTHESIZE,

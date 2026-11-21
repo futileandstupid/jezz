@@ -5,6 +5,7 @@ import textwrap
 from pathlib import Path
 
 import pytest
+from pydantic_ai.exceptions import UsageLimitExceeded
 from pydantic_ai.messages import ModelMessage, ModelResponse, ToolCallPart
 from pydantic_ai.models.function import AgentInfo, FunctionModel
 
@@ -448,3 +449,35 @@ def test_cli_help_and_error_handling_return_expected_codes(tmp_path: Path) -> No
 
     err_bad_flag = io.StringIO()
     assert main(["--unknown-flag"], stderr=err_bad_flag) == 2
+
+
+def test_cli_run_formats_empty_timeout_and_usage_limit_errors_cleanly(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _write_text(tmp_path / "pyproject.toml", _PYPROJECT_SRC)
+
+    def _raise_timeout(*_args: object, **_kwargs: object) -> object:
+        empty_msg = ""
+        raise TimeoutError(empty_msg)
+
+    monkeypatch.setattr(cli_mod, "_execute_pce_run", _raise_timeout)
+    err_timeout = io.StringIO()
+    code_timeout = main(
+        ["run", str(tmp_path), "--model", "test", "--prompt", "Build calc"],
+        stderr=err_timeout,
+    )
+    assert code_timeout == 2
+    assert "jezz error: TimeoutError" in err_timeout.getvalue()
+
+    def _raise_limit(*_args: object, **_kwargs: object) -> object:
+        raise UsageLimitExceeded("Exceeded request_limit of 24")
+
+    monkeypatch.setattr(cli_mod, "_execute_pce_run", _raise_limit)
+    err_limit = io.StringIO()
+    code_limit = main(
+        ["run", str(tmp_path), "--model", "test", "--prompt", "Build calc"],
+        stderr=err_limit,
+    )
+    assert code_limit == 2
+    assert "Exceeded request_limit" in err_limit.getvalue()

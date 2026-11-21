@@ -24,19 +24,17 @@ With Pillars 1–4 implemented, self-audited, and passing (`jezz.behaviors`, `je
 
 ---
 
-## Track 3 — First Live-Model Occupancy Trial (`PceWorkflowOrchestrator`)
+## Track 3 — First Live-Model Occupancy Trial (`PceWorkflowOrchestrator`) — *Completed*
 
-**Goal:** Connect a live LLM provider (Gemini, Anthropic Claude, or OpenAI via `pydantic-ai`) + `UvSubprocessGateRunner` to `PceWorkflowOrchestrator` inside an isolated scratch workspace across three diagnostic probes:
+**Goal:** Connect a live LLM provider (`google:gemini-3.8-flash` via `pydantic-ai` v2.71.0) + `UvSubprocessGateRunner` (`pytest` + `Hypothesis` + `mypy --strict`) to `PceWorkflowOrchestrator` inside isolated scratch workspaces across three diagnostic probes:
 
 1. **Probe 3A — The Ambiguity Trap (`BHV-01 FRAME -> BHV-02 ELICIT`):**
-   - **Input:** Intentionally under-determined prompt (e.g., *"Implement a retryable webhook delivery service"* omitting backoff curve, max retries, and idempotency-key semantics).
-   - **Pass Criterion:** Live `frame_agent` populates `EngineeringMandate.open_ambiguities` and halts cleanly at `ElicitNode` (`PceRunStatus.HALTED_FOR_ELICITATION`) with zero disk mutations.
+   - **Result:** Passed (`HALTED_FOR_ELICITATION` in `2` requests / `1` tool call, surfacing 4 concrete webhook retry/persistence/timeout/idempotency ambiguities with zero disk mutations).
 2. **Probe 3B — Adversarial Domain Synthesis (`SPECIFY -> INSTRUMENT -> SYNTHESIZE`):**
-   - **Input:** Constrained financial/stateful problem where unconstrained LLMs default to `float`, `elif` ladders, or `dict[str, Any]` (e.g., tiered basis-point fee & ledger settlement).
-   - **Measured Telemetry:** Number of Tier-1 `@output_validator` (`ModelRetry`) turns vs. Tier-2 `RED_TAG -> BHV-20 REVERT -> BHV-08 HYPOTHESIZE` graph cycles required to earn a sealed `CertificateOfOccupancy`, plus `AgentInvocationTelemetry` token consumption.
+   - **Result:** Passed (`OCCUPANCY_CERTIFIED` on `MND-FEE-LEDGER-3B`, `0` violations across all 30 `JBC` v1.1 codes, `0` Tier-2 `RED_TAG` rollbacks due to Tier-1 `_tool_preview_rough_in` + `ModelRetry` absorption, sealed `sha256:739814a0...`).
 3. **Probe 3C — Multi-Scope Parallel Construction (`BHV-10 DELEGATE -> BHV-11 RECONCILE`):**
-   - **Input:** Multi-scope `EngineeringMandate` (2–3 disjoint `ModuleWriteScope`s).
-   - **Pass Criterion:** Concurrent `asyncio.TaskGroup` workers satisfy Phase III contracts without cross-module signature drift or write-set collisions.
+   - **Result:** Passed (`OCCUPANCY_CERTIFIED` on `MND-ESCROW-GRID-3C` across 3 concurrent `asyncio.TaskGroup` workers with zero signature drift or write-set collisions, sealed `sha256:5cf5aad1...`).
+- **Report & Runtime Calibrations:** [track-3-live-occupancy-trial.md](track-3-live-occupancy-trial.md).
 
 ---
 

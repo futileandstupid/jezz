@@ -57,6 +57,7 @@ from jezz.codes import (
     compute_units_digest,
     issue_certificate,
     load_workspace_units,
+    parse_source_unit,
 )
 from jezz.methodology import (
     DomainInvariant,
@@ -65,6 +66,7 @@ from jezz.methodology import (
     ModuleWriteScope,
     PcePhase,
     audit_pce_dossier,
+    extract_compiled_symbols,
 )
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -292,6 +294,60 @@ def test_execution_board_bijection_and_capability_isolation() -> None:
         binding = BEHAVIOR_EXECUTION_BOARD[gate_kind]
         assert binding.engine_kind == ExecutionEngineKind.DETERMINISTIC_ENGINE
         assert binding.toolset_access == ToolsetAccessLevel.NONE
+
+
+def test_wire_collection_validators_accept_json_lists_while_preserving_strict_scalars() -> None:
+    raw_wire_dict: dict[str, object] = {
+        "mandate": {
+            "mandate_id": "MND-WIRE-001",
+            "title": "Validate Python dict wire payloads with JSON list arrays",
+            "objective": "Ensure GoogleModel and AnthropicModel dict tool calls validate cleanly.",
+            "invariants": [
+                {
+                    "invariant_id": "INV-001",
+                    "statement": "Settled integer balance equals initial balance minus debit.",
+                    "verification_symbol": "test_wire_balance",
+                }
+            ],
+            "write_scopes": [
+                {
+                    "scope_id": "wire_scope",
+                    "owned_files": ["src/wire/mod.py", "tests/test_wire.py"],
+                    "contract_symbols": ["WireOrder", "test_wire_balance"],
+                }
+            ],
+            "out_of_scope": ["External HTTP transport"],
+            "open_ambiguities": [],
+        },
+        "framing_notes": "Parsed from pre-decoded provider JSON dictionary.",
+    }
+    proposal = FramedMandateProposal.model_validate(raw_wire_dict)
+    assert proposal.mandate.write_scopes[0].owned_files == frozenset(
+        {"src/wire/mod.py", "tests/test_wire.py"}
+    )
+    assert proposal.mandate.out_of_scope == ("External HTTP transport",)
+
+    # Strict inner scalar validation must still reject int->str coercion and string->tuple splitting
+    bad_scalar = {**raw_wire_dict, "framing_notes": 12345}
+    with pytest.raises(ValidationError):
+        FramedMandateProposal.model_validate(bad_scalar)
+
+    bad_seq: dict[str, object] = {
+        "inspected_files": "src/not_a_list.py",
+        "discovered_symbols": ["WireOrder"],
+        "summary": "Should reject bare string where tuple/list expected.",
+    }
+    with pytest.raises(ValidationError):
+        EpistemicObservation.model_validate(bad_seq)
+
+    unit = parse_source_unit(
+        "src/wire/mod.py",
+        "class WireOrder:\n    def execute(self) -> int:\n        return 1\n",
+    )
+    compiled = extract_compiled_symbols((unit,))
+    assert "wire.mod.WireOrder" in compiled
+    assert "src.wire.mod.WireOrder" in compiled
+    assert "src.wire.mod.WireOrder.execute" in compiled
 
 
 def test_file_patch_artifact_rejects_syntax_errors_and_sandbox_locks_scope(

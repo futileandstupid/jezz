@@ -360,6 +360,25 @@ def _validate_synthesize_output(
     return bundle
 
 
+_JBC_STATUTORY_BRIEF: Final[str] = (
+    "JBC v1.1 Statutory Requirements: "
+    "(1) Every BaseModel must set model_config = STRICT_FROZEN_CONFIG (from jezz.guards) or "
+    "ConfigDict(frozen=True, extra='forbid', strict=True, allow_inf_nan=False), and bound every "
+    "field via jezz.guards (PositiveInt, NonNegativeInt, BoundedInt, FiniteFloat, IdentifierStr, "
+    "ShortText), StrEnum/Literal/BaseModel, or Annotated[..., Field(...)]. "
+    "(2) Every callable requires 100% parameter and return type annotations with zero Any and no "
+    "untyped dict/Mapping[str, object] parameters or returns; decorate every public non-test "
+    "callable with @jezz_callable (from jezz.guards) and bound all public scalar parameters. "
+    "(3) Attach falsifiable @icontract.require / @icontract.ensure predicates (@ensure must "
+    "reference result; guard divisor parameters); raise specific exceptions with diagnostic "
+    "messages ('from err' inside except); never use silent except, while without "
+    "LoopBudget.tick(), print(), TODO/FIXME, or # noqa/# type: ignore. "
+    "(4) Respect structural limits: <= 35 statements, <= 6 parameters, nesting <= 4, Cognitive "
+    "Complexity <= 15, <= 1 elif per if (use MappingProxyType dispatch tables, match, or early "
+    "guard returns), and never place else/elif after return/raise/break/continue."
+)
+
+
 @jezz_callable
 def build_frame_agent(model: GuardedModel) -> GuardedAgent[FramedMandateProposal]:
     """Build BHV-01 FRAME specialist producing typed anti-Agile EngineeringMandates."""
@@ -371,9 +390,13 @@ def build_frame_agent(model: GuardedModel) -> GuardedAgent[FramedMandateProposal
         retries=2,
         toolsets=(build_readonly_toolset(),),
         instructions=(
-            "Convert the engineering request into a concise EngineeringMandate. "
-            "Never emit Agile user stories or Markdown checkboxes; populate open_ambiguities "
-            "whenever domain constraints remain under-determined."
+            "Convert the engineering request into a concise EngineeringMandate (mandate_id "
+            "matching ^MND-[A-Za-z0-9_-]+$, invariant_id matching ^INV-[0-9]{3,6}$). "
+            "State invariants as strict falsifiable conditions; never emit Agile user stories "
+            "('As a ..., I want ...'), Markdown checkboxes ('- [ ]'), ceremony jargon, or weasel "
+            "modals ('should'/'might'/'ideally'/'maybe'/'try to'). Populate open_ambiguities "
+            "whenever material domain constraints, bounds, failure policies, or edge-case "
+            "semantics are under-determined rather than guessing."
         ),
     )
 
@@ -388,7 +411,10 @@ def build_inspect_agent(model: GuardedModel) -> GuardedAgent[EpistemicObservatio
         name="jezz_code_inspector",
         retries=2,
         toolsets=(build_readonly_toolset(),),
-        instructions="Inspect workspace files read-only and summarize grounded symbols.",
+        instructions=(
+            "Call _tool_list_authorized_files and inspect existing workspace files read-only "
+            "(if already present on disk) to summarize grounded symbols and module layout."
+        ),
     )
 
 
@@ -403,8 +429,13 @@ def build_specify_agent(model: GuardedModel) -> GuardedAgent[ContractSpecificati
         retries=3,
         toolsets=(build_scoped_write_toolset(),),
         instructions=(
-            "Author Phase III strict Pydantic schemas, bounded Annotated types, @jezz_callable "
-            "signatures, and @icontract obligations satisfying all JBC v1.1 building codes."
+            "Author Phase III data contracts (strict Pydantic BaseModels, StrEnums, and bounded "
+            "Annotated type aliases) in authorized non-test src/... contract file(s). Never write "
+            "tests/... files and never emit unimplemented pass/.../NotImplementedError function "
+            "stubs (concrete implementation callables belong in Phase IV SYNTHESIZE). Include "
+            "only symbols defined in contract_patches inside declared_symbols. Draft the complete "
+            "file in one pass and call _tool_preview_rough_in once on the full candidate file "
+            f"(not partial snippets) before returning. {_JBC_STATUTORY_BRIEF}"
         ),
     )
     agent.output_validator(_validate_specify_output)
@@ -422,8 +453,12 @@ def build_instrument_agent(model: GuardedModel) -> GuardedAgent[InstrumentationS
         retries=3,
         toolsets=(build_scoped_write_toolset(),),
         instructions=(
-            "Author pytest and Hypothesis falsification tests bound to Mandate invariants. "
-            "Never emit assert True theatre or gate suppression comments."
+            "Read existing Phase III src/... contract files listed under 'Existing Authorized "
+            "Files On Disk' via _tool_read_workspace_file so imports and field names match "
+            "exactly. Author pytest and Hypothesis (@given) falsification suites under authorized "
+            "tests/... file(s) defining every mandated invariant verification_symbol. Never emit "
+            "vacuous assert True theatre or gate suppression comments, and preview each complete "
+            f"test file once via _tool_preview_rough_in before returning. {_JBC_STATUTORY_BRIEF}"
         ),
     )
     agent.output_validator(_validate_instrument_output)
@@ -441,8 +476,13 @@ def build_synthesize_agent(model: GuardedModel) -> GuardedAgent[ConstructionPatc
         retries=3,
         toolsets=(build_scoped_write_toolset(),),
         instructions=(
-            "Synthesize Phase IV implementation within your authorized ModuleWriteScope "
-            "without weakening Phase III contracts or violating JBC v1.1."
+            "Read existing Phase III contract and tests/... files listed under 'Existing "
+            "Authorized Files On Disk' via _tool_read_workspace_file so imports, types, and "
+            "postconditions align with locked contracts and falsification suites. Emit complete "
+            "src/... implementation patches strictly within your authorized ModuleWriteScope "
+            "without modifying locked tests/... files or removing Phase III contract symbols, and "
+            "preview each complete file once via _tool_preview_rough_in before returning. "
+            f"{_JBC_STATUTORY_BRIEF}"
         ),
     )
     agent.output_validator(_validate_synthesize_output)

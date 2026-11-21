@@ -330,7 +330,9 @@ def _tool_read_workspace_file(
     """Read UTF-8 source text of an existing file inside the workspace root."""
     try:
         return ctx.deps.sandbox.read_file(rel_path)
-    except (FileNotFoundError, ValueError) as exc:
+    except FileNotFoundError:
+        return f"# ABSENT: '{rel_path}' has not been created on disk yet.\n"
+    except ValueError as exc:
         raise ModelRetry(str(exc)) from exc
 
 

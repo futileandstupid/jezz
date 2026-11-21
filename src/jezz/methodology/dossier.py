@@ -105,21 +105,31 @@ class DossierAuditReport(BaseModel):
         return "\n".join(lines)
 
 
+def _add_qualified_symbol(
+    symbols: set[str],
+    prefix: str,
+    src_prefix: str,
+    name: str,
+) -> None:
+    symbols.add(name)
+    if prefix:
+        symbols.add(f"{prefix}{name}")
+    if src_prefix:
+        symbols.add(f"{src_prefix}{name}")
+
+
 @jezz_callable
 def extract_compiled_symbols(units: Sequence[SourceUnit]) -> frozenset[IdentifierStr]:
     """Extract all compiled class and callable symbols (short and module-qualified) in ``units``."""
     symbols: set[str] = set()
     for unit in units:
         prefix = f"{unit.module_name}." if unit.module_name else ""
+        src_prefix = f"src.{prefix}" if (prefix and unit.file_path.startswith("src/")) else ""
         for cls_node in unit.classes:
-            symbols.add(cls_node.name)
-            if prefix:
-                symbols.add(f"{prefix}{cls_node.name}")
+            _add_qualified_symbol(symbols, prefix, src_prefix, cls_node.name)
         for ctx in unit.callables:
-            symbols.add(ctx.node.name)
-            symbols.add(ctx.qualname)
-            if prefix:
-                symbols.add(f"{prefix}{ctx.qualname}")
+            _add_qualified_symbol(symbols, prefix, src_prefix, ctx.node.name)
+            _add_qualified_symbol(symbols, prefix, src_prefix, ctx.qualname)
     return frozenset(symbols)
 
 

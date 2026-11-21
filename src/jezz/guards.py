@@ -8,6 +8,7 @@ from typing import Annotated, Final, Self
 
 from pydantic import (
     BaseModel,
+    BeforeValidator,
     ConfigDict,
     Field,
     GetCoreSchemaHandler,
@@ -47,6 +48,18 @@ type NonNegativeInt = Annotated[int, Field(ge=0, le=1_000_000_000_000_000_000)]
 type PositiveInt = Annotated[int, Field(ge=1, le=1_000_000_000_000_000_000)]
 type BoundedInt = Annotated[int, Field(ge=-1_000_000_000_000_000_000, le=1_000_000_000_000_000_000)]
 type FiniteFloat = Annotated[float, Field(ge=-1e18, le=1e18, allow_inf_nan=False)]
+
+
+def _coerce_json_list_to_tuple(value: object) -> object:
+    return tuple(value) if isinstance(value, list) else value
+
+
+def _coerce_json_list_to_frozenset(value: object) -> object:
+    return frozenset(value) if isinstance(value, list) else value
+
+
+WIRE_TUPLE_VALIDATOR: Final[BeforeValidator] = BeforeValidator(_coerce_json_list_to_tuple)
+WIRE_FROZENSET_VALIDATOR: Final[BeforeValidator] = BeforeValidator(_coerce_json_list_to_frozenset)
 
 
 def _build_lazy_breaker[**P, R](
