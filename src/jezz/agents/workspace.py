@@ -1,24 +1,33 @@
 """Pillar 4: Contained workspace sandbox, checkpoint rollback, toolsets, and dynamic gates."""
 
+import ast
+import hashlib
+import importlib
+import shutil
 import subprocess
+import sys
 import time
 import tracemalloc
 from collections.abc import Callable, Sequence
 from collections.abc import Set as AbstractSet
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Annotated, Protocol, runtime_checkable
+from types import ModuleType
+from typing import Annotated, Final, Protocol, runtime_checkable
 
-from pydantic import Field
+from pydantic import BaseModel, Field
 from pydantic_ai import FunctionToolset, ModelRetry, RunContext
 
-from jezz.codes.ast_utils import SourceUnit, parse_source_unit
+from jezz.agents.schemas import FilePatchArtifact
+from jezz.codes.ast_utils import SourceUnit, dotted_expr_name, parse_source_unit
 from jezz.codes.inspector import BuildingInspector, load_workspace_units
 from jezz.codes.permits import CodePermit, GateAttestation, GateKind
 from jezz.guards import (
+    BoundedText,
     ContainedPath,
     IdentifierStr,
     InstanceGuard,
+    LoopBudget,
     PositiveInt,
     ShortText,
     SourceCodeText,
@@ -356,23 +365,241 @@ def _tool_inspect_file_symbols(
     return tuple(sorted(extract_compiled_symbols((unit,))))
 
 
+_RUNTIME_IMPORT_ERRORS = (
+    ImportError,
+    SyntaxError,
+    TypeError,
+    ValueError,
+    NameError,
+    AttributeError,
+    LookupError,
+    RuntimeError,
+    AssertionError,
+    ArithmeticError,
+    OSError,
+)
+
+
+def _ensure_pkg_inits(src_root: Path, written_file: Path) -> None:
+    curr = written_file.parent
+    budget = LoopBudget(max_steps=64)
+    while curr != src_root and curr.is_relative_to(src_root):
+        budget.tick()
+        rel_init = (curr / "__init__.py").relative_to(src_root).as_posix()
+        init_contained = ContainedPath.from_parts(src_root, rel_init)
+        if not init_contained.resolved_path.exists():
+            _write_contained_utf8(init_contained, '"""Staged package."""\n')
+        curr = curr.parent
+
+
+def _stage_candidate_src_tree(
+    repo_root: Path,
+    src_patches: Sequence[FilePatchArtifact],
+) -> tuple[ContainedPath, tuple[str, ...], tuple[tuple[str, str], ...]]:
+    hasher = hashlib.sha256()
+    for p in src_patches:
+        hasher.update(p.file_path.encode("utf-8"))
+    stage = ContainedPath.from_parts(repo_root, f".jezz_smoke_{hasher.hexdigest()[:12]}")
+    if stage.resolved_path.exists():
+        shutil.rmtree(stage.resolved_path)
+    stage_src = ContainedPath.from_parts(stage.resolved_path, "src")
+    stage_src.resolved_path.mkdir(parents=True, exist_ok=True)
+
+    orig_src = ContainedPath.from_parts(repo_root, "src")
+    if orig_src.resolved_path.is_dir():
+        for existing in sorted(orig_src.resolved_path.rglob("*.py")):
+            rel = existing.relative_to(repo_root).as_posix()
+            src_contained = ContainedPath.from_parts(repo_root, rel)
+            dst_contained = ContainedPath.from_parts(stage.resolved_path, rel)
+            _write_contained_utf8(dst_contained, read_bounded_text(src_contained))
+
+    roots: set[str] = set()
+    mod_pairs: list[tuple[str, str]] = []
+    for patch in src_patches:
+        dst = ContainedPath.from_parts(stage.resolved_path, patch.file_path)
+        _write_contained_utf8(dst, patch.source_code)
+        _ensure_pkg_inits(stage_src.resolved_path, dst.resolved_path)
+        unit = parse_source_unit(patch.file_path, patch.source_code)
+        if unit.module_name:
+            roots.add(unit.module_name.split(".", maxsplit=1)[0])
+            mod_pairs.append((patch.file_path, unit.module_name))
+    return stage, tuple(sorted(roots)), tuple(mod_pairs)
+
+
+def _evict_staged_modules(roots: Sequence[str]) -> None:
+    stale = [
+        name
+        for name in list(sys.modules)
+        if any(name == r or name.startswith(f"{r}.") for r in roots)
+    ]
+    for name in stale:
+        sys.modules.pop(name, None)
+    importlib.invalidate_caches()
+
+
+def _rebuild_module_models(mod: ModuleType) -> None:
+    for obj in list(vars(mod).values()):
+        if isinstance(obj, type) and issubclass(obj, BaseModel) and obj is not BaseModel:
+            obj.model_rebuild(force=True)
+
+
+def _is_ignorable_missing_sibling(
+    exc: BaseException,
+    roots: Sequence[str],
+    ignore_missing: bool,
+) -> bool:
+    if not ignore_missing or not isinstance(exc, ModuleNotFoundError) or not exc.name:
+        return False
+    missing_root = exc.name.split(".", maxsplit=1)[0]
+    return missing_root in roots
+
+
+@jezz_callable
+def verify_runtime_importable_patches(
+    sandbox: Annotated[WorkspaceSandbox, InstanceGuard(WorkspaceSandbox)],
+    patches: Annotated[Sequence[FilePatchArtifact], Field(max_length=64)],
+    *,
+    ignore_missing_local_imports: bool = False,
+) -> ShortText | None:
+    """Import candidate ``src/`` patches in an isolated staging dir and rebuild BaseModels."""
+    src_patches = [
+        p for p in patches if p.file_path.startswith("src/") and p.file_path.endswith(".py")
+    ]
+    if not src_patches:
+        return None
+    stage, roots, mod_pairs = _stage_candidate_src_tree(sandbox.repo_root, src_patches)
+    stage_src_str = str(ContainedPath.from_parts(stage.resolved_path, "src").resolved_path)
+    _evict_staged_modules(roots)
+    sys.path.insert(0, stage_src_str)
+    try:
+        for rel_path, mod_name in mod_pairs:
+            try:
+                loaded = importlib.import_module(mod_name)
+                _rebuild_module_models(loaded)
+            except _RUNTIME_IMPORT_ERRORS as exc:
+                if _is_ignorable_missing_sibling(exc, roots, ignore_missing_local_imports):
+                    continue
+                detail = str(exc).splitlines()[0][:260] if str(exc) else type(exc).__name__
+                return (
+                    f"Runtime import/schema error in '{rel_path}': {type(exc).__name__}: {detail}"
+                )
+    finally:
+        if stage_src_str in sys.path:
+            sys.path.remove(stage_src_str)
+        _evict_staged_modules(roots)
+        if stage.resolved_path.exists():
+            shutil.rmtree(stage.resolved_path)
+    return None
+
+
+_JEZZ_PEP695_ALIASES: Final[frozenset[str]] = frozenset(
+    {
+        "IdentifierStr",
+        "NonEmptyStr",
+        "ShortText",
+        "BoundedText",
+        "SourceCodeText",
+        "LineNumber",
+        "ColumnOffset",
+        "NonNegativeInt",
+        "PositiveInt",
+        "BoundedInt",
+        "FiniteFloat",
+    }
+)
+
+
+def _collect_known_type_aliases(
+    units: Sequence[SourceUnit],
+) -> tuple[set[str], set[str]]:
+    all_aliases: set[str] = set(_JEZZ_PEP695_ALIASES)
+    nongeneric_aliases: set[str] = set(_JEZZ_PEP695_ALIASES)
+    for unit in units:
+        for stmt in ast.walk(unit.tree):
+            if isinstance(stmt, ast.TypeAlias):
+                name = stmt.name.id
+                all_aliases.add(name)
+                if not stmt.type_params:
+                    nongeneric_aliases.add(name)
+    return all_aliases, nongeneric_aliases
+
+
+def _scan_unit_type_alias_misuse(
+    unit: SourceUnit,
+    all_aliases: AbstractSet[str],
+    nongeneric_aliases: AbstractSet[str],
+) -> str | None:
+    shadowed = {c.name for c in unit.classes} | {fn.node.name for fn in unit.callables}
+    for node in ast.walk(unit.tree):
+        if isinstance(node, ast.Call):
+            tail = dotted_expr_name(node.func).rsplit(".", maxsplit=1)[-1]
+            if tail in all_aliases and tail not in shadowed:
+                return (
+                    f"'{unit.file_path}' (L{node.lineno}): PEP 695 type alias '{tail}' is a "
+                    f"TypeAliasType and is not callable at runtime ('{tail}(...)' raises "
+                    "TypeError). Pass a plain value literal instead."
+                )
+        if isinstance(node, ast.Subscript):
+            tail = dotted_expr_name(node.value).rsplit(".", maxsplit=1)[-1]
+            if tail in nongeneric_aliases and tail not in shadowed:
+                return (
+                    f"'{unit.file_path}' (L{node.lineno}): Non-generic PEP 695 type alias "
+                    f"'{tail}' is not subscriptable ('{tail}[...]' raises TypeError). Use "
+                    "Annotated[..., Field(...)] instead."
+                )
+    return None
+
+
+@jezz_callable
+def find_type_alias_misuse(
+    candidate_units: Annotated[Sequence[SourceUnit], Field(max_length=64)],
+    workspace_units: Annotated[Sequence[SourceUnit], Field(max_length=512)] = (),
+) -> ShortText | None:
+    """Detect runtime-fatal calls or subscripts on PEP 695 TypeAliasType definitions."""
+    all_aliases, nongeneric_aliases = _collect_known_type_aliases(
+        (*workspace_units, *candidate_units)
+    )
+    for unit in candidate_units:
+        issue = _scan_unit_type_alias_misuse(unit, all_aliases, nongeneric_aliases)
+        if issue is not None:
+            return issue
+    return None
+
+
 def _tool_preview_rough_in(
     ctx: RunContext[JezzAgentDeps],
     rel_path: IdentifierStr,
     candidate_source: SourceCodeText,
-) -> ShortText:
-    """Run deterministic JBC v1.1 rough-in inspection on ``candidate_source`` without writing."""
+) -> BoundedText:
+    """Run deterministic JBC v1.1 rough-in and runtime-import inspection without writing."""
     try:
         unit = parse_source_unit(rel_path, candidate_source)
     except SyntaxError as exc:
         raise ModelRetry(f"SyntaxError at line {exc.lineno}: {exc.msg}") from exc
     report = ctx.deps.inspector.inspect_rough_in((unit,), permit=ctx.deps.permit)
-    if report.is_occupiable:
-        return f"APPROVED: 0 unwaived JBC violations in '{rel_path}'."
-    lines = [
-        f"{f.code_id} (L{f.location.line}): {f.message}" for f in report.unwaived_violations()[:8]
-    ]
-    return f"RED_TAG ({len(report.unwaived_violations())} violation(s)): " + " | ".join(lines)
+    if not report.is_occupiable:
+        lines = [
+            f"{f.code_id} (L{f.location.line}): {f.message} -> Fix: {f.remediation}"
+            for f in report.unwaived_violations()[:8]
+        ]
+        return f"RED_TAG ({len(report.unwaived_violations())} violation(s)): " + " | ".join(lines)
+    alias_err = find_type_alias_misuse((unit,), ctx.deps.sandbox.load_units())
+    if alias_err is not None:
+        return f"RED_TAG (type alias misuse): {alias_err}"
+    if rel_path.startswith("src/") and rel_path.endswith(".py"):
+        probe = FilePatchArtifact(
+            file_path=rel_path,
+            source_code=candidate_source,
+            rationale="rough-in preview",
+        )
+        runtime_err = verify_runtime_importable_patches(
+            ctx.deps.sandbox,
+            (probe,),
+            ignore_missing_local_imports=True,
+        )
+        if runtime_err is not None:
+            return f"RED_TAG (runtime import gate): {runtime_err}"
+    return f"APPROVED: 0 unwaived JBC violations in '{rel_path}'."
 
 
 @jezz_callable

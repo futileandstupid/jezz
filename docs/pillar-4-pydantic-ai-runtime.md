@@ -49,12 +49,14 @@ Every `BehaviorKind` in the $F_8 = 21$ basis is mapped bijectively inside `BEHAV
 
 `jezz.agents` enforces contracts at two complementary levels:
 
-### Tier 1 — Intra-Step `pydantic-ai` Breakers (`specialists.py`)
+### Tier 1 — Intra-Step `pydantic-ai` Breakers (`workspace.py`, `specialists.py`, `nodes.py`)
 - **Syntax & Closed-Schema Gate:** `FilePatchArtifact` parses every `.py` payload via `ast.parse` inside a Pydantic `@model_validator`, turning syntax errors into immediate structured-output retries.
-- **Scope & Symbol `@output_validator`s:**
-  - `build_specify_agent` runs `BuildingInspector.inspect_rough_in` directly on Phase III contract patches and verifies all `declared_symbols` compile—raising `pydantic_ai.ModelRetry` with exact `JBC` citations if any contract violates `JBC` v1.1.
-  - `build_instrument_agent` runs `BuildingInspector.inspect_rough_in` on Phase III test files—blocking `assert True` theatre (`JBC-VRF-001`) or `# noqa` suppression (`JBC-VRF-004`) via `ModelRetry` before Construction starts.
-  - `build_synthesize_agent` enforces `ModuleWriteScope` file boundaries and verifies all mandated `contract_symbols` and `verification_symbol`s exist in the combined AST.
+- **PEP 695 `TypeAliasType` Misuse Gate (`find_type_alias_misuse`):** Deterministically scans candidate `src/` and `tests/` ASTs against `jezz.guards` and workspace `type X = ...` definitions, blocking runtime-fatal calls (`IdentifierStr("x")`) and non-generic subscripts (`BoundedInt[0, 10_000]`) in `<1ms` before Phase III locks `checkpoint_impl`.
+- **Staged Runtime Import & Schema Rebuild Gate (`verify_runtime_importable_patches`):** Stages `src/` trees + candidate patches into an isolated contained directory, imports candidate modules via `importlib.import_module`, and invokes `cls.model_rebuild(force=True)` on every `BaseModel` subclass (catching `TypeError`, `PydanticUserError`, `AssertionError`/`icontract.ViolationError`, and import-time metaclass crashes during `_tool_preview_rough_in`, `_validate_specify_output`, and `_validate_synthesize_output`).
+- **Scope, Remediation, & Inline Snapshot Context:**
+  - `_tool_preview_rough_in` and `_parse_and_rough_in_check` attach exact line numbers and statutory `-> Fix: {f.remediation}` instructions to every `RED_TAG` violation.
+  - `_JBC_CANONICAL_EXEMPLAR` provides concise domain-agnostic `jezz.guards`, `LoopBudget`, `MappingProxyType`, and `Annotated[int, Field(...)]` idioms, while `_render_inline_authorized_snapshots` (`nodes.py`) embeds existing authorized Phase III files (`<= 24_000` chars) directly into downstream prompts to eliminate redundant read-tool roundtrips.
+  - `build_specify_agent`, `build_instrument_agent`, and `build_synthesize_agent` enforce `ModuleWriteScope` file boundaries and verify all mandated `contract_symbols` and `verification_symbol`s exist in the combined AST.
 - **Resource Breakers (`run_bounded_agent`):** Every `agent.run(...)` call is wrapped in `async with asyncio.timeout(budget.agent_timeout_sec):` (`JBC-FLT-005`) and `pydantic_ai.UsageLimits` (`request_limit`, `tool_calls_limit`, `total_tokens_limit`).
 
 ### Tier 2 — Inter-Step `pydantic-graph` State Machine (`nodes.py`, `orchestrator.py`)

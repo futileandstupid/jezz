@@ -112,6 +112,25 @@ def _existing_authorized_files(sandbox: WorkspaceSandbox) -> list[str]:
     ]
 
 
+def _render_inline_authorized_snapshots(
+    sandbox: WorkspaceSandbox,
+    existing_paths: Sequence[str],
+    *,
+    max_total_chars: int = 24_000,
+) -> str:
+    if not existing_paths:
+        return ""
+    sections: list[str] = []
+    used = 0
+    for rel in existing_paths:
+        content = sandbox.read_file(rel)
+        if used + len(content) > max_total_chars:
+            return ""
+        sections.append(f"### {rel}\n```python\n{content.rstrip()}\n```")
+        used += len(content)
+    return "\nExisting Authorized File Snapshots:\n" + "\n".join(sections)
+
+
 def _format_mandate_prompt(
     mandate: EngineeringMandate,
     sandbox: WorkspaceSandbox,
@@ -126,12 +145,14 @@ def _format_mandate_prompt(
         for s in mandate.write_scopes
     )
     existing = _existing_authorized_files(sandbox)
+    snapshots = _render_inline_authorized_snapshots(sandbox, existing)
     base = (
         f"Mandate {mandate.mandate_id}: {mandate.title}\n"
         f"Objective: {mandate.objective}\n"
         f"Invariants: {inv_lines}\n"
         f"Write Scopes: {scope_lines}\n"
         f"Existing Authorized Files On Disk: {existing}"
+        f"{snapshots}"
     )
     if guidance:
         return f"{base}\nRemediation Guidance: {guidance}"

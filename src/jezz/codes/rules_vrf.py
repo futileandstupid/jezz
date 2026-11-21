@@ -55,7 +55,7 @@ def _callable_has_real_verification(ctx: CallableContext) -> bool:
         if isinstance(node, ast.Call):
             tail = dotted_expr_name(node.func).rsplit(".", maxsplit=1)[-1].lstrip("_")
             if tail in {"raises", "warns", "fail", "assert"} or tail.startswith(
-                ("assert_", "verify_", "validate_", "check_")
+                ("assert_", "verify_", "validate_", "check_", "expect_")
             ):
                 return True
     return False

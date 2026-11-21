@@ -7,6 +7,7 @@ from types import MappingProxyType
 from typing import Annotated, Final
 
 import icontract
+from pydantic import Field
 from pydantic_ai import Agent, ModelRetry, RunContext, UsageLimits
 from pydantic_ai.models import Model
 
@@ -28,11 +29,13 @@ from jezz.agents.workspace import (
     JezzAgentDeps,
     build_readonly_toolset,
     build_scoped_write_toolset,
+    find_type_alias_misuse,
+    verify_runtime_importable_patches,
 )
 from jezz.behaviors.fibonacci import FIBONACCI_BASIS_CARDINALITY, is_fibonacci
 from jezz.behaviors.taxonomy import BEHAVIOR_BASIS, BehaviorKind, WorkspaceEffect
 from jezz.codes.ast_utils import SourceUnit, parse_source_unit
-from jezz.guards import InstanceGuard, NonEmptyStr, jezz_callable
+from jezz.guards import InstanceGuard, jezz_callable
 from jezz.methodology.dossier import extract_compiled_symbols
 
 DETERMINISTIC_BEHAVIOR_KINDS: Final[frozenset[BehaviorKind]] = frozenset(
@@ -246,6 +249,7 @@ class PceModelSuite:
 
 type GuardedModel = Annotated[Model, InstanceGuard(Model)]
 type GuardedAgent[OutT] = Annotated[Agent[JezzAgentDeps, OutT], InstanceGuard(Agent)]
+type BoundedPrompt = Annotated[str, Field(min_length=1, max_length=65_536)]
 
 
 @jezz_callable
@@ -287,8 +291,14 @@ def _parse_and_rough_in_check(
     units = _enforce_patch_scope_and_parse(patches, deps.sandbox.authorized_files)
     report = deps.inspector.inspect_rough_in(units, permit=deps.permit)
     if not report.is_occupiable:
-        cited = ", ".join(f"{f.code_id}:{f.message}" for f in report.unwaived_violations()[:5])
+        cited = " | ".join(
+            f"{f.code_id} (L{f.location.line}): {f.message} -> Fix: {f.remediation}"
+            for f in report.unwaived_violations()[:6]
+        )
         raise ModelRetry(f"{stage_label} failed JBC rough-in: {cited}")
+    alias_err = find_type_alias_misuse(units, deps.sandbox.load_units())
+    if alias_err is not None:
+        raise ModelRetry(f"{stage_label} failed PEP 695 type-alias check: {alias_err}")
     return units
 
 
@@ -307,6 +317,13 @@ def _validate_specify_output(
         raise ModelRetry(
             f"Contract patches omit symbols listed in declared_symbols: {missing_declared}."
         )
+    runtime_err = verify_runtime_importable_patches(
+        ctx.deps.sandbox,
+        bundle.contract_patches,
+        ignore_missing_local_imports=False,
+    )
+    if runtime_err is not None:
+        raise ModelRetry(f"Phase III contracts failed runtime import gate: {runtime_err}")
     return bundle
 
 
@@ -357,16 +374,62 @@ def _validate_synthesize_output(
         missing = [sym for sym in expected if sym not in compiled]
         if missing:
             raise ModelRetry(f"Implementation omits mandated symbol(s): {missing}.")
+    alias_err = find_type_alias_misuse(patch_units, ctx.deps.sandbox.load_units())
+    if alias_err is not None:
+        raise ModelRetry(f"Implementation failed PEP 695 type-alias check: {alias_err}")
+    runtime_err = verify_runtime_importable_patches(
+        ctx.deps.sandbox,
+        bundle.implementation_patches,
+        ignore_missing_local_imports=(ctx.deps.active_scope is not None),
+    )
+    if runtime_err is not None:
+        raise ModelRetry(f"Implementation failed runtime import gate: {runtime_err}")
     return bundle
+
+
+_JBC_CANONICAL_EXEMPLAR: Final[str] = (
+    "Canonical JBC v1.1 Idioms (copy exact jezz.guards signatures):\n"
+    "```python\n"
+    "from types import MappingProxyType\n"
+    "from typing import Annotated, Final\n"
+    "import icontract\n"
+    "from pydantic import BaseModel, Field\n"
+    "from jezz.guards import (\n"
+    "    STRICT_FROZEN_CONFIG, BudgetExceededError, ContainedPath, IdentifierStr,\n"
+    "    LoopBudget, NonNegativeInt, PositiveInt, ShortText, jezz_callable, read_bounded_text,\n"
+    ")\n"
+    "type RateBps = Annotated[int, Field(ge=0, le=10_000)]  # NEVER subscript BoundedInt[...]\n"
+    "_RATES: Final = MappingProxyType({'a': 10, 'b': 20})   # <=1 elif; use MappingProxyType\n"
+    "class Order(BaseModel):\n"
+    "    model_config = STRICT_FROZEN_CONFIG\n"
+    "    item_id: IdentifierStr\n"
+    "    rate_bps: RateBps\n"
+    "@icontract.require(lambda max_steps: max_steps >= 1)\n"
+    "@icontract.ensure(lambda result: result >= 0)\n"
+    "@jezz_callable\n"
+    "def step_loop(\n"
+    "    items: Annotated[tuple[IdentifierStr, ...], Field(min_length=1, max_length=512)],\n"
+    "    *, max_steps: PositiveInt = 1000,\n"
+    ") -> NonNegativeInt:\n"
+    "    budget = LoopBudget(max_steps=max_steps)  # required on every while in src/ and tests/\n"
+    "    rem = list(items)\n"
+    "    while rem:\n"
+    "        budget.tick()  # raises BudgetExceededError(RuntimeError) on overrun\n"
+    "        rem.pop()\n"
+    "    return len(items)\n"
+    "```"
+)
 
 
 _JBC_STATUTORY_BRIEF: Final[str] = (
     "JBC v1.1 Statutory Requirements: "
     "(1) Every BaseModel must set model_config = STRICT_FROZEN_CONFIG (from jezz.guards) or "
     "ConfigDict(frozen=True, extra='forbid', strict=True, allow_inf_nan=False), and bound every "
-    "field via jezz.guards (PositiveInt, NonNegativeInt, BoundedInt, FiniteFloat, IdentifierStr, "
-    "ShortText — non-generic aliases, never subscript them; use Annotated[int, Field(ge=..., "
-    "le=...)] for custom ranges), StrEnum/Literal/BaseModel, or Annotated[..., Field(...)]. "
+    "field via jezz.guards (PositiveInt, NonNegativeInt, BoundedInt, FiniteFloat, IdentifierStr "
+    "1..256, ShortText 1..1024, BoundedText 0..65_536 — PEP 695 TypeAliasType aliases, NEVER "
+    "subscript BoundedInt[...] or call IdentifierStr('x') at runtime; pass plain literals and "
+    "use Annotated[int, Field(ge=..., le=...)] for custom ranges), "
+    "StrEnum/Literal/BaseModel, or Annotated[..., Field(...)]. "
     "(2) Every callable requires 100% parameter and return type annotations with zero Any and no "
     "untyped dict/Mapping[str, object] parameters or returns; decorate every public non-test "
     "callable with @jezz_callable (from jezz.guards) and bound all public scalar parameters. "
@@ -413,8 +476,10 @@ def build_inspect_agent(model: GuardedModel) -> GuardedAgent[EpistemicObservatio
         retries=2,
         toolsets=(build_readonly_toolset(),),
         instructions=(
-            "Call _tool_list_authorized_files and inspect existing workspace files read-only "
-            "(if already present on disk) to summarize grounded symbols and module layout."
+            "If 'Existing Authorized Files On Disk' in the prompt is empty ([]), return "
+            "EpistemicObservation immediately in a single turn (inspected_files=(), "
+            "discovered_symbols=()) without calling any tools. Otherwise summarize the inline "
+            "snapshots directly, calling read tools only for existing files omitted inline."
         ),
     )
 
@@ -431,12 +496,14 @@ def build_specify_agent(model: GuardedModel) -> GuardedAgent[ContractSpecificati
         toolsets=(build_scoped_write_toolset(),),
         instructions=(
             "Author Phase III data contracts (strict Pydantic BaseModels, StrEnums, and bounded "
-            "Annotated type aliases) in authorized non-test src/... contract file(s). Never write "
-            "tests/... files and never emit unimplemented pass/.../NotImplementedError function "
-            "stubs (concrete implementation callables belong in Phase IV SYNTHESIZE). Include "
-            "only symbols defined in contract_patches inside declared_symbols. Draft the complete "
-            "file in one pass and call _tool_preview_rough_in once on the full candidate file "
-            f"(not partial snippets) before returning. {_JBC_STATUTORY_BRIEF}"
+            "Annotated type aliases) in authorized non-test src/... contract file(s). Authorized "
+            "paths and existing file contents are already provided inline in the prompt—do NOT "
+            "call read/list tools on absent or already-inlined files. Never write tests/... files "
+            "and never emit unimplemented pass/.../NotImplementedError function stubs (concrete "
+            "implementation callables belong in Phase IV SYNTHESIZE). Include only symbols "
+            "defined in contract_patches inside declared_symbols. Draft the complete file in one "
+            "pass and call _tool_preview_rough_in once on the full candidate file before "
+            f"returning. {_JBC_STATUTORY_BRIEF}\n{_JBC_CANONICAL_EXEMPLAR}"
         ),
     )
     agent.output_validator(_validate_specify_output)
@@ -454,17 +521,21 @@ def build_instrument_agent(model: GuardedModel) -> GuardedAgent[InstrumentationS
         retries=3,
         toolsets=(build_scoped_write_toolset(),),
         instructions=(
-            "Read existing Phase III src/... contract files listed under 'Existing Authorized "
-            "Files On Disk' via _tool_read_workspace_file so imports and field names match "
-            "exactly. Author pytest and Hypothesis (@given) falsification suites under authorized "
-            "tests/... file(s) defining every mandated invariant verification_symbol. When "
-            "testing that invalid inputs raise an error on @jezz_callable / @icontract functions, "
-            "expect (ValueError, TypeError, icontract.ViolationError) because @icontract.require "
-            "raises icontract.ViolationError (AssertionError subclass) while @jezz_callable "
-            "raises ValidationError (ValueError subclass); never combine @given with "
-            "function-scoped pytest fixtures like tmp_path. Never emit vacuous assert True "
-            "theatre or gate suppression comments, and preview each complete test file once via "
-            f"_tool_preview_rough_in before returning. {_JBC_STATUTORY_BRIEF}"
+            "Use the inline 'Existing Authorized File Snapshots' directly (do NOT call read/list "
+            "tools on already-inlined or absent files) so imports and field names match Phase III "
+            "contracts exactly. Author pytest and Hypothesis (@given) falsification suites under "
+            "authorized tests/... file(s) defining every mandated invariant verification_symbol. "
+            "Every test and helper callable in tests/ must have 100% parameter and '-> None' "
+            "return annotations with zero Any, <= 6 parameters (when @given needs >6 values, use "
+            "'@given(st.data())' with 'data: st.DataObject' instead of >6 args or untyped "
+            "@st.composite), and <= 35 statements; name any delegated assertion helper "
+            "'_assert_*', '_verify_*', '_check_*', or '_expect_*' (JBC-VRF-001). When testing "
+            "that invalid inputs or step-budget overruns raise an error, expect "
+            "(ValueError, TypeError, icontract.ViolationError, BudgetExceededError); never "
+            "combine @given with function-scoped fixtures like tmp_path, and guard any helper "
+            "while loop in tests/ with LoopBudget(max_steps=...). Preview each complete test file "
+            f"once via _tool_preview_rough_in before returning. {_JBC_STATUTORY_BRIEF}\n"
+            f"{_JBC_CANONICAL_EXEMPLAR}"
         ),
     )
     agent.output_validator(_validate_instrument_output)
@@ -482,13 +553,15 @@ def build_synthesize_agent(model: GuardedModel) -> GuardedAgent[ConstructionPatc
         retries=3,
         toolsets=(build_scoped_write_toolset(),),
         instructions=(
-            "Read existing Phase III contract and tests/... files listed under 'Existing "
-            "Authorized Files On Disk' via _tool_read_workspace_file so imports, types, and "
-            "postconditions align with locked contracts and falsification suites. Emit complete "
+            "Use the inline 'Existing Authorized File Snapshots' directly (do NOT call read/list "
+            "tools on already-inlined or absent files) so imports, types, and postconditions "
+            "align with locked Phase III contracts and falsification suites. Emit complete "
             "src/... implementation patches strictly within your authorized ModuleWriteScope "
-            "without modifying locked tests/... files or removing Phase III contract symbols, and "
-            "preview each complete file once via _tool_preview_rough_in before returning. "
-            f"{_JBC_STATUTORY_BRIEF}"
+            "without modifying locked tests/... files or removing Phase III contract symbols; "
+            "keep helper functions that do not read 'self' at module level rather than as "
+            "stateless instance methods on classes (JBC-COG-005). Preview each complete file once "
+            f"via _tool_preview_rough_in before returning. {_JBC_STATUTORY_BRIEF}\n"
+            f"{_JBC_CANONICAL_EXEMPLAR}"
         ),
     )
     agent.output_validator(_validate_synthesize_output)
@@ -517,7 +590,7 @@ async def run_bounded_agent[OutputT](
     agent: GuardedAgent[OutputT],
     *,
     behavior_kind: BehaviorKind,
-    prompt: NonEmptyStr,
+    prompt: BoundedPrompt,
     deps: Annotated[JezzAgentDeps, InstanceGuard(JezzAgentDeps)],
     budget: PceRuntimeBudget,
 ) -> tuple[Annotated[OutputT, InstanceGuard(object)], AgentInvocationTelemetry]:

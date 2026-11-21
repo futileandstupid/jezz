@@ -60,6 +60,8 @@ from jezz.agents.workspace import (
     WorkspaceSandbox,
     build_readonly_toolset,
     build_scoped_write_toolset,
+    find_type_alias_misuse,
+    verify_runtime_importable_patches,
 )
 
 __all__ = [
@@ -114,7 +116,9 @@ __all__ = [
     "build_scoped_write_toolset",
     "build_specify_agent",
     "build_synthesize_agent",
+    "find_type_alias_misuse",
     "run_bounded_agent",
     "uniform_model_suite",
     "validate_execution_board_invariants",
+    "verify_runtime_importable_patches",
 ]

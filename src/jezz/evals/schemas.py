@@ -179,7 +179,7 @@ class BenchmarkRunConfig(BaseModel):
     agent_timeout_sec: Annotated[float, Field(gt=0.0, le=600.0, allow_inf_nan=False)] = 480.0
     request_limit_per_step: Annotated[int, Field(ge=1, le=32)] = 28
     tool_calls_limit_per_step: Annotated[int, Field(ge=0, le=64)] = 56
-    total_tokens_limit_per_step: Annotated[int, Field(ge=128, le=1_000_000)] = 524_288
+    total_tokens_limit_per_step: Annotated[int, Field(ge=128, le=1_000_000)] = 786_432
     sync_workspace_venv: bool = True
 
 

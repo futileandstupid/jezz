@@ -468,6 +468,137 @@ async def test_specify_and_instrument_agents_self_correct_via_model_retry(
     assert tel_inst.requests == 2
 
 
+async def test_specify_agent_runtime_import_gate_rejects_subscripted_alias(
+    tmp_path: Path,
+) -> None:
+    mandate = _single_scope_mandate()
+    sandbox = WorkspaceSandbox(tmp_path, mandate.authorized_files())
+    deps = JezzAgentDeps(
+        sandbox=sandbox,
+        inspector=_sample_ledger_inspector(),
+        permit=CodePermit.full_book(permit_id="PERMIT-SPEC-IMPORT-GATE"),
+        mandate=mandate,
+    )
+    bad_runtime_contract = textwrap.dedent(
+        """\
+        from pydantic import BaseModel
+        from jezz.guards import STRICT_FROZEN_CONFIG, BoundedInt, PositiveInt
+
+        BadRate = BoundedInt[0, 10_000]
+
+        class TransferOrder(BaseModel):
+            model_config = STRICT_FROZEN_CONFIG
+
+            sender_balance_cents: BadRate
+            amount_cents: PositiveInt
+        """
+    )
+    assert_contract = textwrap.dedent(
+        """\
+        from pydantic import BaseModel
+        from jezz.guards import STRICT_FROZEN_CONFIG, PositiveInt
+
+        assert 1 == 2, "Module-level self-assertion failure"
+
+        class TransferOrder(BaseModel):
+            model_config = STRICT_FROZEN_CONFIG
+
+            sender_balance_cents: PositiveInt
+            amount_cents: PositiveInt
+        """
+    )
+    attempts = 0
+
+    def _runtime_flaky(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+        _ = messages
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            src = bad_runtime_contract
+        elif attempts == 2:
+            src = assert_contract
+        else:
+            src = _SAMPLE_CONTRACTS_PY
+        bundle = ContractSpecificationBundle(
+            contract_patches=(
+                FilePatchArtifact(
+                    file_path="src/ledger/contracts.py",
+                    source_code=src,
+                    rationale="Contract import gate probe.",
+                ),
+            ),
+            declared_symbols=("TransferOrder",),
+            summary="Phase III contract attempt.",
+        )
+        return _structured_response(info, bundle)
+
+    out, tel = await run_bounded_agent(
+        build_specify_agent(FunctionModel(_runtime_flaky)),
+        behavior_kind=BehaviorKind.SPECIFY,
+        prompt="Emit runtime-importable contracts",
+        deps=deps,
+        budget=PceRuntimeBudget(),
+    )
+    assert out.declared_symbols == ("TransferOrder",)
+    assert tel.requests == 3
+    assert not any(p.name.startswith(".jezz_smoke_") for p in tmp_path.iterdir())
+
+
+async def test_instrument_agent_rejects_callable_pep695_type_alias_call(
+    tmp_path: Path,
+) -> None:
+    mandate = _single_scope_mandate()
+    sandbox = WorkspaceSandbox(tmp_path, mandate.authorized_files())
+    sandbox.write_authorized_file("src/ledger/contracts.py", _SAMPLE_CONTRACTS_PY)
+    deps = JezzAgentDeps(
+        sandbox=sandbox,
+        inspector=_sample_ledger_inspector(),
+        permit=CodePermit.full_book(permit_id="PERMIT-INST-ALIAS-CALL"),
+        mandate=mandate,
+    )
+    bad_alias_call_test = textwrap.dedent(
+        """\
+        from jezz.guards import IdentifierStr
+        from ledger.contracts import TransferOrder
+        from ledger.engine import settle_transfer
+
+        def test_settle_transfer_conserves_cents() -> None:
+            _ = IdentifierStr("CASH_TEST")
+            order = TransferOrder(sender_balance_cents=100, amount_cents=40)
+            assert settle_transfer(order) == 60
+        """
+    )
+    attempts = 0
+
+    def _alias_flaky(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+        _ = messages
+        nonlocal attempts
+        attempts += 1
+        src = bad_alias_call_test if attempts == 1 else _SAMPLE_TESTS_PY
+        bundle = InstrumentationSuiteBundle(
+            test_patches=(
+                FilePatchArtifact(
+                    file_path="tests/test_ledger.py",
+                    source_code=src,
+                    rationale="Test PEP 695 alias call rejection.",
+                ),
+            ),
+            covered_invariant_ids=("INV-001",),
+            summary="Phase III test attempt.",
+        )
+        return _structured_response(info, bundle)
+
+    out, tel = await run_bounded_agent(
+        build_instrument_agent(FunctionModel(_alias_flaky)),
+        behavior_kind=BehaviorKind.INSTRUMENT,
+        prompt="Emit falsification tests without calling TypeAliasType",
+        deps=deps,
+        budget=PceRuntimeBudget(),
+    )
+    assert len(out.test_patches) == 1
+    assert tel.requests == 2
+
+
 # ---------------------------------------------------------------------------
 # 3. End-to-End Pydantic-Graph PCE Lifecycle, ELICIT Halt, & RED_TAG Recovery
 # ---------------------------------------------------------------------------

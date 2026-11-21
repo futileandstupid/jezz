@@ -55,6 +55,8 @@ _RECOVERABLE_ARM_ERRORS = (
     TimeoutError,
     ValueError,
     RuntimeError,
+    AssertionError,
+    ArithmeticError,
     OSError,
 )
 
