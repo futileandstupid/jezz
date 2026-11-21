@@ -793,6 +793,7 @@ dependencies = [
     { name = "icontract" },
     { name = "pydantic" },
     { name = "pydantic-ai" },
+    { name = "pydantic-evals" },
     { name = "pydantic-graph" },
 ]
 
@@ -810,6 +811,7 @@ requires-dist = [
     { name = "icontract", specifier = ">=2.7.3" },
     { name = "pydantic", specifier = ">=2.14.4" },
     { name = "pydantic-ai", specifier = ">=2.71.0" },
+    { name = "pydantic-evals", specifier = ">=2.71.0" },
     { name = "pydantic-graph", specifier = ">=2.71.0" },
 ]
 

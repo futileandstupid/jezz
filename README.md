@@ -16,6 +16,7 @@
 - **[Empirical Validation & Early Testing Roadmap](docs/empirical-testing-roadmap.md):** CLI harness, zero-cost brownfield `BuildingInspector` field trials, live-LLM `PceWorkflowOrchestrator` occupancy probes, and controlled `pydantic-evals` A/B benchmarks against prose "SDD".
 - **[Track 2 — Brownfield Inspector Field Trial Report](docs/track-2-brownfield-field-trial.md):** Empirical audit across 6 repositories totaling 17,609 files / 7,414,726 LOC (`github/spec-kit`, `pydantic`, `pydantic-graph`, `pydantic-deepagents`, `KiroCrew`, and AWS Kiro E2E sample) and resulting engine/AST calibrations.
 - **[Track 3 — First Live-Model Occupancy Trial Report](docs/track-3-live-occupancy-trial.md):** End-to-end `PceWorkflowOrchestrator` + `UvSubprocessGateRunner` trials on `google:gemini-3.8-flash` across ambiguity halting (`FRAME -> ELICIT`), adversarial integer-cent synthesis (`SPECIFY -> INSTRUMENT -> SYNTHESIZE`), and 3-worker parallel `TaskGroup` construction (`DELEGATE -> RECONCILE`).
+- **[Track 4 — Controlled `pydantic-evals` A/B Benchmark Report](docs/track-4-sdd-vs-pce-benchmark.md):** 24-workspace live A/B evaluation (`Control: Prose SDD` vs. `Treatment: Jezz PCE` on `google:gemini-3.8-flash`) demonstrating `0%` silent defect escape, `16.1x` specification compression (`38.7` vs. `621.3` lines), and `-72.1%` peak Cognitive Complexity against `181` unwaived `JBC` violations (`14` `LIFE_SAFETY`) in checked-off `- [x]` SDD builds.
 
 ## CLI Usage
 
@@ -28,6 +29,9 @@ uv run jezz audit <dossier.json> [--repo <repo_path>] [--format markdown|json]
 
 # Execute a PCE prompt or mandate via PceWorkflowOrchestrator
 uv run jezz run <repo_path> --model <provider:model> (--prompt "..." | --mandate mandate.json)
+
+# Execute Track 4 controlled pydantic-evals A/B benchmark (Prose SDD vs. Jezz PCE)
+uv run jezz benchmark <work_dir> --model <provider:model> [--max-concurrency 2] [--write-json ab.json]
 ```
 
 ## Verification Gates

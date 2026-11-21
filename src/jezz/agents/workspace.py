@@ -103,6 +103,9 @@ class WorkspaceSandbox:
         if not target.resolved_path.exists():
             msg = f"Workspace file '{target.relative_posix}' does not exist."
             raise FileNotFoundError(msg)
+        if target.resolved_path.is_dir():
+            msg = f"Workspace path '{target.relative_posix}' is a directory, not a file."
+            raise IsADirectoryError(msg)
         return read_bounded_text(target)
 
     @jezz_callable
@@ -332,6 +335,8 @@ def _tool_read_workspace_file(
         return ctx.deps.sandbox.read_file(rel_path)
     except FileNotFoundError:
         return f"# ABSENT: '{rel_path}' has not been created on disk yet.\n"
+    except IsADirectoryError:
+        return f"# DIRECTORY: '{rel_path}' is a directory, not a readable source file.\n"
     except ValueError as exc:
         raise ModelRetry(str(exc)) from exc
 
@@ -344,7 +349,9 @@ def _tool_inspect_file_symbols(
     try:
         source = ctx.deps.sandbox.read_file(rel_path)
         unit = parse_source_unit(rel_path, source)
-    except (FileNotFoundError, SyntaxError, ValueError) as exc:
+    except FileNotFoundError, IsADirectoryError:
+        return ()
+    except (SyntaxError, ValueError) as exc:
         raise ModelRetry(str(exc)) from exc
     return tuple(sorted(extract_compiled_symbols((unit,))))
 

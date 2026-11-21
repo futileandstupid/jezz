@@ -13,7 +13,10 @@ from typing import Annotated, Final
 
 from pydantic import Field, ValidationError
 from pydantic_ai.exceptions import AgentRunError, ModelAPIError, UserError
-from pydantic_ai.models import infer_model
+from pydantic_ai.messages import ModelMessage, ModelResponse
+from pydantic_ai.models import ModelRequestParameters, infer_model
+from pydantic_ai.models.wrapper import WrapperModel
+from pydantic_ai.settings import ModelSettings
 
 from jezz.agents.orchestrator import PceWorkflowOrchestrator
 from jezz.agents.schemas import PceRunStatus, PceRuntimeBudget, PceWorkflowResult
@@ -22,6 +25,14 @@ from jezz.agents.workspace import DynamicGatePort, InProcessGateRunner, UvSubpro
 from jezz.codes.ast_utils import SourceUnit, parse_source_unit
 from jezz.codes.inspector import BuildingInspector, ManifestDependencies
 from jezz.codes.permits import CodePermit
+from jezz.evals.evaluators import GuardedDataset, build_track4_dataset
+from jezz.evals.runner import (
+    default_harness_deps,
+    format_ab_benchmark_markdown,
+    run_ab_benchmark,
+)
+from jezz.evals.schemas import AbBenchmarkComparison, BenchmarkRunConfig
+from jezz.evals.tasks import build_track4_benchmark_cases
 from jezz.guards import (
     BoundedText,
     BudgetExceededError,
@@ -237,18 +248,59 @@ def _handle_audit(ns: argparse.Namespace, out_stream: io.TextIOBase) -> CliExitC
     return 0 if audit_report.is_occupancy_sealed else 1
 
 
-async def _await_with_deadline(
-    coro: Coroutine[object, object, PceWorkflowResult],
+async def _await_with_deadline[ResultT](
+    coro: Coroutine[object, object, ResultT],
     timeout_sec: float,
-) -> PceWorkflowResult:
+) -> ResultT:
     async with asyncio.timeout(timeout_sec):
         return await coro
 
 
+class TlsResilientModel(WrapperModel):
+    """Per-request fresh HTTP client wrapper retrying transient SSL/socket drops."""
+
+    @jezz_callable
+    def __init__(
+        self,
+        model_name: IdentifierStr,
+        *,
+        max_attempts: Annotated[int, Field(ge=1, le=8)] = 4,
+    ) -> None:
+        super().__init__(infer_model(model_name))
+        self._model_name = model_name
+        self._max_attempts = max_attempts
+
+    @jezz_callable
+    async def request(
+        self,
+        messages: list[ModelMessage],
+        model_settings: ModelSettings | None,
+        model_request_parameters: ModelRequestParameters,
+    ) -> ModelResponse:
+        """Execute one request inside a fresh client context, retrying transient OSErrors."""
+        last_err: OSError | None = None
+        for attempt in range(self._max_attempts):
+            try:
+                async with infer_model(self._model_name) as fresh_model:
+                    return await fresh_model.request(
+                        messages,
+                        model_settings,
+                        model_request_parameters,
+                    )
+            except OSError as exc:
+                last_err = exc
+                if attempt + 1 < self._max_attempts:
+                    await asyncio.sleep(float(attempt + 1))
+        if last_err is not None:
+            raise last_err
+        msg = "Unreachable retry exhaustion without captured OSError."
+        raise RuntimeError(msg)
+
+
 @jezz_callable
 def resolve_cli_model(model_name: IdentifierStr) -> GuardedModel:
-    """Resolve a Pydantic AI ``provider:model`` string into a validated ``Model``."""
-    return infer_model(model_name)
+    """Resolve a Pydantic AI ``provider:model`` string into a TLS-resilient ``Model``."""
+    return TlsResilientModel(model_name)
 
 
 def _execute_pce_run(
@@ -330,13 +382,88 @@ def _handle_run(ns: argparse.Namespace, out_stream: io.TextIOBase) -> CliExitCod
     return 0 if result.status == PceRunStatus.OCCUPANCY_CERTIFIED else 1
 
 
+def _select_benchmark_dataset(case_ids: Sequence[str] | None) -> GuardedDataset:
+    if not case_ids:
+        return build_track4_dataset()
+    wanted = set(case_ids)
+    filtered = tuple(pair for pair in build_track4_benchmark_cases() if pair[0].case_id in wanted)
+    if len(filtered) != len(wanted):
+        found = {pair[0].case_id for pair in filtered}
+        missing = sorted(wanted - found)
+        msg = f"Unknown benchmark --case-id value(s): {missing}."
+        raise ValueError(msg)
+    return build_track4_dataset(filtered)
+
+
+def _execute_cli_benchmark(ns: argparse.Namespace, work_dir: Path) -> AbBenchmarkComparison:
+    timeout_sec = float(ns.timeout_sec)
+    if timeout_sec <= 0.0 or timeout_sec > 14_400.0:
+        msg = f"Invalid --timeout-sec={timeout_sec}; expected (0, 14400]."
+        raise ValueError(msg)
+    model_name = str(ns.model)
+    model = resolve_cli_model(model_name)
+    cfg = BenchmarkRunConfig(
+        max_concurrency=int(ns.max_concurrency),
+        agent_timeout_sec=min(480.0, timeout_sec),
+        sync_workspace_venv=(ns.gate_runner == GateRunnerChoice.SUBPROCESS),
+    )
+    deps = default_harness_deps(
+        work_dir,
+        config=cfg,
+        model_factory=lambda: resolve_cli_model(model_name),
+    )
+    ds = _select_benchmark_dataset(ns.case_ids)
+    coro = run_ab_benchmark(model, deps, model_label=model_name, dataset=ds)
+    return asyncio.run(_await_with_deadline(coro, timeout_sec))
+
+
+def _handle_benchmark(ns: argparse.Namespace, out_stream: io.TextIOBase) -> CliExitCode:
+    resolved_work = ns.work_dir.resolve()
+    resolved_work.mkdir(parents=True, exist_ok=True)
+    comparison = _execute_cli_benchmark(ns, resolved_work)
+    if ns.write_json is not None:
+        out_target = ContainedPath.from_parts(resolved_work, str(ns.write_json))
+        out_target.resolved_path.parent.mkdir(parents=True, exist_ok=True)
+        with out_target.resolved_path.open("w", encoding="utf-8") as fh:
+            fh.write(comparison.model_dump_json(indent=2) + "\n")
+    rendered = (
+        comparison.model_dump_json(indent=2)
+        if ns.output_format == OutputFormat.JSON
+        else format_ab_benchmark_markdown(comparison)
+    )
+    _write_line(out_stream, rendered)
+    t = comparison.treatment_summary
+    passed = t.cases_jbc_occupiable == t.cases_total and t.cases_oracle_passed == t.cases_total
+    return 0 if passed else 1
+
+
 _COMMAND_HANDLERS: Final[Mapping[str, _CommandHandler]] = MappingProxyType(
     {
         "inspect": _handle_inspect,
         "audit": _handle_audit,
         "run": _handle_run,
+        "benchmark": _handle_benchmark,
     }
 )
+
+
+def _register_benchmark_subparser(
+    sub: argparse._SubParsersAction[argparse.ArgumentParser],
+) -> None:
+    p_bmk = sub.add_parser(
+        "benchmark",
+        help="Run Track 4 pydantic-evals A/B benchmark (Prose SDD vs. Jezz PCE).",
+    )
+    p_bmk.add_argument("work_dir", type=Path, help="Scratch directory for isolated workspaces.")
+    p_bmk.add_argument("--model", required=True, help="Pydantic AI model ID (e.g. provider:model).")
+    p_bmk.add_argument("--max-concurrency", type=int, default=2)
+    p_bmk.add_argument("--case-id", dest="case_ids", action="append", default=None)
+    p_bmk.add_argument("--gate-runner", choices=("subprocess", "in-process"), default="subprocess")
+    p_bmk.add_argument("--timeout-sec", type=float, default=3600.0)
+    p_bmk.add_argument("--write-json", default=None, help="Relative path inside work_dir for JSON.")
+    p_bmk.add_argument(
+        "--format", dest="output_format", choices=("markdown", "json"), default="markdown"
+    )
 
 
 def _build_cli_parser() -> argparse.ArgumentParser:
@@ -377,6 +504,7 @@ def _build_cli_parser() -> argparse.ArgumentParser:
     p_run.add_argument(
         "--format", dest="output_format", choices=("markdown", "json"), default="markdown"
     )
+    _register_benchmark_subparser(sub)
     return parser
 
 

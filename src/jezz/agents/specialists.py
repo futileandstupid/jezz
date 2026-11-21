@@ -365,7 +365,8 @@ _JBC_STATUTORY_BRIEF: Final[str] = (
     "(1) Every BaseModel must set model_config = STRICT_FROZEN_CONFIG (from jezz.guards) or "
     "ConfigDict(frozen=True, extra='forbid', strict=True, allow_inf_nan=False), and bound every "
     "field via jezz.guards (PositiveInt, NonNegativeInt, BoundedInt, FiniteFloat, IdentifierStr, "
-    "ShortText), StrEnum/Literal/BaseModel, or Annotated[..., Field(...)]. "
+    "ShortText — non-generic aliases, never subscript them; use Annotated[int, Field(ge=..., "
+    "le=...)] for custom ranges), StrEnum/Literal/BaseModel, or Annotated[..., Field(...)]. "
     "(2) Every callable requires 100% parameter and return type annotations with zero Any and no "
     "untyped dict/Mapping[str, object] parameters or returns; decorate every public non-test "
     "callable with @jezz_callable (from jezz.guards) and bound all public scalar parameters. "
@@ -456,9 +457,14 @@ def build_instrument_agent(model: GuardedModel) -> GuardedAgent[InstrumentationS
             "Read existing Phase III src/... contract files listed under 'Existing Authorized "
             "Files On Disk' via _tool_read_workspace_file so imports and field names match "
             "exactly. Author pytest and Hypothesis (@given) falsification suites under authorized "
-            "tests/... file(s) defining every mandated invariant verification_symbol. Never emit "
-            "vacuous assert True theatre or gate suppression comments, and preview each complete "
-            f"test file once via _tool_preview_rough_in before returning. {_JBC_STATUTORY_BRIEF}"
+            "tests/... file(s) defining every mandated invariant verification_symbol. When "
+            "testing that invalid inputs raise an error on @jezz_callable / @icontract functions, "
+            "expect (ValueError, TypeError, icontract.ViolationError) because @icontract.require "
+            "raises icontract.ViolationError (AssertionError subclass) while @jezz_callable "
+            "raises ValidationError (ValueError subclass); never combine @given with "
+            "function-scoped pytest fixtures like tmp_path. Never emit vacuous assert True "
+            "theatre or gate suppression comments, and preview each complete test file once via "
+            f"_tool_preview_rough_in before returning. {_JBC_STATUTORY_BRIEF}"
         ),
     )
     agent.output_validator(_validate_instrument_output)
