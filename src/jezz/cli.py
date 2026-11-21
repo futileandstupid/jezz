@@ -11,10 +11,10 @@ from pathlib import Path, PurePosixPath
 from types import MappingProxyType
 from typing import Annotated, Final
 
-from pydantic import Field, ValidationError
+from pydantic import Field, SecretStr, ValidationError
 from pydantic_ai.exceptions import AgentRunError, ModelAPIError, UserError
 from pydantic_ai.messages import ModelMessage, ModelResponse
-from pydantic_ai.models import ModelRequestParameters, infer_model
+from pydantic_ai.models import Model, ModelRequestParameters, infer_model
 from pydantic_ai.models.wrapper import WrapperModel
 from pydantic_ai.settings import ModelSettings
 
@@ -44,6 +44,7 @@ from jezz.guards import (
 )
 from jezz.methodology.dossier import EngineeringDossier, audit_pce_dossier
 from jezz.methodology.mandate import EngineeringMandate
+from jezz.secrets import GuardedSecretStr, SecretResolutionError, resolve_model_api_key
 
 _PRUNED_DIR_NAMES: Final[frozenset[str]] = frozenset(
     {
@@ -256,6 +257,179 @@ async def _await_with_deadline[ResultT](
         return await coro
 
 
+type _AuthModelBuilder = Callable[[str, SecretStr], Model]
+
+
+def _infer_google_model(full_name: str, api_key: SecretStr) -> Model:
+    from pydantic_ai.providers.google import GoogleProvider
+
+    return infer_model(
+        full_name,
+        provider_factory=lambda _: GoogleProvider(api_key=api_key.get_secret_value()),
+    )
+
+
+def _infer_google_cloud_model(full_name: str, api_key: SecretStr) -> Model:
+    from pydantic_ai.providers.google_cloud import GoogleCloudProvider
+
+    return infer_model(
+        full_name,
+        provider_factory=lambda _: GoogleCloudProvider(api_key=api_key.get_secret_value()),
+    )
+
+
+def _infer_openai_model(full_name: str, api_key: SecretStr) -> Model:
+    from pydantic_ai.providers.openai import OpenAIProvider
+
+    return infer_model(
+        full_name,
+        provider_factory=lambda _: OpenAIProvider(api_key=api_key.get_secret_value()),
+    )
+
+
+def _infer_anthropic_model(full_name: str, api_key: SecretStr) -> Model:
+    from pydantic_ai.providers.anthropic import AnthropicProvider
+
+    return infer_model(
+        full_name,
+        provider_factory=lambda _: AnthropicProvider(api_key=api_key.get_secret_value()),
+    )
+
+
+def _infer_openrouter_model(full_name: str, api_key: SecretStr) -> Model:
+    from pydantic_ai.providers.openrouter import OpenRouterProvider
+
+    return infer_model(
+        full_name,
+        provider_factory=lambda _: OpenRouterProvider(api_key=api_key.get_secret_value()),
+    )
+
+
+def _infer_groq_model(full_name: str, api_key: SecretStr) -> Model:
+    from pydantic_ai.providers.groq import GroqProvider
+
+    return infer_model(
+        full_name,
+        provider_factory=lambda _: GroqProvider(api_key=api_key.get_secret_value()),
+    )
+
+
+def _infer_mistral_model(full_name: str, api_key: SecretStr) -> Model:
+    from pydantic_ai.providers.mistral import MistralProvider
+
+    return infer_model(
+        full_name,
+        provider_factory=lambda _: MistralProvider(api_key=api_key.get_secret_value()),
+    )
+
+
+def _infer_cohere_model(full_name: str, api_key: SecretStr) -> Model:
+    from pydantic_ai.providers.cohere import CohereProvider
+
+    return infer_model(
+        full_name,
+        provider_factory=lambda _: CohereProvider(api_key=api_key.get_secret_value()),
+    )
+
+
+def _infer_deepseek_model(full_name: str, api_key: SecretStr) -> Model:
+    from pydantic_ai.providers.deepseek import DeepSeekProvider
+
+    return infer_model(
+        full_name,
+        provider_factory=lambda _: DeepSeekProvider(api_key=api_key.get_secret_value()),
+    )
+
+
+def _infer_xai_model(full_name: str, api_key: SecretStr) -> Model:
+    from pydantic_ai.providers.xai import XaiProvider
+
+    return infer_model(
+        full_name,
+        provider_factory=lambda _: XaiProvider(api_key=api_key.get_secret_value()),
+    )
+
+
+def _infer_cerebras_model(full_name: str, api_key: SecretStr) -> Model:
+    from pydantic_ai.providers.cerebras import CerebrasProvider
+
+    return infer_model(
+        full_name,
+        provider_factory=lambda _: CerebrasProvider(api_key=api_key.get_secret_value()),
+    )
+
+
+def _infer_fireworks_model(full_name: str, api_key: SecretStr) -> Model:
+    from pydantic_ai.providers.fireworks import FireworksProvider
+
+    return infer_model(
+        full_name,
+        provider_factory=lambda _: FireworksProvider(api_key=api_key.get_secret_value()),
+    )
+
+
+def _infer_together_model(full_name: str, api_key: SecretStr) -> Model:
+    from pydantic_ai.providers.together import TogetherProvider
+
+    return infer_model(
+        full_name,
+        provider_factory=lambda _: TogetherProvider(api_key=api_key.get_secret_value()),
+    )
+
+
+_AUTH_MODEL_BUILDERS: Final[Mapping[str, _AuthModelBuilder]] = MappingProxyType(
+    {
+        "google": _infer_google_model,
+        "google-decisions": _infer_google_model,
+        "google-cloud": _infer_google_cloud_model,
+        "openai": _infer_openai_model,
+        "openai-chat": _infer_openai_model,
+        "openai-responses": _infer_openai_model,
+        "openai-decisions": _infer_openai_model,
+        "anthropic": _infer_anthropic_model,
+        "openrouter": _infer_openrouter_model,
+        "groq": _infer_groq_model,
+        "mistral": _infer_mistral_model,
+        "cohere": _infer_cohere_model,
+        "deepseek": _infer_deepseek_model,
+        "xai": _infer_xai_model,
+        "cerebras": _infer_cerebras_model,
+        "fireworks": _infer_fireworks_model,
+        "together": _infer_together_model,
+    }
+)
+
+
+def _infer_model_with_secret(model_name: str, api_key: SecretStr | None) -> Model:
+    if api_key is None or model_name == "test":
+        return infer_model(model_name)
+    active_key: SecretStr = api_key
+    if ":" not in model_name:
+        msg = (
+            f"Expected 'provider:model' identifier when injecting a vault API key: '{model_name}'."
+        )
+        raise UserError(msg)
+    provider_prefix = model_name.split(":", maxsplit=1)[0]
+    if provider_prefix.startswith("gateway/"):
+        from pydantic_ai.providers.gateway import gateway_provider
+
+        upstream = provider_prefix.removeprefix("gateway/")
+        return infer_model(
+            model_name,
+            provider_factory=lambda _: gateway_provider(
+                upstream, api_key=active_key.get_secret_value()
+            ),
+        )
+    builder = _AUTH_MODEL_BUILDERS.get(provider_prefix)
+    if builder is None:
+        msg = (
+            f"Provider '{provider_prefix}' does not support direct SecretStr API-key "
+            "injection without environment mutation."
+        )
+        raise UserError(msg)
+    return builder(model_name, active_key)
+
+
 class TlsResilientModel(WrapperModel):
     """Per-request fresh HTTP client wrapper retrying transient SSL/socket drops."""
 
@@ -264,10 +438,12 @@ class TlsResilientModel(WrapperModel):
         self,
         model_name: IdentifierStr,
         *,
+        api_key: GuardedSecretStr | None = None,
         max_attempts: Annotated[int, Field(ge=1, le=8)] = 4,
     ) -> None:
-        super().__init__(infer_model(model_name))
+        super().__init__(_infer_model_with_secret(model_name, api_key))
         self._model_name = model_name
+        self._api_key = api_key
         self._max_attempts = max_attempts
 
     @jezz_callable
@@ -281,7 +457,7 @@ class TlsResilientModel(WrapperModel):
         last_err: OSError | None = None
         for attempt in range(self._max_attempts):
             try:
-                async with infer_model(self._model_name) as fresh_model:
+                async with _infer_model_with_secret(self._model_name, self._api_key) as fresh_model:
                     return await fresh_model.request(
                         messages,
                         model_settings,
@@ -298,9 +474,19 @@ class TlsResilientModel(WrapperModel):
 
 
 @jezz_callable
-def resolve_cli_model(model_name: IdentifierStr) -> GuardedModel:
+def resolve_cli_model(
+    model_name: IdentifierStr,
+    *,
+    api_key: GuardedSecretStr | None = None,
+) -> GuardedModel:
     """Resolve a Pydantic AI ``provider:model`` string into a TLS-resilient ``Model``."""
-    return TlsResilientModel(model_name)
+    return TlsResilientModel(model_name, api_key=api_key)
+
+
+def _instantiate_cli_model(model_name: str, api_key: GuardedSecretStr | None) -> GuardedModel:
+    if api_key is None:
+        return resolve_cli_model(model_name)
+    return resolve_cli_model(model_name, api_key=api_key)
 
 
 def _execute_pce_run(
@@ -312,7 +498,14 @@ def _execute_pce_run(
     if timeout_sec <= 0.0 or timeout_sec > 3600.0:
         msg = f"Invalid --timeout-sec={timeout_sec}; expected (0, 3600]."
         raise ValueError(msg)
-    model = resolve_cli_model(str(ns.model))
+    model_name = str(ns.model)
+    resolved_key = resolve_model_api_key(
+        model_name,
+        explicit_pass_uri=ns.pass_uri,
+        search_roots=(resolved_repo, Path.cwd()),
+        reason_override=ns.agent_reason,
+    )
+    model = _instantiate_cli_model(model_name, resolved_key)
     runner: DynamicGatePort = (
         UvSubprocessGateRunner()
         if ns.gate_runner == GateRunnerChoice.SUBPROCESS
@@ -401,7 +594,13 @@ def _execute_cli_benchmark(ns: argparse.Namespace, work_dir: Path) -> AbBenchmar
         msg = f"Invalid --timeout-sec={timeout_sec}; expected (0, 14400]."
         raise ValueError(msg)
     model_name = str(ns.model)
-    model = resolve_cli_model(model_name)
+    resolved_key = resolve_model_api_key(
+        model_name,
+        explicit_pass_uri=ns.pass_uri,
+        search_roots=(work_dir, Path.cwd()),
+        reason_override=ns.agent_reason,
+    )
+    model = _instantiate_cli_model(model_name, resolved_key)
     cfg = BenchmarkRunConfig(
         max_concurrency=int(ns.max_concurrency),
         agent_timeout_sec=min(480.0, timeout_sec),
@@ -410,7 +609,7 @@ def _execute_cli_benchmark(ns: argparse.Namespace, work_dir: Path) -> AbBenchmar
     deps = default_harness_deps(
         work_dir,
         config=cfg,
-        model_factory=lambda: resolve_cli_model(model_name),
+        model_factory=lambda: _instantiate_cli_model(model_name, resolved_key),
     )
     ds = _select_benchmark_dataset(ns.case_ids)
     coro = run_ab_benchmark(model, deps, model_label=model_name, dataset=ds)
@@ -447,6 +646,42 @@ _COMMAND_HANDLERS: Final[Mapping[str, _CommandHandler]] = MappingProxyType(
 )
 
 
+def _register_secret_flags(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--api-key-uri",
+        dest="pass_uri",
+        default=None,
+        help="Proton Pass secret URI (pass://vault/item/field) for model API key.",
+    )
+    parser.add_argument(
+        "--agent-reason",
+        dest="agent_reason",
+        default=None,
+        help="Audit reason logged via PROTON_PASS_AGENT_REASON during pass-cli access.",
+    )
+
+
+def _register_run_subparser(
+    sub: argparse._SubParsersAction[argparse.ArgumentParser],
+) -> None:
+    p_run = sub.add_parser(
+        "run", help="Execute a PCE mandate or prompt via PceWorkflowOrchestrator."
+    )
+    p_run.add_argument("repo_path", type=Path, help="Target workspace root directory.")
+    p_run.add_argument("--model", required=True, help="Pydantic AI model ID (e.g. provider:model).")
+    src_grp = p_run.add_mutually_exclusive_group(required=True)
+    src_grp.add_argument("--prompt", default=None, help="Raw engineering task prompt.")
+    src_grp.add_argument("--mandate", type=Path, default=None, help="EngineeringMandate JSON file.")
+    p_run.add_argument("--permit", type=Path, default=None, help="Optional CodePermit JSON file.")
+    p_run.add_argument("--gate-runner", choices=("subprocess", "in-process"), default="subprocess")
+    p_run.add_argument("--timeout-sec", type=float, default=600.0)
+    p_run.add_argument("--write-dossier", default=None, help="Relative path to save dossier JSON.")
+    _register_secret_flags(p_run)
+    p_run.add_argument(
+        "--format", dest="output_format", choices=("markdown", "json"), default="markdown"
+    )
+
+
 def _register_benchmark_subparser(
     sub: argparse._SubParsersAction[argparse.ArgumentParser],
 ) -> None:
@@ -461,6 +696,7 @@ def _register_benchmark_subparser(
     p_bmk.add_argument("--gate-runner", choices=("subprocess", "in-process"), default="subprocess")
     p_bmk.add_argument("--timeout-sec", type=float, default=3600.0)
     p_bmk.add_argument("--write-json", default=None, help="Relative path inside work_dir for JSON.")
+    _register_secret_flags(p_bmk)
     p_bmk.add_argument(
         "--format", dest="output_format", choices=("markdown", "json"), default="markdown"
     )
@@ -489,21 +725,7 @@ def _build_cli_parser() -> argparse.ArgumentParser:
         "--format", dest="output_format", choices=("markdown", "json"), default="markdown"
     )
 
-    p_run = sub.add_parser(
-        "run", help="Execute a PCE mandate or prompt via PceWorkflowOrchestrator."
-    )
-    p_run.add_argument("repo_path", type=Path, help="Target workspace root directory.")
-    p_run.add_argument("--model", required=True, help="Pydantic AI model ID (e.g. provider:model).")
-    src_grp = p_run.add_mutually_exclusive_group(required=True)
-    src_grp.add_argument("--prompt", default=None, help="Raw engineering task prompt.")
-    src_grp.add_argument("--mandate", type=Path, default=None, help="EngineeringMandate JSON file.")
-    p_run.add_argument("--permit", type=Path, default=None, help="Optional CodePermit JSON file.")
-    p_run.add_argument("--gate-runner", choices=("subprocess", "in-process"), default="subprocess")
-    p_run.add_argument("--timeout-sec", type=float, default=600.0)
-    p_run.add_argument("--write-dossier", default=None, help="Relative path to save dossier JSON.")
-    p_run.add_argument(
-        "--format", dest="output_format", choices=("markdown", "json"), default="markdown"
-    )
+    _register_run_subparser(sub)
     _register_benchmark_subparser(sub)
     return parser
 
@@ -558,6 +780,7 @@ def main(
         AgentRunError,
         ModelAPIError,
         BudgetExceededError,
+        SecretResolutionError,
         TimeoutError,
         OSError,
     ) as exc:

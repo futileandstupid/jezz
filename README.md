@@ -28,11 +28,26 @@ uv run jezz inspect <repo_path> [--permit permit.json] [--format markdown|json]
 uv run jezz audit <dossier.json> [--repo <repo_path>] [--format markdown|json]
 
 # Execute a PCE prompt or mandate via PceWorkflowOrchestrator
-uv run jezz run <repo_path> --model <provider:model> (--prompt "..." | --mandate mandate.json)
+uv run jezz run <repo_path> --model <provider:model> [--api-key-uri pass://Vault/Item/Field] (--prompt "..." | --mandate mandate.json)
 
 # Execute Track 4 controlled pydantic-evals A/B benchmark (Prose SDD vs. Jezz PCE)
-uv run jezz benchmark <work_dir> --model <provider:model> [--max-concurrency 2] [--write-json ab.json]
+uv run jezz benchmark <work_dir> --model <provider:model> [--api-key-uri pass://Vault/Item/Field] [--max-concurrency 2] [--write-json ab.json]
 ```
+
+## Proton Pass CLI (`pass-cli`) Secret Management
+
+`jezz` resolves model API credentials directly from Proton Pass CLI (`pass-cli item view pass://<vault>/<item>/<field>`) into `pydantic.SecretStr` and injects them into `pydantic-ai` providers without mutating `os.environ` (`JBC-SEC-002`, `JBC-OBS-003`), preventing secret inheritance by child `pytest`/`mypy` verification subprocesses.
+
+```toml
+# Optional project-level provider mapping in pyproject.toml (rejects plaintext credentials):
+[tool.jezz.secrets]
+agent_reason = "jezz PCE runtime resolving model API credential"
+
+[tool.jezz.secrets.providers]
+google = "pass://AI-Keys/Gemini Developer API/API Key"
+```
+
+When authenticated with a Proton Pass **AI Agent token** (`PROTON_PASS_PERSONAL_ACCESS_TOKEN`), every vault read transmits `PROTON_PASS_AGENT_REASON` (configurable via `[tool.jezz.secrets].agent_reason` or `--agent-reason`) to Proton Pass's server-side audit log.
 
 ## Verification Gates
 
