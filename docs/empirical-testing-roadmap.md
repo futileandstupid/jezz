@@ -4,14 +4,15 @@ With Pillars 1–4 implemented, self-audited, and passing (`jezz.behaviors`, `je
 
 ---
 
-## Track 1 — Thin CLI Harness (`jezz inspect` / `jezz audit` / `jezz run`)
+## Track 1 — Thin CLI Harness (`jezz inspect` / `jezz audit` / `jezz run`) — *Implemented*
 
-**Goal:** Expose `BuildingInspector`, `audit_pce_dossier`, and `PceWorkflowOrchestrator` via a minimal, zero-variance CLI entrypoint (`pyproject.toml` `[project.scripts]`) so external repositories and scratch workspaces can be inspected or executed from a single terminal command.
+**Goal:** Expose `BuildingInspector`, `audit_pce_dossier`, and `PceWorkflowOrchestrator` via a minimal, zero-variance CLI entrypoint (`pyproject.toml` `[project.scripts]` -> `src/jezz/cli.py`) so external repositories and scratch workspaces can be inspected or executed from a single terminal command.
 
 - **Commands:**
-  - `uv run jezz inspect <repo_path>` — Run Rough-In (`JBC` v1.1 static/AST/cohesion/security) inspection over `<repo_path>` and emit a Markdown `InspectionReport` (with explicit exit code `0` on `APPROVED` / `APPROVED_WITH_VARIANCES`, `1` on `RED_TAG`).
+  - `uv run jezz inspect <repo_path>` — Run Rough-In (`JBC` v1.1 static/AST/cohesion/security) inspection over `<repo_path>` (supporting both `src/` and flat package layouts while pruning virtualenvs/caches) and emit a Markdown or JSON `InspectionReport` (`0` on `APPROVED` / `APPROVED_WITH_VARIANCES`, `1` on `RED_TAG`, `2` on input error).
   - `uv run jezz audit <dossier_json>` — Verify all five `PCE` phases via `audit_pce_dossier`.
-- **Success Criteria:** CLI module passes `JBC` v1.1 with zero variances (note `JBC-OBS-001` bans `print()` in `src/` unless writing via `sys.stdout.write` or a signed CLI entrypoint `CodeVariance`).
+  - `uv run jezz run <repo_path> --model <provider:model> (--prompt "..." | --mandate <json>)` — Execute `PceWorkflowOrchestrator` with optional `--write-dossier` output.
+- **Status:** Verified (`src/jezz/cli.py`, `src/jezz/__main__.py`, `tests/test_cli.py`) with zero `JBC` v1.1 variances.
 
 ---
 

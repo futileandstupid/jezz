@@ -15,6 +15,19 @@
 ## Empirical Validation Roadmap
 - **[Empirical Validation & Early Testing Roadmap](docs/empirical-testing-roadmap.md):** CLI harness, zero-cost brownfield `BuildingInspector` field trials, live-LLM `PceWorkflowOrchestrator` occupancy probes, and controlled `pydantic-evals` A/B benchmarks against prose "SDD".
 
+## CLI Usage
+
+```bash
+# Run JBC v1.1 Rough-In inspection on any Python repository (exit 0 = APPROVED, 1 = RED_TAG)
+uv run jezz inspect <repo_path> [--permit permit.json] [--format markdown|json]
+
+# Audit a 5-phase PCE EngineeringDossier against compiled workspace symbols and SHA-256 digest
+uv run jezz audit <dossier.json> [--repo <repo_path>] [--format markdown|json]
+
+# Execute a PCE prompt or mandate via PceWorkflowOrchestrator
+uv run jezz run <repo_path> --model <provider:model> (--prompt "..." | --mandate mandate.json)
+```
+
 ## Verification Gates
 
 ```bash

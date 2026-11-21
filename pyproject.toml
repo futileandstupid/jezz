@@ -15,6 +15,9 @@ dependencies = [
     "pydantic-graph>=2.71.0",
 ]
 
+[project.scripts]
+jezz = "jezz.cli:main"
+
 [dependency-groups]
 dev = [
     "hypothesis>=6.170.16",
