@@ -1,5 +1,13 @@
 """Pillar 2 public API: Enforceable Software Building Codes (JBC v1.1) and Inspector."""
 
+from jezz.codes.ast_graph import (
+    ModuleGraphEntry,
+    SymbolGraphEntry,
+    SymbolNodeKind,
+    WorkspaceAstGraph,
+    build_workspace_ast_graph,
+    extract_symbol_source_slice,
+)
 from jezz.codes.ast_utils import (
     CallableContext,
     CommentToken,
@@ -160,6 +168,7 @@ __all__ = [
     "LineNumber",
     "LoopBudget",
     "ManifestDependencies",
+    "ModuleGraphEntry",
     "NonEmptyStr",
     "NonNegativeInt",
     "OccupancyRuling",
@@ -173,8 +182,12 @@ __all__ = [
     "SourceUnit",
     "StandardBody",
     "StandardReference",
+    "SymbolGraphEntry",
+    "SymbolNodeKind",
+    "WorkspaceAstGraph",
     "assemble_inspection_report",
     "bind_permit_to_state",
+    "build_workspace_ast_graph",
     "build_workspace_inspector",
     "certify_occupancy_in_state",
     "check_cog_003_for_paths",
@@ -186,6 +199,7 @@ __all__ = [
     "compute_units_digest",
     "detect_hazard_triggers",
     "discover_workspace_units",
+    "extract_symbol_source_slice",
     "get_building_code",
     "inspect_differential_rough_in",
     "issue_certificate",

@@ -40,6 +40,7 @@ from jezz.codes import (
     issue_certificate,
 )
 from jezz.mcp_server import (
+    AstGraphQueryResult,
     JbcCatalogPayload,
     JezzWorkspaceGate,
     build_jezz_mcp_server,
@@ -215,6 +216,7 @@ async def test_mcp_server_advertises_seven_readonly_structured_tools(
         "jbc_inspect_differential",
         "jbc_preview_source",
         "jbc_audit_dossier",
+        "jbc_query_ast_graph",
     ]
     for tool in listed.tools:
         assert tool.output_schema is not None
@@ -531,3 +533,19 @@ async def test_all_canonical_archetypes_roundtrip_over_mcp_wire(tmp_path: Path) 
             assert wire_res.structured_content is not None
             assert wire_res.structured_content["is_valid"] == direct.is_valid
             assert len(wire_res.structured_content["entry_facts"]) == len(direct.entry_facts)
+
+
+async def test_mcp_query_ast_graph_returns_layers_callers_and_slices(tmp_path: Path) -> None:
+    server = build_jezz_mcp_server(workspace_root=_seed_clean_workspace(tmp_path))
+    async with Client(server, mode="legacy") as client:
+        res = await client.call_tool(
+            "jbc_query_ast_graph",
+            {"symbol_query": "double_cents", "caller_of": "double_cents"},
+        )
+
+    assert res.is_error is False
+    parsed = AstGraphQueryResult.model_validate_json(_first_text_block(list(res.content)))
+    assert parsed.has_import_cycles is False
+    assert "sample_pkg.calc" in parsed.compact_brief
+    assert any(c.qualname == "test_double_cents_doubles_positive_amount" for c in parsed.callers)
+    assert "def double_cents(" in parsed.symbol_slice

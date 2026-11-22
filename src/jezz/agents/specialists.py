@@ -24,6 +24,7 @@ from jezz.agents.schemas import (
     PceRuntimeBudget,
     RefactorPatchBundle,
     RemediationHypothesis,
+    ScopeDecompositionPlan,
     ToolsetAccessLevel,
 )
 from jezz.agents.workspace import (
@@ -38,6 +39,7 @@ from jezz.behaviors.taxonomy import BEHAVIOR_BASIS, BehaviorKind, WorkspaceEffec
 from jezz.codes.ast_utils import SourceUnit, parse_source_unit
 from jezz.guards import InstanceGuard, jezz_callable
 from jezz.methodology.dossier import extract_compiled_symbols
+from jezz.methodology.mandate import compute_scope_execution_waves
 
 DETERMINISTIC_BEHAVIOR_KINDS: Final[frozenset[BehaviorKind]] = frozenset(
     {
@@ -247,6 +249,7 @@ class PceModelSuite:
     synthesize_model: Model
     hypothesize_model: Model
     refactor_model: Model | None = None
+    decompose_model: Model | None = None
 
 
 type GuardedModel = Annotated[Model, InstanceGuard(Model)]
@@ -267,6 +270,7 @@ def uniform_model_suite(
         synthesize_model=model,
         hypothesize_model=model,
         refactor_model=model,
+        decompose_model=model,
     )
 
 
@@ -337,11 +341,29 @@ def _validate_instrument_output(
     for patch in bundle.test_patches:
         if not patch.file_path.startswith("tests/"):
             raise ModelRetry(f"Instrumentation file '{patch.file_path}' must reside under tests/.")
-    _parse_and_rough_in_check(
+    test_units = _parse_and_rough_in_check(
         ctx.deps,
         bundle.test_patches,
         "Phase III falsification suite",
     )
+    if ctx.deps.mandate is not None:
+        patched_paths = {u.file_path for u in test_units}
+        prior_tests = [
+            u
+            for u in ctx.deps.sandbox.load_units()
+            if u.is_test_file and u.file_path not in patched_paths
+        ]
+        compiled_tests = extract_compiled_symbols((*prior_tests, *test_units))
+        missing_verif = [
+            inv.verification_symbol
+            for inv in ctx.deps.mandate.invariants
+            if inv.verification_symbol not in compiled_tests
+        ]
+        if missing_verif:
+            raise ModelRetry(
+                f"Instrumentation test patches omit mandated verification_symbol(s): "
+                f"{missing_verif}. Define exact test functions matching each invariant."
+            )
     return bundle
 
 
@@ -532,6 +554,63 @@ def build_frame_agent(model: GuardedModel) -> GuardedAgent[FramedMandateProposal
     return agent
 
 
+def _validate_decompose_output(
+    ctx: RunContext[JezzAgentDeps],
+    plan: ScopeDecompositionPlan,
+) -> ScopeDecompositionPlan:
+    try:
+        compute_scope_execution_waves(plan.write_scopes)
+    except ValueError as exc:
+        raise ModelRetry(str(exc)) from exc
+    for scope in plan.write_scopes:
+        has_src = any(not rel.startswith(("tests/", "test/")) for rel in scope.owned_files)
+        if not has_src:
+            raise ModelRetry(
+                f"ModuleWriteScope '{scope.scope_id}' owns only test files "
+                f"{sorted(scope.owned_files)}; include at least one non-test src/.../*.py module."
+            )
+    if ctx.deps.mandate is not None:
+        verif_syms = {inv.verification_symbol for inv in ctx.deps.mandate.invariants}
+        orig_syms = {
+            sym
+            for s in ctx.deps.mandate.write_scopes
+            for sym in s.contract_symbols
+            if sym not in verif_syms
+        }
+        planned_syms = {sym for s in plan.write_scopes for sym in s.contract_symbols}
+        missing = sorted(orig_syms - planned_syms)
+        if missing:
+            raise ModelRetry(
+                f"Decomposed write_scopes dropped mandated contract_symbols: {missing}."
+            )
+    return plan
+
+
+@jezz_callable
+def build_decompose_agent(model: GuardedModel) -> GuardedAgent[ScopeDecompositionPlan]:
+    """Build BHV-09 DECOMPOSE specialist refining scopes and DAG waves over the AST graph."""
+    agent = Agent[JezzAgentDeps, ScopeDecompositionPlan](
+        model,
+        output_type=ScopeDecompositionPlan,
+        deps_type=JezzAgentDeps,
+        name="jezz_scope_architect",
+        retries=3,
+        toolsets=(build_readonly_toolset(),),
+        instructions=(
+            "Refine the EngineeringMandate's ModuleWriteScopes using the grounded Workspace AST "
+            "Graph and epistemic observations provided in the prompt. Partition files into "
+            "pairwise-disjoint ModuleWriteScopes where each scope owns at least one non-test "
+            "src/.../*.py file (pair tests/test_*.py files inside the scope they verify). "
+            "Populate `depends_on` with upstream `scope_id`s whenever a scope imports types or "
+            "callables synthesized in an upstream scope, forming a strict DAG (zero cycles, "
+            "preventing JBC-COG-003 circular imports by design). Preserve all mandated "
+            "contract_symbols."
+        ),
+    )
+    agent.output_validator(_validate_decompose_output)
+    return agent
+
+
 @jezz_callable
 def build_inspect_agent(model: GuardedModel) -> GuardedAgent[EpistemicObservation]:
     """Build BHV-04 INSPECT_CODE read-only epistemic specialist."""
@@ -718,7 +797,7 @@ async def run_bounded_agent[OutputT](
 ) -> tuple[Annotated[OutputT, InstanceGuard(object)], AgentInvocationTelemetry]:
     """Execute ``agent`` under wall-clock timeout and UsageLimits token/step breakers."""
     limits = UsageLimits(
-        request_limit=budget.request_limit_per_step,
+        request_limit=budget.request_limit_for(behavior_kind),
         tool_calls_limit=budget.tool_calls_limit_per_step,
         total_tokens_limit=budget.total_tokens_limit_per_step,
     )

@@ -51,11 +51,12 @@ uv run jezz hook stop [--root <repo_path>] [--max-continuations 3] [--require-ma
 
 ## Statutory MCP Gate Server (`jezz mcp`)
 
-External interactive coding agents (Antigravity, Claude Code, Cursor, Codex, JetBrains AI) can mount `jezz` as a zero-mutation, zero-shell `stdio` MCP server (`src/jezz/mcp_server.py`), exposing 7 structured tools jailed inside `--root` via `ContainedPath` (`JBC-SEC-005`):
+External interactive coding agents (Antigravity, Claude Code, Cursor, Codex, JetBrains AI) can mount `jezz` as a zero-mutation, zero-shell `stdio` MCP server (`src/jezz/mcp_server.py`), exposing 8 structured tools jailed inside `--root` via `ContainedPath` (`JBC-SEC-005`):
 
 - `jbc_preview_source`: Pre-write in-memory Rough-In inspection of an unsaved Python buffer overlaid onto the workspace module graph (catching both per-unit violations and cross-module `JBC-COG-003` circular imports / `_private` leaks before touching disk).
 - `jbc_inspect_differential`: Git-aware Differential Occupancy Ratchet (`--changed-since`, defaulting to `HEAD`, or `staged=True`).
 - `jbc_inspect_workspace`: Full repository `JBC` Edition 1.1 Rough-In inspection with `CodePermit` and sunset `as_of` support.
+- `jbc_query_ast_graph`: Deterministic workspace AST import/topological-layer map, cross-module symbol call-site lookup (`caller_of`), and exact AST line-slice extraction (`symbol_query`).
 - `jbc_list_codes` / `jbc_get_code`: On-demand statutory catalog and verbatim ISO/IEEE/CWE/CERT lineage lookup across all 30 `JBC` provisions.
 - `jbc_verify_behavior_graph`: Pillar 1 `BehaviorGraph` transition-matrix and Kildall monotone dataflow verifier.
 - `jbc_audit_dossier`: Pillar 3 `EngineeringDossier` 5-phase Permit-and-Contract Engineering (`PCE`) auditor (accepting `dossier_path` or fileless `dossier_json`).

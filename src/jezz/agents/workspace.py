@@ -18,7 +18,9 @@ from typing import Annotated, Final, Protocol, runtime_checkable
 from pydantic import BaseModel, Field
 from pydantic_ai import FunctionToolset, ModelRetry, RunContext
 
+from jezz.agents.env_introspect import inspect_installed_package_api
 from jezz.agents.schemas import FilePatchArtifact
+from jezz.codes.ast_graph import build_workspace_ast_graph, extract_symbol_source_slice
 from jezz.codes.ast_utils import SourceUnit, dotted_expr_name, parse_source_unit
 from jezz.codes.inspector import BuildingInspector, load_workspace_units
 from jezz.codes.permits import CodePermit, GateAttestation, GateKind
@@ -566,6 +568,87 @@ def find_type_alias_misuse(
     return None
 
 
+def _tool_query_ast_graph(
+    ctx: RunContext[JezzAgentDeps],
+    module_or_file: IdentifierStr | None = None,
+) -> BoundedText:
+    """Query the workspace AST import, topological layer, and public symbol graph."""
+    graph = build_workspace_ast_graph(ctx.deps.sandbox.load_units())
+    if module_or_file is None:
+        return graph.to_compact_brief()
+    entry = graph.module_neighbors(module_or_file)
+    if entry is None:
+        return f"# NOT_FOUND: '{module_or_file}' is absent from the workspace AST graph."
+    return (
+        f"Module {entry.file_path} ({entry.module_name}, layer L{entry.topological_layer}):\n"
+        f"- imports: {list(entry.imports)}\n"
+        f"- imported_by: {list(entry.imported_by)}\n"
+        f"- public_symbols: {list(entry.public_symbols)}"
+    )[:32_768]
+
+
+def _tool_find_symbol_callers(
+    ctx: RunContext[JezzAgentDeps],
+    target_symbol: IdentifierStr,
+) -> BoundedText:
+    """Find all workspace functions/methods whose AST body calls ``target_symbol``."""
+    graph = build_workspace_ast_graph(ctx.deps.sandbox.load_units())
+    callers = graph.find_callers(target_symbol)
+    if not callers:
+        return f"Zero workspace call sites found for '{target_symbol}'."
+    lines = [
+        f"- {c.file_path}:L{c.start_line}-L{c.end_line} ({c.qualname}): {c.signature_summary}"
+        for c in callers[:48]
+    ]
+    return "\n".join(lines)[:32_768]
+
+
+def _tool_read_symbol_slice(
+    ctx: RunContext[JezzAgentDeps],
+    symbol_query: IdentifierStr,
+    file_path: IdentifierStr | None = None,
+) -> SourceCodeText:
+    """Read the exact AST line slice for a class, method, function, or type alias."""
+    return extract_symbol_source_slice(
+        ctx.deps.sandbox.load_units(),
+        symbol_query,
+        file_path=file_path,
+    )
+
+
+def _tool_inspect_package_api(
+    ctx: RunContext[JezzAgentDeps],
+    module_path: IdentifierStr,
+    symbol_filter: IdentifierStr | None = None,
+) -> BoundedText:
+    """Introspect installed stdlib or .venv package classes, callables, and signatures."""
+    _ = ctx
+    try:
+        summary = inspect_installed_package_api(module_path, symbol_filter=symbol_filter)
+    except (ImportError, ValueError) as exc:
+        raise ModelRetry(str(exc)) from exc
+    return summary.to_compact_text()
+
+
+def _missing_test_verification_symbols(
+    deps: JezzAgentDeps,
+    candidate_unit: SourceUnit,
+) -> list[str]:
+    if deps.mandate is None:
+        return []
+    other_tests = [
+        u
+        for u in deps.sandbox.load_units()
+        if u.is_test_file and u.file_path != candidate_unit.file_path
+    ]
+    compiled = extract_compiled_symbols((candidate_unit, *other_tests))
+    return [
+        inv.verification_symbol
+        for inv in deps.mandate.invariants
+        if inv.verification_symbol not in compiled
+    ]
+
+
 def _tool_preview_rough_in(
     ctx: RunContext[JezzAgentDeps],
     rel_path: IdentifierStr,
@@ -599,6 +682,13 @@ def _tool_preview_rough_in(
         )
         if runtime_err is not None:
             return f"RED_TAG (runtime import gate): {runtime_err}"
+    if rel_path.startswith("tests/") and rel_path.endswith(".py"):
+        missing_verif = _missing_test_verification_symbols(ctx.deps, unit)
+        if missing_verif:
+            return (
+                f"APPROVED JBC rough-in for '{rel_path}', Note: mandated verification_symbol(s) "
+                f"not yet defined across test files: {missing_verif}."
+            )
     return f"APPROVED: 0 unwaived JBC violations in '{rel_path}'."
 
 
@@ -613,6 +703,10 @@ def build_readonly_toolset() -> Annotated[
             _tool_list_authorized_files,
             _tool_read_workspace_file,
             _tool_inspect_file_symbols,
+            _tool_query_ast_graph,
+            _tool_find_symbol_callers,
+            _tool_read_symbol_slice,
+            _tool_inspect_package_api,
         ),
         max_retries=2,
         timeout=10.0,
@@ -625,12 +719,16 @@ def build_scoped_write_toolset() -> Annotated[
     FunctionToolset[JezzAgentDeps],
     InstanceGuard(FunctionToolset),
 ]:
-    """Construct a toolset with read access and JBC rough-in dry-run preview for mutating agents."""
+    """Construct a toolset with read access, AST/API introspection, and JBC rough-in preview."""
     return FunctionToolset(
         tools=(
             _tool_list_authorized_files,
             _tool_read_workspace_file,
             _tool_inspect_file_symbols,
+            _tool_query_ast_graph,
+            _tool_find_symbol_callers,
+            _tool_read_symbol_slice,
+            _tool_inspect_package_api,
             _tool_preview_rough_in,
         ),
         max_retries=2,

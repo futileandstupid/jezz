@@ -581,12 +581,7 @@ def _execute_pce_run(
         if ns.gate_runner == GateRunnerChoice.SUBPROCESS
         else InProcessGateRunner()
     )
-    budget = PceRuntimeBudget(
-        agent_timeout_sec=min(240.0, timeout_sec),
-        request_limit_per_step=24,
-        tool_calls_limit_per_step=48,
-        total_tokens_limit_per_step=524_288,
-    )
+    budget = PceRuntimeBudget.production_defaults(agent_timeout_sec=min(240.0, timeout_sec))
     pre_supplied = (
         _one_shot_clarification_callback(ns.clarifications)
         if ns.resume_elicitation is None

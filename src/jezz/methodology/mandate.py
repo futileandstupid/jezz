@@ -1,9 +1,11 @@
 """Pillar 3 (PCE): Anti-Agile, anti-theatre engineering mandates and disjoint write scopes."""
 
 import re
+from collections.abc import Sequence
 from enum import StrEnum
 from typing import Annotated, Final, Self
 
+import icontract
 from pydantic import BaseModel, Field, model_validator
 
 from jezz.guards import (
@@ -11,6 +13,7 @@ from jezz.guards import (
     WIRE_FROZENSET_VALIDATOR,
     WIRE_TUPLE_VALIDATOR,
     IdentifierStr,
+    LoopBudget,
     ShortText,
     jezz_callable,
 )
@@ -107,7 +110,7 @@ class DomainInvariant(BaseModel):
 
 
 class ModuleWriteScope(BaseModel):
-    """Disjoint file-ownership envelope and contract surface for an engineering unit."""
+    """Disjoint file-ownership envelope, contract surface, and upstream DAG dependencies."""
 
     model_config = STRICT_FROZEN_CONFIG
 
@@ -122,9 +125,17 @@ class ModuleWriteScope(BaseModel):
         WIRE_TUPLE_VALIDATOR,
         Field(min_length=1, max_length=128),
     ]
+    depends_on: Annotated[
+        frozenset[IdentifierStr],
+        WIRE_FROZENSET_VALIDATOR,
+        Field(max_length=64),
+    ] = frozenset()
 
     @model_validator(mode="after")
     def _enforce_valid_contract_symbols(self) -> Self:
+        if self.scope_id in self.depends_on:
+            msg = f"ModuleWriteScope '{self.scope_id}' cannot declare self-dependency."
+            raise ValueError(msg)
         for sym in self.contract_symbols:
             _validate_python_symbol_ref(
                 sym,
@@ -150,6 +161,44 @@ def _verify_disjoint_scopes(scopes: tuple[ModuleWriteScope, ...]) -> None:
                 )
                 raise ValueError(msg)
             claimed_files[file_path] = scope.scope_id
+
+
+def _verify_scope_dependency_targets(scopes: tuple[ModuleWriteScope, ...]) -> None:
+    known_ids = {s.scope_id for s in scopes}
+    for scope in scopes:
+        missing = sorted(scope.depends_on - known_ids)
+        if missing:
+            msg = f"ModuleWriteScope '{scope.scope_id}' depends_on unknown scope_id(s): {missing}."
+            raise ValueError(msg)
+
+
+@icontract.ensure(lambda scopes, result: sum(len(wave) for wave in result) == len(scopes))
+@jezz_callable
+def compute_scope_execution_waves(
+    scopes: Annotated[Sequence[ModuleWriteScope], Field(min_length=1, max_length=64)],
+) -> Annotated[tuple[tuple[ModuleWriteScope, ...], ...], Field(min_length=1, max_length=64)]:
+    """Partition ``scopes`` into acyclic topological execution waves via Kahn peeling."""
+    scope_tuple = tuple(scopes)
+    _verify_disjoint_scopes(scope_tuple)
+    _verify_scope_dependency_targets(scope_tuple)
+
+    completed: set[str] = set()
+    remaining: list[ModuleWriteScope] = list(scope_tuple)
+    waves: list[tuple[ModuleWriteScope, ...]] = []
+    budget = LoopBudget(max_steps=len(scope_tuple) + 2)
+
+    while remaining:
+        budget.tick()
+        ready = tuple(s for s in remaining if s.depends_on <= completed)
+        if not ready:
+            stalled = [s.scope_id for s in remaining]
+            msg = f"Cyclic ModuleWriteScope dependency graph detected across scopes: {stalled}."
+            raise ValueError(msg)
+        waves.append(ready)
+        completed |= {s.scope_id for s in ready}
+        remaining = [s for s in remaining if s.scope_id not in completed]
+
+    return tuple(waves)
 
 
 class EngineeringMandate(BaseModel):
@@ -196,7 +245,7 @@ class EngineeringMandate(BaseModel):
                 raise ValueError(msg)
             seen_invariants.add(inv.invariant_id)
 
-        _verify_disjoint_scopes(self.write_scopes)
+        compute_scope_execution_waves(self.write_scopes)
         return self
 
     @property
@@ -211,3 +260,10 @@ class EngineeringMandate(BaseModel):
         for scope in self.write_scopes:
             combined |= set(scope.owned_files)
         return frozenset(combined)
+
+    @jezz_callable
+    def execution_waves(
+        self,
+    ) -> Annotated[tuple[tuple[ModuleWriteScope, ...], ...], Field(min_length=1, max_length=64)]:
+        """Return the validated topological execution waves across ``self.write_scopes``."""
+        return compute_scope_execution_waves(self.write_scopes)

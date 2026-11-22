@@ -29,6 +29,7 @@ class SpecialistRoleSlot(StrEnum):
     """Canonical generative specialist slots composing ``PceModelSuite``."""
 
     FRAME = "frame"
+    DECOMPOSE = "decompose"
     INSPECT = "inspect"
     SPECIFY = "specify"
     INSTRUMENT = "instrument"
@@ -48,6 +49,7 @@ class SpecialistTier(StrEnum):
 ROLE_TIER_MAP: Final[Mapping[SpecialistRoleSlot, SpecialistTier]] = MappingProxyType(
     {
         SpecialistRoleSlot.FRAME: SpecialistTier.ARCHITECT,
+        SpecialistRoleSlot.DECOMPOSE: SpecialistTier.ARCHITECT,
         SpecialistRoleSlot.SPECIFY: SpecialistTier.ARCHITECT,
         SpecialistRoleSlot.HYPOTHESIZE: SpecialistTier.ARCHITECT,
         SpecialistRoleSlot.INSTRUMENT: SpecialistTier.BUILDER,
@@ -186,11 +188,12 @@ class CliModelOverrides(BaseModel):
 
 
 class ResolvedModelRouting(BaseModel):
-    """Concrete ``provider:model`` assignment across all 7 generative PCE specialist slots."""
+    """Concrete ``provider:model`` assignment across all 8 generative PCE specialist slots."""
 
     model_config = STRICT_FROZEN_CONFIG
 
     frame: IdentifierStr
+    decompose: IdentifierStr
     inspect: IdentifierStr
     specify: IdentifierStr
     instrument: IdentifierStr
@@ -202,6 +205,7 @@ class ResolvedModelRouting(BaseModel):
     def _validate_all_slots(self) -> Self:
         for slot_name, spec in (
             ("frame", self.frame),
+            ("decompose", self.decompose),
             ("inspect", self.inspect),
             ("specify", self.specify),
             ("instrument", self.instrument),
@@ -220,10 +224,11 @@ class ResolvedModelRouting(BaseModel):
     @jezz_callable
     def slot_mapping(
         self,
-    ) -> Annotated[dict[SpecialistRoleSlot, IdentifierStr], Field(min_length=7, max_length=7)]:
+    ) -> Annotated[dict[SpecialistRoleSlot, IdentifierStr], Field(min_length=8, max_length=8)]:
         """Return the bijective mapping from ``SpecialistRoleSlot`` to model identifier."""
         return {
             SpecialistRoleSlot.FRAME: self.frame,
+            SpecialistRoleSlot.DECOMPOSE: self.decompose,
             SpecialistRoleSlot.INSPECT: self.inspect,
             SpecialistRoleSlot.SPECIFY: self.specify,
             SpecialistRoleSlot.INSTRUMENT: self.instrument,
@@ -232,16 +237,17 @@ class ResolvedModelRouting(BaseModel):
             SpecialistRoleSlot.HYPOTHESIZE: self.hypothesize,
         }
 
-    @icontract.ensure(lambda result: 1 <= len(result) <= 7)
+    @icontract.ensure(lambda result: 1 <= len(result) <= 8)
     @jezz_callable
     def unique_model_names(
         self,
-    ) -> Annotated[tuple[IdentifierStr, ...], Field(min_length=1, max_length=7)]:
+    ) -> Annotated[tuple[IdentifierStr, ...], Field(min_length=1, max_length=8)]:
         """Return deduplicated model identifiers in canonical specialist-slot order."""
         seen: set[str] = set()
         ordered: list[str] = []
         for spec in (
             self.frame,
+            self.decompose,
             self.inspect,
             self.specify,
             self.instrument,
@@ -257,7 +263,7 @@ class ResolvedModelRouting(BaseModel):
     @jezz_callable
     def unique_provider_families(
         self,
-    ) -> Annotated[frozenset[IdentifierStr], Field(max_length=7)]:
+    ) -> Annotated[frozenset[IdentifierStr], Field(max_length=8)]:
         """Return distinct canonical provider families requiring API credentials."""
         families: set[str] = set()
         for model_name in self.unique_model_names():
@@ -271,7 +277,7 @@ class ResolvedModelRouting(BaseModel):
         """Render a bounded human-readable summary label for reports and benchmarks."""
         if self.is_uniform:
             return self.synthesize
-        arch_uniform = self.frame == self.specify == self.hypothesize
+        arch_uniform = self.frame == self.decompose == self.specify == self.hypothesize
         build_uniform = self.instrument == self.synthesize == self.refactor
         if arch_uniform and build_uniform:
             raw = f"tiered(arch={self.frame}, build={self.synthesize}, inspect={self.inspect})"
@@ -294,6 +300,7 @@ class ResolvedModelRouting(BaseModel):
             synthesize_model=instances[self.synthesize],
             hypothesize_model=instances[self.hypothesize],
             refactor_model=instances[self.refactor],
+            decompose_model=instances[self.decompose],
         )
 
 
@@ -362,6 +369,7 @@ def resolve_specialist_routing(
         raise ValueError(msg)
     return ResolvedModelRouting(
         frame=resolved_by_slot[SpecialistRoleSlot.FRAME],
+        decompose=resolved_by_slot[SpecialistRoleSlot.DECOMPOSE],
         inspect=resolved_by_slot[SpecialistRoleSlot.INSPECT],
         specify=resolved_by_slot[SpecialistRoleSlot.SPECIFY],
         instrument=resolved_by_slot[SpecialistRoleSlot.INSTRUMENT],

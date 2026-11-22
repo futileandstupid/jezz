@@ -15,6 +15,7 @@ from jezz.methodology.mandate import (
     EngineeringMandate,
     ModuleWriteScope,
     PcePhase,
+    compute_scope_execution_waves,
     validate_engineering_prose,
 )
 
@@ -30,6 +31,7 @@ __all__ = [
     "ModuleWriteScope",
     "PcePhase",
     "audit_pce_dossier",
+    "compute_scope_execution_waves",
     "extract_compiled_symbols",
     "validate_engineering_prose",
 ]

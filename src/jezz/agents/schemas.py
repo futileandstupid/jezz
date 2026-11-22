@@ -4,7 +4,7 @@ import ast
 from enum import StrEnum
 from typing import Annotated, Self
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, BeforeValidator, Field, model_validator
 
 from jezz.behaviors.graph import BehaviorGraph, GraphVerificationReport
 from jezz.behaviors.runtime import ExecutionStep
@@ -18,9 +18,10 @@ from jezz.guards import (
     NonNegativeInt,
     ShortText,
     SourceCodeText,
+    jezz_callable,
 )
 from jezz.methodology.dossier import DossierAuditReport
-from jezz.methodology.mandate import EngineeringMandate
+from jezz.methodology.mandate import EngineeringMandate, ModuleWriteScope
 
 
 class ExecutionEngineKind(StrEnum):
@@ -96,6 +97,19 @@ class FramedMandateProposal(BaseModel):
 
     mandate: EngineeringMandate
     framing_notes: ShortText
+
+
+class ScopeDecompositionPlan(BaseModel):
+    """Structured output of BHV-09 DECOMPOSE partitioning scopes over the workspace AST graph."""
+
+    model_config = STRICT_FROZEN_CONFIG
+
+    write_scopes: Annotated[
+        tuple[ModuleWriteScope, ...],
+        WIRE_TUPLE_VALIDATOR,
+        Field(min_length=1, max_length=64),
+    ]
+    decomposition_rationale: ShortText
 
 
 class EpistemicObservation(BaseModel):
@@ -251,6 +265,19 @@ class ElicitationTicket(BaseModel):
         return self
 
 
+def _coerce_behavior_budget_keys(raw_value: object) -> object:
+    if not isinstance(raw_value, dict):
+        return raw_value
+    coerced: dict[BehaviorKind, object] = {}
+    for key, val in raw_value.items():
+        bhv = key if isinstance(key, BehaviorKind) else BehaviorKind(str(key))
+        coerced[bhv] = val
+    return coerced
+
+
+_BEHAVIOR_BUDGET_KEY_VALIDATOR = BeforeValidator(_coerce_behavior_budget_keys)
+
+
 class PceRuntimeBudget(BaseModel):
     """Deterministic step, token, and wall-clock ceilings for PCE agent execution."""
 
@@ -259,9 +286,44 @@ class PceRuntimeBudget(BaseModel):
     max_remediation_cycles: Annotated[int, Field(ge=1, le=10)] = 3
     max_elicitation_rounds: Annotated[int, Field(ge=1, le=8)] = 3
     agent_timeout_sec: Annotated[float, Field(gt=0.0, le=600.0, allow_inf_nan=False)] = 30.0
-    request_limit_per_step: Annotated[int, Field(ge=1, le=32)] = 6
-    tool_calls_limit_per_step: Annotated[int, Field(ge=0, le=64)] = 12
+    request_limit_per_step: Annotated[int, Field(ge=1, le=64)] = 6
+    tool_calls_limit_per_step: Annotated[int, Field(ge=0, le=128)] = 12
     total_tokens_limit_per_step: Annotated[int, Field(ge=128, le=1_000_000)] = 65_536
+    phase_request_overrides: Annotated[
+        dict[BehaviorKind, Annotated[int, Field(ge=1, le=64)]],
+        _BEHAVIOR_BUDGET_KEY_VALIDATOR,
+        Field(max_length=21),
+    ] = Field(default_factory=dict)
+
+    @jezz_callable
+    def request_limit_for(
+        self,
+        kind: BehaviorKind,
+    ) -> Annotated[int, Field(ge=1, le=64)]:
+        """Return the phase-scoped request limit for ``kind``, falling back to the step default."""
+        return self.phase_request_overrides.get(kind, self.request_limit_per_step)
+
+    @classmethod
+    @jezz_callable
+    def production_defaults(
+        cls,
+        *,
+        agent_timeout_sec: Annotated[float, Field(gt=0.0, le=600.0, allow_inf_nan=False)] = 240.0,
+    ) -> PceRuntimeBudget:
+        """Construct phase-scoped production ceilings separating epistemic and synthesis phases."""
+        return cls(
+            agent_timeout_sec=agent_timeout_sec,
+            request_limit_per_step=18,
+            tool_calls_limit_per_step=64,
+            total_tokens_limit_per_step=524_288,
+            phase_request_overrides={
+                BehaviorKind.SPECIFY: 28,
+                BehaviorKind.INSTRUMENT: 36,
+                BehaviorKind.SYNTHESIZE: 36,
+                BehaviorKind.REFACTOR: 36,
+                BehaviorKind.DELEGATE: 36,
+            },
+        )
 
 
 class PceWorkflowResult(BaseModel):

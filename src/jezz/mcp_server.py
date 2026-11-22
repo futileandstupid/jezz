@@ -12,6 +12,12 @@ from mcp.types import ToolAnnotations
 from pydantic import BaseModel, BeforeValidator, Field, ValidationError
 
 from jezz.behaviors.graph import BehaviorGraph, GraphVerificationReport, verify_behavior_graph
+from jezz.codes.ast_graph import (
+    ModuleGraphEntry,
+    SymbolGraphEntry,
+    build_workspace_ast_graph,
+    extract_symbol_source_slice,
+)
 from jezz.codes.ast_utils import SourceUnit, parse_source_unit
 from jezz.codes.codebook import CODE_BOOK, CODEBOOK_EDITION
 from jezz.codes.discovery import (
@@ -41,6 +47,7 @@ from jezz.codes.taxonomy import (
 from jezz.guards import (
     STRICT_FROZEN_CONFIG,
     WIRE_TUPLE_VALIDATOR,
+    BoundedText,
     BudgetExceededError,
     ContainedPath,
     IdentifierStr,
@@ -135,6 +142,26 @@ class JbcCatalogPayload(BaseModel):
         WIRE_TUPLE_VALIDATOR,
         Field(max_length=256),
     ]
+
+
+class AstGraphQueryResult(BaseModel):
+    """Structured AST import, call, and symbol-slice query response for ``jbc_query_ast_graph``."""
+
+    model_config = STRICT_FROZEN_CONFIG
+
+    has_import_cycles: bool
+    compact_brief: BoundedText
+    modules: Annotated[
+        tuple[ModuleGraphEntry, ...],
+        WIRE_TUPLE_VALIDATOR,
+        Field(max_length=512),
+    ] = ()
+    callers: Annotated[
+        tuple[SymbolGraphEntry, ...],
+        WIRE_TUPLE_VALIDATOR,
+        Field(max_length=256),
+    ] = ()
+    symbol_slice: SourceCodeText = ""
 
 
 @jezz_callable
@@ -331,6 +358,27 @@ def _run_dossier_audit(
     return audit_pce_dossier(dossier, units)
 
 
+def _run_ast_graph_query(
+    anchor_root: Path,
+    workspace_subpath: IdentifierStr,
+    target_dirs: Sequence[IdentifierStr],
+    symbol_query: IdentifierStr | None,
+    caller_of: IdentifierStr | None,
+) -> AstGraphQueryResult:
+    target_repo = _resolve_contained_dir(anchor_root, workspace_subpath)
+    units = discover_workspace_units(target_repo, target_dirs=target_dirs)
+    graph = build_workspace_ast_graph(units)
+    callers = graph.find_callers(caller_of)[:256] if caller_of is not None else ()
+    snippet = extract_symbol_source_slice(units, symbol_query) if symbol_query is not None else ""
+    return AstGraphQueryResult(
+        has_import_cycles=graph.has_import_cycles,
+        compact_brief=graph.to_compact_brief(),
+        modules=graph.modules[:512],
+        callers=callers,
+        symbol_slice=snippet,
+    )
+
+
 class JezzWorkspaceGate:
     """Workspace-jailed JBC v1.1 and PCE verification gate bound to ``anchor_root``."""
 
@@ -436,6 +484,29 @@ class JezzWorkspaceGate:
             )
         )
 
+    @jezz_callable
+    def query_ast_graph(
+        self,
+        workspace_subpath: IdentifierStr = ".",
+        target_dirs: Annotated[
+            tuple[IdentifierStr, ...],
+            WIRE_TUPLE_VALIDATOR,
+            Field(max_length=64),
+        ] = (),
+        symbol_query: IdentifierStr | None = None,
+        caller_of: IdentifierStr | None = None,
+    ) -> AstGraphQueryResult:
+        """Query the workspace AST import/topological-layer graph, callers, and symbol slices."""
+        return _run_tool_safely(
+            lambda: _run_ast_graph_query(
+                self._anchor_root,
+                workspace_subpath,
+                target_dirs,
+                symbol_query,
+                caller_of,
+            )
+        )
+
 
 def _make_preview_handler(gate: JezzWorkspaceGate) -> Callable[..., DifferentialInspectionReport]:
     def _preview_tool(
@@ -499,6 +570,12 @@ def _register_statutory_tools(server: MCPServer[object], gate: JezzWorkspaceGate
             "Audit PCE Engineering Dossier",
             "Verify 5-phase Permit-and-Contract Engineering dossier grounding and occupancy seal.",
             gate.audit_dossier,
+        ),
+        (
+            "jbc_query_ast_graph",
+            "Query Workspace AST Graph",
+            "Inspect deterministic module import layers, symbol call sites, and AST source slices.",
+            gate.query_ast_graph,
         ),
     )
     for name, title, description, handler in specs:

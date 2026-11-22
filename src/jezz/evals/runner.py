@@ -19,6 +19,7 @@ from jezz.agents.workspace import (
     InProcessGateRunner,
     UvSubprocessGateRunner,
 )
+from jezz.behaviors.taxonomy import BehaviorKind
 from jezz.codes.inspector import BuildingInspector, ManifestDependencies
 from jezz.evals.evaluators import GuardedDataset, build_track4_dataset
 from jezz.evals.schemas import (
@@ -231,11 +232,22 @@ async def run_pce_treatment_case(
         sync_venv=deps.config.sync_workspace_venv,
     )
     mandate_lines = len(task.mandate.model_dump_json(indent=2).splitlines())
+    synth_cap = (
+        min(64, max(deps.config.request_limit_per_step, 36))
+        if deps.config.request_limit_per_step >= 16
+        else deps.config.request_limit_per_step
+    )
     budget = PceRuntimeBudget(
         agent_timeout_sec=deps.config.agent_timeout_sec,
         request_limit_per_step=deps.config.request_limit_per_step,
         tool_calls_limit_per_step=deps.config.tool_calls_limit_per_step,
         total_tokens_limit_per_step=deps.config.total_tokens_limit_per_step,
+        phase_request_overrides={
+            BehaviorKind.INSTRUMENT: synth_cap,
+            BehaviorKind.SYNTHESIZE: synth_cap,
+            BehaviorKind.REFACTOR: synth_cap,
+            BehaviorKind.DELEGATE: synth_cap,
+        },
     )
     orchestrator = PceWorkflowOrchestrator(
         _build_isolated_model_suite(model, deps),

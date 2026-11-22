@@ -20,6 +20,7 @@ from jezz.agents.schemas import (
 )
 from jezz.agents.specialists import (
     PceModelSuite,
+    build_decompose_agent,
     build_frame_agent,
     build_hypothesize_agent,
     build_inspect_agent,
@@ -38,6 +39,7 @@ from jezz.behaviors.runtime import (
     trace_to_behavior_graph,
 )
 from jezz.behaviors.taxonomy import BehaviorKind
+from jezz.codes.ast_graph import build_workspace_ast_graph
 from jezz.codes.inspector import (
     BuildingInspector,
     bind_permit_to_state,
@@ -52,7 +54,11 @@ from jezz.methodology.dossier import (
     audit_pce_dossier,
     extract_compiled_symbols,
 )
-from jezz.methodology.mandate import EngineeringMandate, ModuleWriteScope
+from jezz.methodology.mandate import (
+    EngineeringMandate,
+    ModuleWriteScope,
+    compute_scope_execution_waves,
+)
 
 _IMPL_CHECKPOINT_ID = "checkpoint_impl"
 
@@ -90,6 +96,8 @@ class PceGraphDeps:
     elicitation_callback: ElicitationCallback | None = None
     progress_callback: ProgressCallback | None = None
     plan_only: bool = False
+    mandate_was_framed: bool = False
+    ast_graph_brief: str = ""
     baseline_red_tag_summary: str = ""
     latest_report: InspectionReport | None = None
     attestations: tuple[GateAttestation, ...] = ()
@@ -169,7 +177,8 @@ def _format_mandate_prompt(
         for inv in mandate.invariants
     )
     scope_lines = "; ".join(
-        f"{s.scope_id} -> files={sorted(s.owned_files)}, symbols={list(s.contract_symbols)}"
+        f"{s.scope_id}(deps={sorted(s.depends_on)}) -> "
+        f"files={sorted(s.owned_files)}, symbols={list(s.contract_symbols)}"
         for s in mandate.write_scopes
     )
     existing = _existing_authorized_files(sandbox)
@@ -199,12 +208,15 @@ def _format_baseline_red_tags(report: InspectionReport) -> str:
     return f"{len(violations)} baseline JBC violation(s):\n" + "\n".join(lines)
 
 
-def _render_brownfield_frame_context(deps: PceGraphDeps) -> str:
-    if deps.workflow_mode != PceWorkflowMode.RENOVATE:
-        return ""
+def _render_workspace_frame_context(deps: PceGraphDeps) -> str:
     units = deps.sandbox.load_units()
     if not units:
         return ""
+    ast_graph = build_workspace_ast_graph(units)
+    if deps.workflow_mode != PceWorkflowMode.RENOVATE:
+        if not ast_graph.symbols:
+            return ""
+        return f"\nExisting Workspace AST Graph:\n{ast_graph.to_compact_brief(max_modules=24)}"
     files = [u.file_path for u in units]
     pub_syms = sorted(
         sym for sym in extract_compiled_symbols(units) if "." not in sym and not sym.startswith("_")
@@ -213,13 +225,14 @@ def _render_brownfield_frame_context(deps: PceGraphDeps) -> str:
     return (
         f"\nBrownfield Workspace Files: {files}\n"
         f"Existing Public Symbols: {pub_syms}\n"
+        f"{ast_graph.to_compact_brief(max_modules=24)}\n"
         f"Baseline Inspection:\n{_format_baseline_red_tags(rough)}"
     )
 
 
 def _build_frame_prompt(deps: PceGraphDeps) -> str:
     base = deps.task_prompt.strip() or "Frame engineering mandate."
-    context = _render_brownfield_frame_context(deps)
+    context = _render_workspace_frame_context(deps)
     if deps.prior_draft_mandate is None or not deps.clarifications:
         return f"{base}{context}"[:60_000]
     answers = "\n".join(f"- {item}" for item in deps.clarifications)
@@ -328,6 +341,7 @@ class FrameNode(AtomicBehaviorGraphNode[PceGraphDeps, PceWorkflowResult]):
             )
             ctx.deps.telemetry.append(tel)
             ctx.deps.mandate = proposal.mandate
+            ctx.deps.mandate_was_framed = True
             ctx.deps.prior_draft_mandate = None
             ctx.deps.clarifications = ()
 
@@ -421,17 +435,20 @@ class InspectCodeNode(AtomicBehaviorGraphNode[PceGraphDeps, PceWorkflowResult]):
         ctx: GraphRunContext[AgentExecutionState, PceGraphDeps],
     ) -> DecomposeNode:
         mandate = _require_mandate(ctx.deps)
+        units = ctx.deps.sandbox.load_units()
+        ast_graph = build_workspace_ast_graph(units)
+        ctx.deps.ast_graph_brief = ast_graph.to_compact_brief(max_modules=32)
         if ctx.deps.workflow_mode == PceWorkflowMode.RENOVATE:
-            rough = ctx.deps.inspector.inspect_rough_in(
-                ctx.deps.sandbox.load_units(),
-                permit=ctx.deps.permit,
-            )
+            rough = ctx.deps.inspector.inspect_rough_in(units, permit=ctx.deps.permit)
             ctx.deps.baseline_red_tag_summary = _format_baseline_red_tags(rough)
             ctx.state.world_model.observations.append(ctx.deps.baseline_red_tag_summary[:1000])
+        inspect_prompt = (
+            f"{_format_mandate_prompt(mandate, ctx.deps.sandbox)}\n{ctx.deps.ast_graph_brief}"
+        )[:60_000]
         obs, tel = await run_bounded_agent(
             build_inspect_agent(ctx.deps.models.inspect_model),
             behavior_kind=BehaviorKind.INSPECT_CODE,
-            prompt=_format_mandate_prompt(mandate, ctx.deps.sandbox),
+            prompt=inspect_prompt,
             deps=_make_agent_deps(ctx.deps),
             budget=ctx.deps.budget,
         )
@@ -441,9 +458,52 @@ class InspectCodeNode(AtomicBehaviorGraphNode[PceGraphDeps, PceWorkflowResult]):
         return DecomposeNode()
 
 
+def _format_decompose_prompt(
+    mandate: EngineeringMandate,
+    ast_brief: str,
+    observations: Sequence[str],
+) -> str:
+    obs_text = "\n".join(f"- {item}" for item in observations[-3:])
+    return (
+        f"Draft EngineeringMandate:\n{mandate.model_dump_json(indent=2)}\n\n"
+        f"{ast_brief}\n\n"
+        f"Epistemic Observations:\n{obs_text}"
+    )[:60_000]
+
+
+async def _maybe_refine_scopes_via_decompose(
+    ctx: GraphRunContext[AgentExecutionState, PceGraphDeps],
+    mandate: EngineeringMandate,
+) -> EngineeringMandate:
+    ast_graph = build_workspace_ast_graph(ctx.deps.sandbox.load_units())
+    if not ctx.deps.mandate_was_framed or (
+        len(ast_graph.symbols) == 0 and len(mandate.write_scopes) <= 1
+    ):
+        return mandate
+    active_model = ctx.deps.models.decompose_model or ctx.deps.models.frame_model
+    plan, tel = await run_bounded_agent(
+        build_decompose_agent(active_model),
+        behavior_kind=BehaviorKind.DECOMPOSE,
+        prompt=_format_decompose_prompt(
+            mandate,
+            ctx.deps.ast_graph_brief or ast_graph.to_compact_brief(),
+            ctx.state.world_model.observations,
+        ),
+        deps=_make_agent_deps(ctx.deps),
+        budget=ctx.deps.budget,
+    )
+    ctx.deps.telemetry.append(tel)
+    refined = EngineeringMandate.model_validate(
+        {**mandate.model_dump(), "write_scopes": plan.write_scopes}
+    )
+    ctx.deps.mandate = refined
+    ctx.deps.sandbox = WorkspaceSandbox(ctx.deps.repo_root, refined.authorized_files())
+    return refined
+
+
 @dataclass
 class DecomposeNode(AtomicBehaviorGraphNode[PceGraphDeps, PceWorkflowResult]):
-    """Topology Partitioning (BHV-09 DECOMPOSE): Lock disjoint ModuleWriteScopes."""
+    """Topology Partitioning (BHV-09 DECOMPOSE): Lock disjoint ModuleWriteScopes and DAG waves."""
 
     behavior_kind: ClassVar[BehaviorKind] = BehaviorKind.DECOMPOSE
 
@@ -451,15 +511,18 @@ class DecomposeNode(AtomicBehaviorGraphNode[PceGraphDeps, PceWorkflowResult]):
         self,
         ctx: GraphRunContext[AgentExecutionState, PceGraphDeps],
     ) -> ElicitNode | CheckpointContractNode | CheckpointImplNode:
-        mandate = _require_mandate(ctx.deps)
+        mandate = await _maybe_refine_scopes_via_decompose(ctx, _require_mandate(ctx.deps))
+        waves = mandate.execution_waves()
         ctx.state.problem.subtasks = [
-            f"{s.scope_id}:{sorted(s.owned_files)}" for s in mandate.write_scopes
+            f"w{w_idx}:{s.scope_id}(deps={sorted(s.depends_on)}):{sorted(s.owned_files)}"
+            for w_idx, wave in enumerate(waves)
+            for s in wave
         ]
         _record_pce_step(
             self,
             ctx,
             "decompose",
-            f"Partitioned {len(mandate.write_scopes)} disjoint write scope(s)",
+            f"Partitioned {len(mandate.write_scopes)} scope(s) across {len(waves)} wave(s)",
         )
         if ctx.deps.plan_only:
             return ElicitNode(
@@ -661,9 +724,47 @@ async def _run_scoped_slice(
     return scope, bundle, tel
 
 
+def _implementation_waves(
+    mandate: EngineeringMandate,
+) -> tuple[tuple[ModuleWriteScope, ...], ...]:
+    impl_scopes = _implementation_scopes(mandate)
+    impl_ids = {s.scope_id for s in impl_scopes}
+    projected = tuple(
+        ModuleWriteScope(
+            scope_id=s.scope_id,
+            owned_files=s.owned_files,
+            contract_symbols=s.contract_symbols,
+            depends_on=frozenset(s.depends_on & impl_ids),
+        )
+        for s in impl_scopes
+    )
+    return compute_scope_execution_waves(projected)
+
+
+async def _run_single_delegation_wave(
+    deps: PceGraphDeps,
+    state: AgentExecutionState,
+    mandate: EngineeringMandate,
+    wave_scopes: Sequence[ModuleWriteScope],
+) -> list[tuple[ModuleWriteScope, ConstructionPatchBundle]]:
+    tasks: list[
+        asyncio.Task[tuple[ModuleWriteScope, ConstructionPatchBundle, AgentInvocationTelemetry]]
+    ] = []
+    async with asyncio.TaskGroup() as tg:
+        for scope in wave_scopes:
+            state.world_model.active_delegations.add(scope.scope_id)
+            tasks.append(tg.create_task(_run_scoped_slice(deps, mandate, scope)))
+    wave_bundles: list[tuple[ModuleWriteScope, ConstructionPatchBundle]] = []
+    for finished in tasks:
+        scope, bundle, tel = finished.result()
+        deps.telemetry.append(tel)
+        wave_bundles.append((scope, bundle))
+    return wave_bundles
+
+
 @dataclass
 class DelegateNode(AtomicBehaviorGraphNode[PceGraphDeps, PceWorkflowResult]):
-    """Parallel Subagent Dispatch (BHV-10 DELEGATE): TaskGroup fan-out per ModuleWriteScope."""
+    """Topological Subagent Dispatch (BHV-10 DELEGATE): Wave-ordered TaskGroup fan-out."""
 
     behavior_kind: ClassVar[BehaviorKind] = BehaviorKind.DELEGATE
 
@@ -672,25 +773,24 @@ class DelegateNode(AtomicBehaviorGraphNode[PceGraphDeps, PceWorkflowResult]):
         ctx: GraphRunContext[AgentExecutionState, PceGraphDeps],
     ) -> ReconcileNode:
         mandate = _require_mandate(ctx.deps)
-        tasks: list[
-            asyncio.Task[tuple[ModuleWriteScope, ConstructionPatchBundle, AgentInvocationTelemetry]]
-        ] = []
-        async with asyncio.TaskGroup() as tg:
-            for scope in _implementation_scopes(mandate):
-                ctx.state.world_model.active_delegations.add(scope.scope_id)
-                tasks.append(tg.create_task(_run_scoped_slice(ctx.deps, mandate, scope)))
+        waves = _implementation_waves(mandate)
+        all_delegated: list[tuple[ModuleWriteScope, ConstructionPatchBundle]] = []
+        for idx, wave_scopes in enumerate(waves):
+            wave_bundles = await _run_single_delegation_wave(
+                ctx.deps, ctx.state, mandate, wave_scopes
+            )
+            all_delegated.extend(wave_bundles)
+            if idx + 1 < len(waves):
+                _verify_and_flatten_delegated_patches(all_delegated)
+                wave_patches = _verify_and_flatten_delegated_patches(wave_bundles)
+                _apply_patches_to_state(ctx.state, ctx.deps.sandbox, wave_patches)
 
-        ctx.deps.delegated_bundles = []
-        for finished in tasks:
-            scope, bundle, tel = finished.result()
-            ctx.deps.telemetry.append(tel)
-            ctx.deps.delegated_bundles.append((scope, bundle))
-
+        ctx.deps.delegated_bundles = all_delegated
         _record_pce_step(
             self,
             ctx,
             "delegate",
-            f"Executed {len(tasks)} parallel scoped synthesis worker(s)",
+            f"Executed {len(all_delegated)} scoped worker(s) across {len(waves)} wave(s)",
         )
         return ReconcileNode()
 
