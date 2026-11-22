@@ -201,27 +201,30 @@ async def execute_sdd_prose_pipeline(
     task: BenchmarkTaskSpec,
     model: GuardedModel,
     config: BenchmarkRunConfig,
+    *,
+    architect_model: GuardedModel | None = None,
 ) -> SddPipelineTelemetry:
     """Execute the 4-stage marketed SDD workflow (`spec.md -> design.md -> tasks.md -> code`)."""
     resolved_ws = ws_dir.resolve()
+    spec_model = architect_model if architect_model is not None else model
     _write_contained_file(resolved_ws, "specs/constitution.md", SDD_CONSTITUTION_MD)
 
     s1, r1, tc1, in1, out1 = await _run_sdd_stage(
-        _build_sdd_specify_agent(model),
+        _build_sdd_specify_agent(spec_model),
         f"Feature Request:\n{task.prompt}",
         config,
     )
     _write_contained_file(resolved_ws, "specs/spec.md", s1.spec_markdown)
 
     s2, r2, tc2, in2, out2 = await _run_sdd_stage(
-        _build_sdd_design_agent(model),
+        _build_sdd_design_agent(spec_model),
         f"# spec.md\n{s1.spec_markdown}",
         config,
     )
     _write_contained_file(resolved_ws, "specs/design.md", s2.design_markdown)
 
     s3, r3, tc3, in3, out3 = await _run_sdd_stage(
-        _build_sdd_tasks_agent(model),
+        _build_sdd_tasks_agent(spec_model),
         f"# spec.md\n{s1.spec_markdown}\n\n# design.md\n{s2.design_markdown}",
         config,
     )

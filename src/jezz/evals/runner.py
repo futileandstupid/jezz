@@ -121,6 +121,17 @@ def _record_outcome_telemetry(outcome: ArmRunOutcome) -> None:
     increment_eval_metric("llm_requests", outcome.requests)
 
 
+def _resolve_sdd_arm_models(
+    fallback_model: GuardedModel,
+    deps: BenchmarkHarnessDeps,
+) -> tuple[GuardedModel, GuardedModel]:
+    if deps.suite_factory is not None:
+        suite = deps.suite_factory()
+        return suite.specify_model, suite.synthesize_model
+    active = deps.model_factory() if deps.model_factory is not None else fallback_model
+    return active, active
+
+
 @jezz_callable
 async def run_sdd_control_case(
     task: BenchmarkTaskSpec,
@@ -135,10 +146,16 @@ async def run_sdd_control_case(
         deps.jezz_root,
         sync_venv=deps.config.sync_workspace_venv,
     )
-    active_model = deps.model_factory() if deps.model_factory is not None else model
+    arch_model, impl_model = _resolve_sdd_arm_models(model, deps)
     t0 = time.perf_counter()
     try:
-        tel = await execute_sdd_prose_pipeline(ws.resolved_path, task, active_model, deps.config)
+        tel = await execute_sdd_prose_pipeline(
+            ws.resolved_path,
+            task,
+            impl_model,
+            deps.config,
+            architect_model=arch_model,
+        )
         elapsed = time.perf_counter() - t0
         metrics = ArmExecutionMetrics(
             arm=BenchmarkArm.SDD_PROSE,

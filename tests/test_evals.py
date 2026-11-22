@@ -20,6 +20,7 @@ from jezz.agents import (
     InProcessGateRunner,
     InstrumentationSuiteBundle,
     JezzAgentDeps,
+    PceModelSuite,
     WorkspaceSandbox,
     build_readonly_toolset,
 )
@@ -48,6 +49,7 @@ from jezz.evals import (
     build_track4_dataset,
     format_ab_benchmark_markdown,
     run_ab_benchmark,
+    run_sdd_control_case,
     validate_sdd_markdown_compliance,
 )
 from jezz.methodology import (
@@ -572,3 +574,46 @@ def test_jezz_evals_package_passes_full_jbc_and_dossier_audit() -> None:
     )
     audit = audit_pce_dossier(dossier, units)
     assert audit.is_occupancy_sealed, audit.to_markdown()
+
+
+async def test_sdd_control_case_routes_stages_via_suite_factory(tmp_path: Path) -> None:
+    arch_calls: list[int] = []
+    build_calls: list[int] = []
+    table = _build_mock_payload_table()
+
+    def _make_recorder(bucket: list[int]) -> FunctionModel:
+        def _handler(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+            _ = messages
+            bucket.append(1)
+            props = _schema_property_names(info)
+            for key, payload in table:
+                if key in props:
+                    return _emit_structured(info, payload)
+            return ModelResponse(parts=[TextPart(content="unreachable")])
+
+        return FunctionModel(_handler)
+
+    arch_model = _make_recorder(arch_calls)
+    build_model = _make_recorder(build_calls)
+    suite = PceModelSuite(
+        frame_model=arch_model,
+        inspect_model=build_model,
+        specify_model=arch_model,
+        instrument_model=build_model,
+        synthesize_model=build_model,
+        hypothesize_model=arch_model,
+        refactor_model=build_model,
+    )
+    deps = BenchmarkHarnessDeps(
+        work_root=tmp_path,
+        jezz_root=REPO_ROOT,
+        config=BenchmarkRunConfig(max_concurrency=1, sync_workspace_venv=False),
+        verifier=InProcessWorkspaceVerifier(),
+        gate_runner=InProcessGateRunner(),
+        suite_factory=lambda: suite,
+    )
+    task_spec, _ = build_track4_benchmark_cases()[0]
+    outcome = await run_sdd_control_case(task_spec, build_model, deps)
+    assert outcome.completed_cleanly is True
+    assert len(arch_calls) == 3
+    assert len(build_calls) == 1

@@ -2,7 +2,7 @@
 
 ## 1. Experimental Objective & Methodology
 
-Track 4 quantitatively tests Pillar 3A's core thesis using `pydantic-evals` (`Dataset`, `Case`, deterministic `Evaluator`s, and baseline-to-treatment diff reports) across **6 adversarial engineering tasks** (`24` live end-to-end workspace builds across two 6-case waves = `12` Control builds + `12` Treatment builds) on an identical base model (**`google:gemini-3.8-flash`** via `pydantic-ai` v2.71.0).
+Track 4 quantitatively tests Pillar 3A's core thesis using `pydantic-evals` (`Dataset`, `Case`, deterministic `Evaluator`s, and baseline-to-treatment diff reports) across **6 adversarial engineering tasks** (`40` live end-to-end workspace builds across Waves 4A–4D = `20` Control builds + `20` Treatment builds) on matched uniform (**`google:gemini-3.8-flash`**) and tiered (**`google:gemini-4-hydrogen`** Architect + **`google:gemini-3.8-flash`** Builder) configurations via `pydantic-ai` v2.71.0.
 
 ### 1.1 Steelmanned Experimental Arms
 To prevent straw-manning the industry baseline, both arms received identical workspace `pyproject.toml` manifests (`Python 3.14`, `pydantic`, `icontract`, `jezz`, `pytest`, `hypothesis`, `mypy --strict` with `pydantic.mypy`), identical public symbol/signature specifications, and identical base model settings:
@@ -123,3 +123,56 @@ To resolve the two fail-closed `Wave 4B` escalations (`case_04_workflow_topo` an
 
 - **100% Suite Closure (`6 / 6` Tasks Certified, `0%` Silent Defect Escape):** With `Wave 4C`, all **6 of 6 adversarial benchmark tasks** (`case_01`..`case_06`) have achieved full `OCCUPANCY_CERTIFIED` seals on `google:gemini-3.8-flash`, with **`0 / 30` unwaived `JBC` violations**, **`100%` `mypy --strict` pass**, and **`100%` (`6/6` builds, `18/18` checks) held-out `Hypothesis` oracle survival across Waves 4B + 4C** (`0%` silent defect escape).
 - **Simultaneous Live SDD Escape Reproduction:** In the same `Wave 4C` run, Control SDD on `case_05_margin_engine` emitted `452` lines of checked-off `- [x]` Markdown (`sdd_markdown_valid = True`) and passed its own self-tests (`self_tests_passed = True` via `from src.margin_engine...`), while failing `mypy --strict` (`rc = 2`) and crashing **`0%` (`0/2`)** on external package import!
+
+---
+
+## 5. `Wave 4D` — Symmetric Tiered Routing Trial (`google:gemini-4-hydrogen` Architect + `google:gemini-3.8-flash` Builder)
+
+`Wave 4D` tests two structural hypotheses across the full 6-case suite (`12` isolated workspace builds):
+1. **Can a frontier model rescue open-loop prose "SDD"?** If a frontier Gemini 4 model (`google:gemini-4-hydrogen`) authors `spec.md`, `design.md`, and `tasks.md` before `google:gemini-3.8-flash` implements the code, does prose specification quality prevent `JBC` violations and broken builds?
+2. **Does specialist model tiering (`routing.py`) compress `PCE` latency, requests, and rollbacks?** When `google:gemini-4-hydrogen` handles `FRAME` / `SPECIFY` / `HYPOTHESIZE` and `google:gemini-3.8-flash` handles `INSTRUMENT` / `SYNTHESIZE` / `INSPECT_CODE`, how do certification rate, rollback count, request count, and wall-clock latency compare against uniform `google:gemini-3.8-flash` (`Wave 4B`)?
+
+To eliminate any model-tier confound (`src/jezz/evals/sdd_baseline.py`, `src/jezz/evals/runner.py`), **both arms received identical tiered models**: `google:gemini-4-hydrogen` on all specification/planning stages (`spec.md` + `design.md` + `tasks.md` in SDD; `FRAME` + `SPECIFY` + `HYPOTHESIZE` in `PCE`) and `google:gemini-3.8-flash` on construction (`implement` in SDD; `INSTRUMENT` + `SYNTHESIZE` + `INSPECT_CODE` in `PCE`).
+
+### 5.1 Aggregate Comparison (`Wave 4D` Tiered vs. `Wave 4B` Uniform `gemini-3.8-flash`)
+
+| Dimension / Metric | Control: Tiered SDD (`Wave 4D`, `N=6`) | Treatment: Tiered `PCE` (`Wave 4D`, `N=6`) | Uniform Flash `PCE` Baseline (`Wave 4B`, `N=6`) | Tiered `PCE` Delta vs. `Wave 4B` |
+| :--- | :---: | :---: | :---: | :---: |
+| **`OpenSpec` / Kiro Markdown Valid (`[x]` + `SHALL` + `Scenario`)** | **`6 / 6` (`100.0%`)** | N/A (No prose theatre) | N/A | — |
+| **`JBC` v1.1 Occupiable Workspaces (`0` Violations)** | **`0 / 6` (`0.0%`)** | **`5 / 6` (`83.3%`)** | `4 / 6` (`66.7%`) | **`+16.6 pp`** |
+| **Total Unwaived `LIFE_SAFETY` Violations** | **`19`** (`5/6` cases affected; **`3.8x` worse** than 4B) | `1` (gate-halt on uncertified `case_03`; **`0` on certified**) | `3` (**`0` on certified**) | **`-66.7%`** |
+| **Total Unwaived `JBC` v1.1 Violations** | **`132`** (`22.0` / case; **`+61.0%` worse** than 4B) | **`1`** (`0.17` / case; **`0` on all `5` certified**) | `3` (`0.50` / case) | **`-66.7%`** |
+| **Held-Out Oracle Pass Rate \| Certified Output** | `6 / 6` (`100.0%`) | **`5 / 5` (`100.0%`; `0%` silent escape)** | `4 / 4` (`100.0%`) | **`0%` escape preserved** |
+| **`mypy --strict` Pass Rate** | **`1 / 6` (`16.7%` — `5/6` failed!)** | **`6 / 6` (`100.0%`)** | `5 / 6` (`83.3%`) | **`+16.7 pp` (`100%`)** |
+| **Arm's Own Self-Tests (`pytest`) Pass Rate** | `4 / 6` (`66.7%` — `2/6` failed under `[x]`) | **`5 / 6` (`100%` on certified)** | `4 / 6` (`100%` on certified) | **`+16.6 pp`** |
+| **Remediation Rollbacks (`RED_TAG -> REVERT`) on Certified** | N/A | **`0` across all `5` certified cases** | `0`–`1` (`1` each on `04`/`05` in 4C) | **`0` rollbacks needed** |
+| **Mean Peak Cognitive Complexity / Total `elif`s** | `18.33` / `1` | **`3.67` (`-80.0%` vs. SDD) / `0` (`-100%`)** | `4.00` / `0` | **`-8.3%` complexity** |
+| **Mean Human-Reviewed Spec Lines** | `410.2` lines | **`38.7` lines (`-90.6%` / `10.6x` compression)** | `38.7` lines | Identical |
+| **Mean LLM Requests per Certified Case** | `4.0` (open-loop) | **`25.8` reqs** (`min = 13` on `case_01`) | `41.0` reqs | **`-37.1%` fewer requests** |
+| **Mean Total Tokens (`In + Out`) per Case** | `49,233` | **`278,978` overall / `334,774` certified** | `417,418` overall / `391,197` certified | **`-33.2%` overall / `-14.4%` certified** |
+| **Mean Wall-Clock Latency per Case** | `148.8s` | **`303.4s` overall / `334.5s` certified** | `588.9s` overall / `505.2s` certified | **`-48.5%` overall (`~2x` speedup)** |
+
+### 5.2 Per-Case Breakdown (`Wave 4D` Symmetric Tiered Run)
+
+| Case ID | Tiered SDD `JBC` (`LIFE_SAFETY` / Total) | Tiered `PCE` `JBC` (`LIFE_SAFETY` / Total) | Tiered SDD `mypy` / Self-Tests / Complexity | Tiered `PCE` `mypy` / Self-Tests / Oracle / Requests / Latency |
+| :--- | :---: | :---: | :---: | :---: |
+| **`case_01_bps_split`** | `1` / `15` (`RED_TAG`) | **`0` / `0` (`CERTIFIED`)** | **`Fail`** / `Pass` / `CC=12` | **`Pass` / `Pass` / `3/3` / `13` reqs / `186.1s` (`0` rollbacks)** |
+| **`case_02_sql_ledger_store`** | **`13` / `40` (`RED_TAG`)** | **`0` / `0` (`CERTIFIED`)** | **`Fail`** / `Pass` / **`CC=27`** | **`Pass` / `Pass` / `3/3` / `32` reqs / `410.7s` (`0` rollbacks)** |
+| **`case_03_artifact_loader`** | `0` / `17` (`RED_TAG`) | `1` / `1` (`HALTED`: `InstrumentNode` `req=28`) | `Pass` / `Pass` / **`CC=23`** | `Pass` / `Halted` (`0` impl shipped; fail-closed) / `147.8s` |
+| **`case_04_workflow_topo`** | `2` / `18` (`RED_TAG`) | **`0` / `0` (`CERTIFIED`)** | **`Fail` / `Fail`** / **`CC=35`** | **`Pass` / `Pass` / `3/3` / `26` reqs / `376.3s` (`0` rollbacks)** |
+| **`case_05_margin_engine`** | `1` / `25` (`RED_TAG`) | **`0` / `0` (`CERTIFIED`)** | **`Fail`** / `Pass` / `CC=7` | **`Pass` / `Pass` / `3/3` / `33` reqs / `459.8s` (`0` rollbacks)** |
+| **`case_06_escrow_machine`** | `2` / `17` (`RED_TAG`) | **`0` / `0` (`CERTIFIED`)** | **`Fail` / `Fail`** / `CC=6` | **`Pass` / `Pass` / `3/3` / `25` reqs / `239.6s` (`0` rollbacks)** |
+
+### 5.3 Key Empirical Findings from `Wave 4D`
+
+1. **"Over-Specified Prose Drift" — Frontier Markdown Specs Made Open-Loop SDD Violations *Worse* (`+61%` Total Violations, `3.8x` `LIFE_SAFETY` Violations, `83.3%` `mypy --strict` Failure):**
+   Upgrading SDD's specification and design stages to frontier `google:gemini-4-hydrogen` did **not** rescue prose SDD—it degraded downstream code safety:
+   - Total unwaived `JBC` violations rose from `82` (`Wave 4B`) to **`132`** (`Wave 4D`), `LIFE_SAFETY` violations jumped **`3.8x`** (`5` $\to$ **`19`**), and `mypy --strict` pass rate collapsed from `4/6` (`66.7%`) to **`1/6` (`16.7%`)** while `2/6` cases (`case_04`, `case_06`) failed their own `pytest` suites under `100%` checked-off `- [x]` `tasks.md` files.
+   - **Forensic Mechanism (`case_02_sql_ledger_store`):** `gemini-4-hydrogen` authored an elaborate nested savepoint/transaction prose design in `specs/design.md`. Without executable AST gates binding the implementation, `gemini-3.8-flash` translated that prose into a `27`-Cognitive-Complexity `_atomic_transaction` context manager containing **`6` dynamic SQL f-string interpolations (`JBC-SEC-001`, `LIFE_SAFETY`)** (`conn.execute(f"SAVEPOINT {sp_name}")`, `conn.execute(f"ROLLBACK TO SAVEPOINT {sp_name}")`) and **`4` silent `except sqlite3.Error: pass` fault-swallowing blocks (`JBC-FLT-001`, `LIFE_SAFETY`)**, alongside `# type: ignore` suppressions (`JBC-VRF-004`, `LIFE_SAFETY`).
+2. **Executable Contract Leverage — Frontier `SPECIFY` Eliminated Construction Rollbacks and Cut `PCE` Latency Nearly in Half (`-48.5%`):**
+   In `jezz` `PCE`, `gemini-4-hydrogen`'s reasoning capability was channeled into **compiled Phase III Pydantic + `@icontract` schemas** rather than unverified Markdown prose:
+   - Both `case_04_workflow_topo` and `case_05_margin_engine`—which failed `Wave 4B` and required `1` `REVERT -> HYPOTHESIZE` rollback each in `Wave 4C` on uniform `gemini-3.8-flash`—certified on the **first pass (`0` rollbacks)** in `Wave 4D`, alongside `case_01` (`13` total requests, `186.1s`), `case_02`, and 2-scope parallel `case_06` (`25` requests, `239.6s`).
+   - Across the suite, tiered routing reduced mean wall-clock latency by **`-48.5%`** (`588.9s` $\to$ **`303.4s`**), mean requests on certified runs by **`-37.1%`** (`41.0` $\to$ **`25.8`**), and overall token consumption by **`-33.2%`**, while invoking the frontier model only on compact contract specification (`0` `HYPOTHESIZE` calls required across all `5` certified cases).
+3. **Cumulative Track 4 Safety Ledger (`40` Live Workspaces Across Waves 4A–4D):**
+   - **Control (`Prose SDD`, `N = 20` workspaces):** `20 / 20` (`100%`) Markdown `- [x]` valid, **`0 / 20` (`0.0%`) `JBC` v1.1 occupiable**, **`338` unwaived `JBC` violations (`34` `LIFE_SAFETY`)**, `12 / 20` (`60%`) failed `mypy --strict`, `8 / 20` (`40%`) failed their own `pytest` suites, and `4 / 20` (`20%`) silently escaped with runtime crashes on held-out `Hypothesis` oracles.
+   - **Treatment (`jezz` `PCE`, `N = 20` workspaces):** **`14` certified `CertificateOfOccupancy` builds** spanning all `6 / 6` benchmark tasks, with **`0` unwaived `JBC` violations**, **`100%` (`14 / 14`) `mypy --strict` and self-test pass**, and **`100%` (`11 / 11` post-calibration certified builds across Waves 4B–4D = `33 / 33` oracle checks) held-out `Hypothesis` oracle survival (`0.0%` silent defect escape)**.
