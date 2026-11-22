@@ -13,6 +13,7 @@ from pydantic import BaseModel, Field, SecretStr, model_validator
 
 from jezz.guards import (
     STRICT_FROZEN_CONFIG,
+    BoundedText,
     ContainedPath,
     IdentifierStr,
     InstanceGuard,
@@ -141,6 +142,17 @@ class JezzSecretsConfig(BaseModel):
 
 
 @jezz_callable
+def canonical_provider_family(model_name: IdentifierStr) -> BoundedText:
+    """Return canonical provider family key for ``model_name`` (or ``""`` when unprefixed)."""
+    if model_name == "test" or ":" not in model_name:
+        return ""
+    prefix = model_name.split(":", maxsplit=1)[0]
+    if prefix.startswith("gateway/"):
+        return "gateway"
+    return _PROVIDER_FAMILY_ALIASES.get(prefix, prefix)
+
+
+@jezz_callable
 def lookup_provider_pass_uri(
     config: JezzSecretsConfig,
     provider_name: IdentifierStr,
@@ -156,8 +168,11 @@ def lookup_provider_pass_uri(
 
 
 @jezz_callable
-def load_pyproject_secrets_config(pyproject_target: ContainedPath) -> JezzSecretsConfig | None:
-    """Load ``[tool.jezz.secrets]`` from ``pyproject_target``, or return ``None`` if absent."""
+def read_pyproject_jezz_table(
+    pyproject_target: ContainedPath,
+    table_key: IdentifierStr,
+) -> dict[IdentifierStr, object] | None:
+    """Read ``[tool.jezz.<table_key>]`` from ``pyproject_target``, or ``None`` if absent."""
     raw_toml = read_bounded_text(pyproject_target, max_bytes=524_288)
     data = tomllib.loads(raw_toml)
     tool_tbl = data.get("tool")
@@ -166,13 +181,20 @@ def load_pyproject_secrets_config(pyproject_target: ContainedPath) -> JezzSecret
     jezz_tbl = tool_tbl.get("jezz")
     if not isinstance(jezz_tbl, dict):
         return None
-    sec_tbl = jezz_tbl.get("secrets")
-    if sec_tbl is None:
+    sub_tbl = jezz_tbl.get(table_key)
+    if sub_tbl is None:
         return None
-    if not isinstance(sec_tbl, dict):
-        msg = f"Expected '[tool.jezz.secrets]' table in '{pyproject_target.relative_posix}'."
+    if not isinstance(sub_tbl, dict):
+        msg = f"Expected '[tool.jezz.{table_key}]' table in '{pyproject_target.relative_posix}'."
         raise ValueError(msg)
-    return JezzSecretsConfig.model_validate(sec_tbl)
+    return {str(k): v for k, v in sub_tbl.items()}
+
+
+@jezz_callable
+def load_pyproject_secrets_config(pyproject_target: ContainedPath) -> JezzSecretsConfig | None:
+    """Load ``[tool.jezz.secrets]`` from ``pyproject_target``, or return ``None`` if absent."""
+    sec_tbl = read_pyproject_jezz_table(pyproject_target, "secrets")
+    return JezzSecretsConfig.model_validate(sec_tbl) if sec_tbl is not None else None
 
 
 @jezz_callable

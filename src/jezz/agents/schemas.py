@@ -207,6 +207,7 @@ class AgentInvocationTelemetry(BaseModel):
 
     behavior_kind: BehaviorKind
     specialist_role: IdentifierStr
+    model_id: IdentifierStr = "unknown"
     requests: NonNegativeInt
     tool_calls: NonNegativeInt
     input_tokens: NonNegativeInt

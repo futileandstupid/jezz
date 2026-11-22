@@ -21,6 +21,12 @@ from pydantic_ai.settings import ModelSettings
 
 from jezz.agents.nodes import ElicitationCallback
 from jezz.agents.orchestrator import PceWorkflowOrchestrator
+from jezz.agents.routing import (
+    CliModelOverrides,
+    ResolvedModelRouting,
+    discover_models_config,
+    resolve_specialist_routing,
+)
 from jezz.agents.schemas import (
     ElicitationTicket,
     PceRunStatus,
@@ -28,7 +34,7 @@ from jezz.agents.schemas import (
     PceWorkflowMode,
     PceWorkflowResult,
 )
-from jezz.agents.specialists import GuardedModel, uniform_model_suite
+from jezz.agents.specialists import GuardedModel
 from jezz.agents.workspace import DynamicGatePort, InProcessGateRunner, UvSubprocessGateRunner
 from jezz.codes.ast_utils import SourceUnit, parse_source_unit
 from jezz.codes.inspector import BuildingInspector, ManifestDependencies
@@ -59,7 +65,12 @@ from jezz.guards import (
 )
 from jezz.methodology.dossier import EngineeringDossier, audit_pce_dossier
 from jezz.methodology.mandate import EngineeringMandate
-from jezz.secrets import GuardedSecretStr, SecretResolutionError, resolve_model_api_key
+from jezz.secrets import (
+    GuardedSecretStr,
+    SecretResolutionError,
+    canonical_provider_family,
+    resolve_model_api_key,
+)
 
 _PRUNED_DIR_NAMES: Final[frozenset[str]] = frozenset(
     {
@@ -162,6 +173,10 @@ def format_workflow_markdown(result: PceWorkflowResult) -> BoundedText:
         f"(`{len(result.induced_graph.nodes)}` nodes)",
         f"- **Agent Invocations:** `{len(result.telemetry)}`",
     ]
+    if result.telemetry:
+        exercised = list(dict.fromkeys(t.model_id for t in result.telemetry))
+        models_str = ", ".join(f"`{m}`" for m in exercised)
+        lines.append(f"- **Models Exercised:** {models_str}")
     if result.certificate is not None:
         lines.append(f"- **Occupancy Seal:** `{result.certificate.inspector_seal}`")
     if result.mandate.open_ambiguities:
@@ -503,6 +518,11 @@ class TlsResilientModel(WrapperModel):
         self._api_key = api_key
         self._max_attempts = max_attempts
 
+    @property
+    def configured_model_id(self) -> str:
+        """Return the exact ``provider:model`` string supplied at instantiation."""
+        return self._model_name
+
     @jezz_callable
     async def request(
         self,
@@ -587,6 +607,43 @@ def _dispatch_orchestrator_coro(
     return orchestrator.execute_prompt(resolved_repo, str(ns.prompt), permit=permit)
 
 
+def _resolve_cli_routing(
+    ns: argparse.Namespace,
+    search_roots: Sequence[Path],
+) -> tuple[ResolvedModelRouting, dict[str, GuardedSecretStr | None]]:
+    overrides = CliModelOverrides(
+        model=str(ns.model) if ns.model is not None else None,
+        architect_model=str(ns.architect_model) if ns.architect_model is not None else None,
+        builder_model=str(ns.builder_model) if ns.builder_model is not None else None,
+        inspector_model=str(ns.inspector_model) if ns.inspector_model is not None else None,
+    )
+    project_cfg = discover_models_config(tuple(search_roots))
+    routing = resolve_specialist_routing(overrides, project_config=project_cfg)
+
+    families = routing.unique_provider_families()
+    if ns.pass_uri is not None and len(families) > 1:
+        msg = (
+            f"Single --api-key-uri cannot be shared across multiple model providers "
+            f"{sorted(families)}; configure per-provider URIs under "
+            "[tool.jezz.secrets.providers] in pyproject.toml."
+        )
+        raise SecretResolutionError(msg)
+
+    family_cache: dict[str, GuardedSecretStr | None] = {}
+    by_model: dict[str, GuardedSecretStr | None] = {}
+    for model_name in routing.unique_model_names():
+        cache_slot = canonical_provider_family(model_name) or f"raw:{model_name}"
+        if cache_slot not in family_cache:
+            family_cache[cache_slot] = resolve_model_api_key(
+                model_name,
+                explicit_pass_uri=ns.pass_uri,
+                search_roots=tuple(search_roots),
+                reason_override=ns.agent_reason,
+            )
+        by_model[model_name] = family_cache[cache_slot]
+    return routing, by_model
+
+
 def _execute_pce_run(
     ns: argparse.Namespace,
     resolved_repo: Path,
@@ -598,14 +655,8 @@ def _execute_pce_run(
     if timeout_sec <= 0.0 or timeout_sec > 3600.0:
         msg = f"Invalid --timeout-sec={timeout_sec}; expected (0, 3600]."
         raise ValueError(msg)
-    model_name = str(ns.model)
-    resolved_key = resolve_model_api_key(
-        model_name,
-        explicit_pass_uri=ns.pass_uri,
-        search_roots=(resolved_repo, Path.cwd()),
-        reason_override=ns.agent_reason,
-    )
-    model = _instantiate_cli_model(model_name, resolved_key)
+    routing, creds_by_model = _resolve_cli_routing(ns, (resolved_repo, Path.cwd()))
+    suite = routing.build_suite(lambda m: _instantiate_cli_model(m, creds_by_model[m]))
     runner: DynamicGatePort = (
         UvSubprocessGateRunner()
         if ns.gate_runner == GateRunnerChoice.SUBPROCESS
@@ -623,7 +674,7 @@ def _execute_pce_run(
         else None
     )
     orchestrator = PceWorkflowOrchestrator(
-        uniform_model_suite(model),
+        suite,
         gate_runner=runner,
         budget=budget,
         elicitation_callback=callback,
@@ -723,14 +774,9 @@ def _execute_cli_benchmark(ns: argparse.Namespace, work_dir: Path) -> AbBenchmar
     if timeout_sec <= 0.0 or timeout_sec > 14_400.0:
         msg = f"Invalid --timeout-sec={timeout_sec}; expected (0, 14400]."
         raise ValueError(msg)
-    model_name = str(ns.model)
-    resolved_key = resolve_model_api_key(
-        model_name,
-        explicit_pass_uri=ns.pass_uri,
-        search_roots=(work_dir, Path.cwd()),
-        reason_override=ns.agent_reason,
-    )
-    model = _instantiate_cli_model(model_name, resolved_key)
+    routing, creds_by_model = _resolve_cli_routing(ns, (work_dir, Path.cwd()))
+    ctrl_name = routing.synthesize
+    ctrl_model = _instantiate_cli_model(ctrl_name, creds_by_model[ctrl_name])
     cfg = BenchmarkRunConfig(
         max_concurrency=int(ns.max_concurrency),
         agent_timeout_sec=min(480.0, timeout_sec),
@@ -739,10 +785,13 @@ def _execute_cli_benchmark(ns: argparse.Namespace, work_dir: Path) -> AbBenchmar
     deps = default_harness_deps(
         work_dir,
         config=cfg,
-        model_factory=lambda: _instantiate_cli_model(model_name, resolved_key),
+        model_factory=lambda: _instantiate_cli_model(ctrl_name, creds_by_model[ctrl_name]),
+        suite_factory=lambda: routing.build_suite(
+            lambda m: _instantiate_cli_model(m, creds_by_model[m])
+        ),
     )
     ds = _select_benchmark_dataset(ns.case_ids)
-    coro = run_ab_benchmark(model, deps, model_label=model_name, dataset=ds)
+    coro = run_ab_benchmark(ctrl_model, deps, model_label=routing.summary_label(), dataset=ds)
     return asyncio.run(_await_with_deadline(coro, timeout_sec))
 
 
@@ -777,6 +826,32 @@ _COMMAND_HANDLERS: Final[Mapping[str, _CommandHandler]] = MappingProxyType(
 )
 
 
+def _register_model_routing_flags(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--model",
+        default=None,
+        help="Default Pydantic AI model ID (overrides [tool.jezz.models] when passed).",
+    )
+    parser.add_argument(
+        "--architect-model",
+        dest="architect_model",
+        default=None,
+        help="Model override for FRAME, SPECIFY, and HYPOTHESIZE specialists.",
+    )
+    parser.add_argument(
+        "--builder-model",
+        dest="builder_model",
+        default=None,
+        help="Model override for INSTRUMENT, SYNTHESIZE, and REFACTOR specialists.",
+    )
+    parser.add_argument(
+        "--inspector-model",
+        dest="inspector_model",
+        default=None,
+        help="Model override for read-only INSPECT_CODE specialist.",
+    )
+
+
 def _register_secret_flags(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--api-key-uri",
@@ -800,7 +875,7 @@ def _register_workflow_subparser(
 ) -> None:
     p_wf = sub.add_parser(name, help=help_text)
     p_wf.add_argument("repo_path", type=Path, help="Target workspace root directory.")
-    p_wf.add_argument("--model", required=True, help="Pydantic AI model ID (e.g. provider:model).")
+    _register_model_routing_flags(p_wf)
     src_grp = p_wf.add_mutually_exclusive_group(required=True)
     src_grp.add_argument("--prompt", default=None, help="Raw engineering task prompt.")
     src_grp.add_argument("--mandate", type=Path, default=None, help="EngineeringMandate JSON file.")
@@ -841,7 +916,7 @@ def _register_benchmark_subparser(
         help="Run Track 4 pydantic-evals A/B benchmark (Prose SDD vs. Jezz PCE).",
     )
     p_bmk.add_argument("work_dir", type=Path, help="Scratch directory for isolated workspaces.")
-    p_bmk.add_argument("--model", required=True, help="Pydantic AI model ID (e.g. provider:model).")
+    _register_model_routing_flags(p_bmk)
     p_bmk.add_argument("--max-concurrency", type=int, default=2)
     p_bmk.add_argument("--case-id", dest="case_ids", action="append", default=None)
     p_bmk.add_argument("--gate-runner", choices=("subprocess", "in-process"), default="subprocess")

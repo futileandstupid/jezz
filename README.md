@@ -30,22 +30,31 @@ uv run jezz inspect <repo_path> (--changed-since origin/main | --staged) [--perm
 # Audit a 5-phase PCE EngineeringDossier against compiled workspace symbols and SHA-256 digest
 uv run jezz audit <dossier.json> [--repo <repo_path>] [--format markdown|json]
 
-# Execute a greenfield PCE prompt or mandate (or resume a halted ElicitationTicket via ELICIT -> FRAME)
-uv run jezz run <repo_path> --model <provider:model> (--prompt "..." | --mandate mandate.json | --resume-elicitation elicit.json --clarification "...")
+# Execute a greenfield PCE prompt or mandate (uses [tool.jezz.models] or CLI tier overrides)
+uv run jezz run <repo_path> [--model <provider:model>] [--architect-model <provider:model>] (--prompt "..." | --mandate mandate.json | --resume-elicitation elicit.json --clarification "...")
 
 # Renovate an existing brownfield repository to zero-variance JBC v1.1 occupancy via BHV-17 REFACTOR
-uv run jezz renovate <repo_path> --model <provider:model> (--prompt "..." | --mandate mandate.json) [--write-dossier dossier.json]
+uv run jezz renovate <repo_path> [--model <provider:model>] [--builder-model <provider:model>] (--prompt "..." | --mandate mandate.json) [--write-dossier dossier.json]
 
 # Execute Track 4 controlled pydantic-evals A/B benchmark (Prose SDD vs. Jezz PCE)
-uv run jezz benchmark <work_dir> --model <provider:model> [--api-key-uri pass://Vault/Item/Field] [--max-concurrency 2] [--write-json ab.json]
+uv run jezz benchmark <work_dir> [--model <provider:model>] [--architect-model <provider:model>] [--max-concurrency 2] [--write-json ab.json]
 ```
 
-## Proton Pass CLI (`pass-cli`) Secret Management
+## Multi-Model Specialist Routing & Proton Pass CLI (`pass-cli`) Secrets
 
-`jezz` resolves model API credentials directly from Proton Pass CLI (`pass-cli item view pass://<vault>/<item>/<field>`) into `pydantic.SecretStr` and injects them into `pydantic-ai` providers without mutating `os.environ` (`JBC-SEC-002`, `JBC-OBS-003`), preventing secret inheritance by child `pytest`/`mypy` verification subprocesses.
+`jezz` supports role-tiered model routing across all 7 generative `PceModelSuite` slots (`frame`, `inspect`, `specify`, `instrument`, `synthesize`, `refactor`, `hypothesize`) via `[tool.jezz.models]` in `pyproject.toml` and CLI flags (`--architect-model`, `--builder-model`, `--inspector-model`, `--model`), resolving per-provider credentials once per provider family from Proton Pass CLI (`pass-cli item view pass://<vault>/<item>/<field>`) into `pydantic.SecretStr` without mutating `os.environ` (`JBC-SEC-002`, `JBC-OBS-003`).
 
 ```toml
-# Optional project-level provider mapping in pyproject.toml (rejects plaintext credentials):
+# Project-level specialist routing and Proton Pass vault mapping in pyproject.toml:
+[tool.jezz.models]
+default = "google:gemini-3.8-flash"
+# architect = "google:gemini-3.8-pro"   # FRAME, SPECIFY, HYPOTHESIZE
+# builder = "google:gemini-3.8-flash"   # INSTRUMENT, SYNTHESIZE, REFACTOR
+# inspector = "google:gemini-3.8-flash" # INSPECT_CODE
+
+# [tool.jezz.models.roles]
+# hypothesize = "anthropic:claude-opus-4-6"
+
 [tool.jezz.secrets]
 agent_reason = "jezz PCE runtime resolving model API credential"
 

@@ -71,6 +71,7 @@ class BenchmarkHarnessDeps:
     verifier: WorkspaceVerifierPort
     gate_runner: DynamicGatePort
     model_factory: Callable[[], GuardedModel] | None = None
+    suite_factory: Callable[[], PceModelSuite] | None = None
 
 
 type GuardedHarnessDeps = Annotated[BenchmarkHarnessDeps, InstanceGuard(BenchmarkHarnessDeps)]
@@ -83,6 +84,7 @@ def default_harness_deps(
     jezz_root: Path | None = None,
     config: BenchmarkRunConfig | None = None,
     model_factory: Callable[[], GuardedModel] | None = None,
+    suite_factory: Callable[[], PceModelSuite] | None = None,
 ) -> GuardedHarnessDeps:
     """Construct default subprocess or in-process benchmark dependencies."""
     cfg = config or BenchmarkRunConfig()
@@ -106,6 +108,7 @@ def default_harness_deps(
         verifier=verifier,
         gate_runner=gate_runner,
         model_factory=model_factory,
+        suite_factory=suite_factory,
     )
 
 
@@ -179,17 +182,20 @@ def _build_pce_inspector(ws_path: Path, package_name: str) -> BuildingInspector:
 
 def _build_isolated_model_suite(
     fallback_model: GuardedModel,
-    factory: Callable[[], GuardedModel] | None,
+    deps: BenchmarkHarnessDeps,
 ) -> PceModelSuite:
-    if factory is None:
+    if deps.suite_factory is not None:
+        return deps.suite_factory()
+    if deps.model_factory is None:
         return uniform_model_suite(fallback_model)
     return PceModelSuite(
-        frame_model=factory(),
-        inspect_model=factory(),
-        specify_model=factory(),
-        instrument_model=factory(),
-        synthesize_model=factory(),
-        hypothesize_model=factory(),
+        frame_model=deps.model_factory(),
+        inspect_model=deps.model_factory(),
+        specify_model=deps.model_factory(),
+        instrument_model=deps.model_factory(),
+        synthesize_model=deps.model_factory(),
+        hypothesize_model=deps.model_factory(),
+        refactor_model=deps.model_factory(),
     )
 
 
@@ -215,7 +221,7 @@ async def run_pce_treatment_case(
         total_tokens_limit_per_step=deps.config.total_tokens_limit_per_step,
     )
     orchestrator = PceWorkflowOrchestrator(
-        _build_isolated_model_suite(model, deps.model_factory),
+        _build_isolated_model_suite(model, deps),
         inspector=_build_pce_inspector(ws.resolved_path, task.package_name),
         gate_runner=deps.gate_runner,
         budget=budget,

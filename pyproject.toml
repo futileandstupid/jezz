@@ -49,6 +49,9 @@ line-length = 100
 [tool.ruff.lint]
 select = ["E", "F", "I", "B", "UP", "SIM", "RUF"]
 
+[tool.jezz.models]
+default = "google:gemini-3.8-flash"
+
 [tool.jezz.secrets]
 agent_reason = "jezz PCE runtime resolving model API credential"
 timeout_sec = 15.0

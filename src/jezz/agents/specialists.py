@@ -4,7 +4,7 @@ import asyncio
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from types import MappingProxyType
-from typing import Annotated, Final
+from typing import Annotated, Final, Protocol, runtime_checkable
 
 import icontract
 from pydantic import Field
@@ -680,6 +680,33 @@ def build_hypothesize_agent(model: GuardedModel) -> GuardedAgent[RemediationHypo
     )
 
 
+@runtime_checkable
+class ConfiguredModelIdPort(Protocol):
+    """Optional wrapper protocol exposing the configured ``provider:model`` identifier."""
+
+    @property
+    def configured_model_id(self) -> str:
+        """Return the exact configured ``provider:model`` string."""
+        ...
+
+
+def _extract_agent_model_id[OutputT](agent: Agent[JezzAgentDeps, OutputT]) -> str:
+    raw_model = agent.model
+    if isinstance(raw_model, ConfiguredModelIdPort) and raw_model.configured_model_id:
+        return raw_model.configured_model_id[:256]
+    if isinstance(raw_model, Model):
+        prefix = f"{raw_model.system}:"
+        label = (
+            raw_model.model_name
+            if raw_model.model_name.startswith(prefix)
+            else f"{raw_model.system}:{raw_model.model_name}"
+        )
+        return label[:256]
+    if isinstance(raw_model, str) and raw_model:
+        return raw_model[:256]
+    return "unknown"
+
+
 @jezz_callable
 async def run_bounded_agent[OutputT](
     agent: GuardedAgent[OutputT],
@@ -703,6 +730,7 @@ async def run_bounded_agent[OutputT](
     telemetry = AgentInvocationTelemetry(
         behavior_kind=behavior_kind,
         specialist_role=binding.specialist_role,
+        model_id=_extract_agent_model_id(agent),
         requests=max(0, usage.requests),
         tool_calls=max(0, usage.tool_calls),
         input_tokens=max(0, usage.input_tokens),
