@@ -6,9 +6,8 @@ import contextlib
 import io
 import sys
 from collections.abc import Callable, Coroutine, Mapping, Sequence
-from datetime import date
 from enum import StrEnum
-from pathlib import Path, PurePosixPath
+from pathlib import Path
 from types import MappingProxyType
 from typing import Annotated, Final
 
@@ -36,8 +35,14 @@ from jezz.agents.schemas import (
 )
 from jezz.agents.specialists import GuardedModel
 from jezz.agents.workspace import DynamicGatePort, InProcessGateRunner, UvSubprocessGateRunner
-from jezz.codes.ast_utils import SourceUnit, parse_source_unit
-from jezz.codes.inspector import BuildingInspector, ManifestDependencies
+from jezz.codes.ast_utils import SourceUnit
+from jezz.codes.discovery import (
+    build_workspace_inspector,
+    discover_workspace_units,
+    parse_optional_iso_date,
+    require_workspace_units,
+)
+from jezz.codes.inspector import BuildingInspector
 from jezz.codes.permits import CodePermit
 from jezz.codes.ratchet import (
     DiffBaseMode,
@@ -63,6 +68,7 @@ from jezz.guards import (
     jezz_callable,
     read_bounded_text,
 )
+from jezz.mcp_server import run_stdio_mcp_server
 from jezz.methodology.dossier import EngineeringDossier, audit_pce_dossier
 from jezz.methodology.mandate import EngineeringMandate
 from jezz.secrets import (
@@ -70,18 +76,6 @@ from jezz.secrets import (
     SecretResolutionError,
     canonical_provider_family,
     resolve_model_api_key,
-)
-
-_PRUNED_DIR_NAMES: Final[frozenset[str]] = frozenset(
-    {
-        "__pycache__",
-        "venv",
-        "env",
-        "build",
-        "dist",
-        "node_modules",
-        "site-packages",
-    }
 )
 
 type CliExitCode = Annotated[int, Field(ge=0, le=2)]
@@ -101,65 +95,6 @@ class GateRunnerChoice(StrEnum):
 
     SUBPROCESS = "subprocess"
     IN_PROCESS = "in-process"
-
-
-def _is_pruned_relative_path(rel_parts: Sequence[str]) -> bool:
-    for part in rel_parts[:-1]:
-        if part == ".":
-            continue
-        if part.startswith(".") or part.endswith(".egg-info") or part in _PRUNED_DIR_NAMES:
-            return True
-    return False
-
-
-def _resolve_scan_dirs(resolved_root: Path, target_dirs: Sequence[str]) -> tuple[str, ...]:
-    if target_dirs:
-        return tuple(target_dirs)
-    src_candidate = ContainedPath.from_parts(resolved_root, "src")
-    if src_candidate.resolved_path.is_dir():
-        return "src", "tests", "test"
-    return (".",)
-
-
-def _collect_python_files(resolved_root: Path, scan_dirs: Sequence[str]) -> list[Path]:
-    seen: set[Path] = set()
-    ordered: list[Path] = []
-    for rel_dir in scan_dirs:
-        contained_dir = ContainedPath.from_parts(resolved_root, rel_dir)
-        if not contained_dir.resolved_path.exists():
-            continue
-        candidates = (
-            [contained_dir.resolved_path]
-            if contained_dir.resolved_path.is_file()
-            else sorted(contained_dir.resolved_path.rglob("*.py"))
-        )
-        for py_path in candidates:
-            rel_parts = py_path.relative_to(resolved_root).parts
-            if py_path not in seen and not _is_pruned_relative_path(rel_parts):
-                seen.add(py_path)
-                ordered.append(py_path)
-    return ordered
-
-
-@jezz_callable
-def discover_workspace_units(
-    repo_root: Path,
-    *,
-    target_dirs: Annotated[Sequence[IdentifierStr], Field(max_length=64)] = (),
-) -> tuple[SourceUnit, ...]:
-    """Discover and parse Python ``SourceUnit`` files under ``repo_root`` safely."""
-    resolved_root = repo_root.resolve()
-    if not resolved_root.is_dir():
-        msg = f"Workspace directory does not exist: '{repo_root}'."
-        raise FileNotFoundError(msg)
-    scan_dirs = _resolve_scan_dirs(resolved_root, target_dirs)
-    units: list[SourceUnit] = []
-    for py_path in _collect_python_files(resolved_root, scan_dirs):
-        rel_posix = py_path.relative_to(resolved_root).as_posix()
-        contained = ContainedPath.from_parts(resolved_root, rel_posix)
-        source = read_bounded_text(contained)
-        units.append(parse_source_unit(contained.relative_posix, source))
-    return tuple(units)
 
 
 @jezz_callable
@@ -215,47 +150,7 @@ def _require_units(
     repo_path: Path,
     raw_dirs: Sequence[str] | None,
 ) -> tuple[Path, tuple[SourceUnit, ...]]:
-    resolved_repo = repo_path.resolve()
-    units = discover_workspace_units(resolved_repo, target_dirs=tuple(raw_dirs or ()))
-    if not units:
-        msg = f"Zero Python source files discovered under '{repo_path}'."
-        raise ValueError(msg)
-    return resolved_repo, units
-
-
-def _extract_local_unit_roots(units: Sequence[SourceUnit]) -> set[str]:
-    roots: set[str] = set()
-    for unit in units:
-        if not unit.module_name or unit.is_test_file:
-            continue
-        top = unit.module_name.split(".", maxsplit=1)[0]
-        if top.isidentifier():
-            roots.add(top)
-            continue
-        stem = PurePosixPath(unit.file_path).stem
-        if stem.isidentifier():
-            roots.add(stem)
-    return roots
-
-
-def _build_workspace_inspector(
-    resolved_repo: Path,
-    units: Sequence[SourceUnit],
-) -> BuildingInspector:
-    base = BuildingInspector.from_workspace(resolved_repo)
-    local_roots = _extract_local_unit_roots(units)
-    manifest = ManifestDependencies(
-        runtime_roots=base.manifest.runtime_roots,
-        dev_roots=base.manifest.dev_roots,
-        workspace_roots=frozenset(base.manifest.workspace_roots | local_roots),
-    )
-    return BuildingInspector(manifest=manifest)
-
-
-def _parse_optional_iso_date(raw_date: str | None) -> date | None:
-    if raw_date is None:
-        return None
-    return date.fromisoformat(raw_date)
+    return require_workspace_units(repo_path, tuple(raw_dirs or ()))
 
 
 def _handle_differential_inspect(
@@ -266,7 +161,7 @@ def _handle_differential_inspect(
     permit: CodePermit | None,
     out_stream: io.TextIOBase,
 ) -> CliExitCode:
-    reference_date = _parse_optional_iso_date(ns.as_of)
+    reference_date = parse_optional_iso_date(ns.as_of)
     staged_only = bool(ns.staged)
     base_ref = str(ns.changed_since) if ns.changed_since is not None else None
     changed_paths = resolve_git_changed_paths(
@@ -293,10 +188,10 @@ def _handle_differential_inspect(
 def _handle_inspect(ns: argparse.Namespace, out_stream: io.TextIOBase) -> CliExitCode:
     resolved_repo, units = _require_units(ns.repo_path, ns.target_dirs)
     permit = _load_optional_permit(ns.permit)
-    inspector = _build_workspace_inspector(resolved_repo, units)
+    inspector = build_workspace_inspector(resolved_repo, units)
     if ns.changed_since is not None or bool(ns.staged):
         return _handle_differential_inspect(ns, resolved_repo, units, inspector, permit, out_stream)
-    reference_date = _parse_optional_iso_date(ns.as_of)
+    reference_date = parse_optional_iso_date(ns.as_of)
     report = inspector.inspect_rough_in(units, permit=permit, reference_date=reference_date)
     rendered = (
         report.model_dump_json(indent=2)
@@ -815,6 +710,13 @@ def _handle_benchmark(ns: argparse.Namespace, out_stream: io.TextIOBase) -> CliE
     return 0 if passed else 1
 
 
+def _handle_mcp(ns: argparse.Namespace, out_stream: io.TextIOBase) -> CliExitCode:
+    _ = out_stream
+    workspace_root: Path | None = ns.workspace_root
+    run_stdio_mcp_server(workspace_root=workspace_root)
+    return 0
+
+
 _COMMAND_HANDLERS: Final[Mapping[str, _CommandHandler]] = MappingProxyType(
     {
         "inspect": _handle_inspect,
@@ -822,6 +724,7 @@ _COMMAND_HANDLERS: Final[Mapping[str, _CommandHandler]] = MappingProxyType(
         "run": _handle_run,
         "renovate": _handle_renovate,
         "benchmark": _handle_benchmark,
+        "mcp": _handle_mcp,
     }
 )
 
@@ -960,6 +863,22 @@ def _register_inspect_subparser(
     )
 
 
+def _register_mcp_subparser(
+    sub: argparse._SubParsersAction[argparse.ArgumentParser],
+) -> None:
+    p_mcp = sub.add_parser(
+        "mcp",
+        help="Run the read-only JBC v1.1 & PCE statutory MCP server over stdio.",
+    )
+    p_mcp.add_argument(
+        "--root",
+        dest="workspace_root",
+        type=Path,
+        default=None,
+        help="Workspace root directory confining MCP reads (defaults to current directory).",
+    )
+
+
 def _build_cli_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="jezz",
@@ -988,6 +907,7 @@ def _build_cli_parser() -> argparse.ArgumentParser:
         help_text="Renovate a brownfield workspace via BHV-17 REFACTOR to JBC v1.1 occupancy.",
     )
     _register_benchmark_subparser(sub)
+    _register_mcp_subparser(sub)
     return parser
 
 
@@ -1049,3 +969,16 @@ def main(
         detail = str(exc) or type(exc).__name__
         _write_line(err_stream, f"jezz error: {detail}")
         return 2
+
+
+__all__ = [
+    "CliExitCode",
+    "GateRunnerChoice",
+    "GuardedTextStream",
+    "OutputFormat",
+    "TlsResilientModel",
+    "discover_workspace_units",
+    "format_workflow_markdown",
+    "main",
+    "resolve_cli_model",
+]

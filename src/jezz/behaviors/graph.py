@@ -8,7 +8,7 @@ from types import MappingProxyType
 from typing import Annotated, Final, Self
 
 import icontract
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, BeforeValidator, Field, model_validator
 
 from jezz.behaviors.taxonomy import BEHAVIOR_BASIS, BehaviorKind
 from jezz.behaviors.transitions import (
@@ -18,6 +18,7 @@ from jezz.behaviors.transitions import (
 )
 from jezz.guards import (
     STRICT_FROZEN_CONFIG,
+    WIRE_TUPLE_VALIDATOR,
     BoundedText,
     IdentifierStr,
     LoopBudget,
@@ -31,13 +32,22 @@ type NodeIdentifier = Annotated[
 ]
 
 
+def _coerce_wire_behavior_kind(raw_value: object) -> object:
+    if isinstance(raw_value, BehaviorKind) or not isinstance(raw_value, str):
+        return raw_value
+    return BehaviorKind(raw_value)
+
+
+_BEHAVIOR_KIND_VALIDATOR: Final[BeforeValidator] = BeforeValidator(_coerce_wire_behavior_kind)
+
+
 class BehaviorNode(BaseModel):
     """A vertex in a coding-agent task graph bound to a single atomic behavior."""
 
     model_config = STRICT_FROZEN_CONFIG
 
     id: NodeIdentifier
-    kind: BehaviorKind
+    kind: Annotated[BehaviorKind, _BEHAVIOR_KIND_VALIDATOR]
     label: ShortText
     rationale: BoundedText = ""
 
@@ -147,8 +157,16 @@ class BehaviorGraph(BaseModel):
     name: IdentifierStr
     description: BoundedText = ""
     entry_id: IdentifierStr
-    nodes: Annotated[tuple[BehaviorNode, ...], Field(min_length=1, max_length=2048)]
-    edges: Annotated[tuple[BehaviorEdge, ...], Field(max_length=8192)] = ()
+    nodes: Annotated[
+        tuple[BehaviorNode, ...],
+        WIRE_TUPLE_VALIDATOR,
+        Field(min_length=1, max_length=2048),
+    ]
+    edges: Annotated[
+        tuple[BehaviorEdge, ...],
+        WIRE_TUPLE_VALIDATOR,
+        Field(max_length=8192),
+    ] = ()
 
     @model_validator(mode="after")
     def _ensure_unique_identifiers(self) -> Self:
