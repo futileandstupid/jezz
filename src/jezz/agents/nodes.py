@@ -57,6 +57,16 @@ from jezz.methodology.mandate import EngineeringMandate, ModuleWriteScope
 _IMPL_CHECKPOINT_ID = "checkpoint_impl"
 
 type ElicitationCallback = Callable[[EngineeringMandate], Sequence[str] | None]
+type ProgressCallback = Callable[[BehaviorKind, str, str], None]
+
+
+@dataclass(frozen=True)
+class PceInteractionHooks:
+    """Optional human-in-the-loop elicitation, live progress, and plan-approval hooks."""
+
+    on_elicit: ElicitationCallback | None = None
+    on_progress: ProgressCallback | None = None
+    plan_only: bool = False
 
 
 @dataclass
@@ -78,6 +88,8 @@ class PceGraphDeps:
     prior_draft_mandate: EngineeringMandate | None = None
     clarifications: tuple[str, ...] = ()
     elicitation_callback: ElicitationCallback | None = None
+    progress_callback: ProgressCallback | None = None
+    plan_only: bool = False
     baseline_red_tag_summary: str = ""
     latest_report: InspectionReport | None = None
     attestations: tuple[GateAttestation, ...] = ()
@@ -285,6 +297,17 @@ def _assemble_halted_result(
     )
 
 
+def _record_pce_step(
+    node: AtomicBehaviorGraphNode[PceGraphDeps, PceWorkflowResult],
+    ctx: GraphRunContext[AgentExecutionState, PceGraphDeps],
+    step_id: str,
+    summary: str,
+) -> None:
+    node.record_into_context(ctx, step_id, summary)
+    if ctx.deps.progress_callback is not None:
+        ctx.deps.progress_callback(node.behavior_kind, step_id, summary)
+
+
 @dataclass
 class FrameNode(AtomicBehaviorGraphNode[PceGraphDeps, PceWorkflowResult]):
     """Phase I (BHV-01 FRAME): Establish typed EngineeringMandate and check ambiguities."""
@@ -313,7 +336,7 @@ class FrameNode(AtomicBehaviorGraphNode[PceGraphDeps, PceWorkflowResult]):
         ctx.state.problem.objective = mandate.objective
         ctx.state.problem.ambiguities = list(mandate.open_ambiguities)
         step_id = _frame_step_id(ctx.state.trace)
-        self.record_into_context(ctx, step_id, f"Framed mandate {mandate.mandate_id}")
+        _record_pce_step(self, ctx, step_id, f"Framed mandate {mandate.mandate_id}")
 
         if mandate.requires_elicitation:
             return ElicitNode(reason="Open domain ambiguities require human resolution.")
@@ -327,6 +350,7 @@ class ElicitNode(AtomicBehaviorGraphNode[PceGraphDeps, PceWorkflowResult]):
     behavior_kind: ClassVar[BehaviorKind] = BehaviorKind.ELICIT
     reason: str
     escalated_red_tag: bool = False
+    awaiting_plan_approval: bool = False
 
     async def run(
         self,
@@ -334,10 +358,18 @@ class ElicitNode(AtomicBehaviorGraphNode[PceGraphDeps, PceWorkflowResult]):
     ) -> FrameNode | End[PceWorkflowResult]:
         elicit_idx = sum(1 for step in ctx.state.trace if step.kind == BehaviorKind.ELICIT) + 1
         step_id = "elicit" if elicit_idx == 1 else f"elicit_{elicit_idx}"
-        self.record_into_context(ctx, step_id, self.reason[:240])
+        _record_pce_step(self, ctx, step_id, self.reason[:240])
         if self.escalated_red_tag:
             return End(
                 _assemble_halted_result(ctx.state, ctx.deps, PceRunStatus.ESCALATED_AFTER_RED_TAG)
+            )
+        if self.awaiting_plan_approval:
+            return End(
+                _assemble_halted_result(
+                    ctx.state,
+                    ctx.deps,
+                    PceRunStatus.HALTED_FOR_PLAN_APPROVAL,
+                )
             )
         if _try_in_process_elicitation(ctx.deps):
             return FrameNode()
@@ -369,7 +401,8 @@ class BindCodesNode(AtomicBehaviorGraphNode[PceGraphDeps, PceWorkflowResult]):
         ctx: GraphRunContext[AgentExecutionState, PceGraphDeps],
     ) -> InspectCodeNode:
         bind_permit_to_state(ctx.state, ctx.deps.permit)
-        self.record_into_context(
+        _record_pce_step(
+            self,
             ctx,
             "bind_codes",
             f"Bound {len(ctx.deps.permit.bound_code_ids)} JBC code provisions",
@@ -404,7 +437,7 @@ class InspectCodeNode(AtomicBehaviorGraphNode[PceGraphDeps, PceWorkflowResult]):
         )
         ctx.deps.telemetry.append(tel)
         ctx.state.world_model.observations.append(obs.summary)
-        self.record_into_context(ctx, "inspect_code", obs.summary[:240])
+        _record_pce_step(self, ctx, "inspect_code", obs.summary[:240])
         return DecomposeNode()
 
 
@@ -417,16 +450,22 @@ class DecomposeNode(AtomicBehaviorGraphNode[PceGraphDeps, PceWorkflowResult]):
     async def run(
         self,
         ctx: GraphRunContext[AgentExecutionState, PceGraphDeps],
-    ) -> CheckpointContractNode | CheckpointImplNode:
+    ) -> ElicitNode | CheckpointContractNode | CheckpointImplNode:
         mandate = _require_mandate(ctx.deps)
         ctx.state.problem.subtasks = [
             f"{s.scope_id}:{sorted(s.owned_files)}" for s in mandate.write_scopes
         ]
-        self.record_into_context(
+        _record_pce_step(
+            self,
             ctx,
             "decompose",
             f"Partitioned {len(mandate.write_scopes)} disjoint write scope(s)",
         )
+        if ctx.deps.plan_only:
+            return ElicitNode(
+                reason="EngineeringMandate and write-scope plan ready for human sign-off.",
+                awaiting_plan_approval=True,
+            )
         if ctx.deps.workflow_mode == PceWorkflowMode.RENOVATE and not _has_authorized_tests(
             mandate
         ):
@@ -446,7 +485,7 @@ class CheckpointContractNode(AtomicBehaviorGraphNode[PceGraphDeps, PceWorkflowRe
     ) -> SpecifyNode | InstrumentNode:
         ckpt = ctx.deps.sandbox.create_checkpoint("checkpoint_contract")
         ctx.state.workspace.checkpoints.append(ckpt)
-        self.record_into_context(ctx, "checkpoint_contract", "Captured pre-contract snapshot")
+        _record_pce_step(self, ctx, "checkpoint_contract", "Captured pre-contract snapshot")
         if ctx.deps.workflow_mode == PceWorkflowMode.RENOVATE:
             return InstrumentNode()
         return SpecifyNode()
@@ -472,7 +511,7 @@ class SpecifyNode(AtomicBehaviorGraphNode[PceGraphDeps, PceWorkflowResult]):
         )
         ctx.deps.telemetry.append(tel)
         _apply_patches_to_state(ctx.state, ctx.deps.sandbox, bundle.contract_patches)
-        self.record_into_context(ctx, "specify", bundle.summary[:240])
+        _record_pce_step(self, ctx, "specify", bundle.summary[:240])
         return InstrumentNode()
 
 
@@ -503,7 +542,7 @@ class InstrumentNode(AtomicBehaviorGraphNode[PceGraphDeps, PceWorkflowResult]):
         )
         ctx.deps.telemetry.append(tel)
         _apply_patches_to_state(ctx.state, ctx.deps.sandbox, bundle.test_patches)
-        self.record_into_context(ctx, "instrument", bundle.summary[:240])
+        _record_pce_step(self, ctx, "instrument", bundle.summary[:240])
         return CheckpointImplNode()
 
 
@@ -520,7 +559,7 @@ class CheckpointImplNode(AtomicBehaviorGraphNode[PceGraphDeps, PceWorkflowResult
         mandate = _require_mandate(ctx.deps)
         ckpt = ctx.deps.sandbox.create_checkpoint(_IMPL_CHECKPOINT_ID)
         ctx.state.workspace.checkpoints.append(ckpt)
-        self.record_into_context(ctx, "checkpoint_impl", "Captured pre-implementation snapshot")
+        _record_pce_step(self, ctx, "checkpoint_impl", "Captured pre-implementation snapshot")
         if len(_implementation_scopes(mandate)) > 1:
             return DelegateNode()
         if ctx.deps.workflow_mode == PceWorkflowMode.RENOVATE:
@@ -548,7 +587,7 @@ class SynthesizeNode(AtomicBehaviorGraphNode[PceGraphDeps, PceWorkflowResult]):
         )
         ctx.deps.telemetry.append(tel)
         _apply_patches_to_state(ctx.state, ctx.deps.sandbox, bundle.implementation_patches)
-        self.record_into_context(ctx, "synthesize", bundle.summary[:240])
+        _record_pce_step(self, ctx, "synthesize", bundle.summary[:240])
         return VerifyStaticNode()
 
 
@@ -580,7 +619,7 @@ class RefactorNode(AtomicBehaviorGraphNode[PceGraphDeps, PceWorkflowResult]):
         )
         ctx.deps.telemetry.append(tel)
         _apply_patches_to_state(ctx.state, ctx.deps.sandbox, bundle.refactored_patches)
-        self.record_into_context(ctx, "refactor", bundle.summary[:240])
+        _record_pce_step(self, ctx, "refactor", bundle.summary[:240])
         return VerifyStaticNode()
 
 
@@ -647,7 +686,8 @@ class DelegateNode(AtomicBehaviorGraphNode[PceGraphDeps, PceWorkflowResult]):
             ctx.deps.telemetry.append(tel)
             ctx.deps.delegated_bundles.append((scope, bundle))
 
-        self.record_into_context(
+        _record_pce_step(
+            self,
             ctx,
             "delegate",
             f"Executed {len(tasks)} parallel scoped synthesis worker(s)",
@@ -690,7 +730,8 @@ class ReconcileNode(AtomicBehaviorGraphNode[PceGraphDeps, PceWorkflowResult]):
         _apply_patches_to_state(ctx.state, ctx.deps.sandbox, merged)
         ctx.state.world_model.active_delegations.clear()
         ctx.deps.delegated_bundles = []
-        self.record_into_context(
+        _record_pce_step(
+            self,
             ctx,
             "reconcile",
             f"Reconciled {len(merged)} disjoint artifact patch(es)",
@@ -712,7 +753,8 @@ class VerifyStaticNode(AtomicBehaviorGraphNode[PceGraphDeps, PceWorkflowResult])
         report = ctx.deps.inspector.inspect_rough_in(units, permit=ctx.deps.permit)
         ctx.deps.latest_report = report
         record_inspection_to_state(ctx.state, report, stage="rough_in")
-        self.record_into_context(
+        _record_pce_step(
+            self,
             ctx,
             "verify_static",
             f"Rough-in ruling: {report.ruling} ({len(report.unwaived_violations())} violations)",
@@ -742,7 +784,8 @@ class VerifyDynamicNode(AtomicBehaviorGraphNode[PceGraphDeps, PceWorkflowResult]
         )
         ctx.deps.latest_report = report
         record_inspection_to_state(ctx.state, report, stage="final")
-        self.record_into_context(
+        _record_pce_step(
+            self,
             ctx,
             "verify_dynamic",
             f"Final ruling: {report.ruling} ({len(report.unwaived_violations())} violations)",
@@ -777,7 +820,7 @@ class RevertNode(AtomicBehaviorGraphNode[PceGraphDeps, PceWorkflowResult]):
         ctx.state.workspace.modified_artifacts = set(restored)
         summary = _summarize_red_tag_findings(ctx.deps.latest_report, self.stage)
         ctx.state.world_model.falsified_paths.append(summary[:512])
-        self.record_into_context(ctx, "revert", f"Reverted to {_IMPL_CHECKPOINT_ID} on RED_TAG")
+        _record_pce_step(self, ctx, "revert", f"Reverted to {_IMPL_CHECKPOINT_ID} on RED_TAG")
 
         try:
             ctx.deps.remediation_loop.tick()
@@ -813,7 +856,7 @@ class HypothesizeNode(AtomicBehaviorGraphNode[PceGraphDeps, PceWorkflowResult]):
         ctx.deps.telemetry.append(tel)
         ctx.deps.remediation_guidance = hypothesis.remediation_plan
         ctx.state.world_model.active_hypotheses.append(hypothesis.remediation_plan)
-        self.record_into_context(ctx, "hypothesize", hypothesis.remediation_plan[:240])
+        _record_pce_step(self, ctx, "hypothesize", hypothesis.remediation_plan[:240])
         return CheckpointImplNode()
 
 
@@ -828,7 +871,7 @@ class CertifyNode(AtomicBehaviorGraphNode[PceGraphDeps, PceWorkflowResult]):
         ctx: GraphRunContext[AgentExecutionState, PceGraphDeps],
     ) -> End[PceWorkflowResult]:
         mandate = _require_mandate(ctx.deps)
-        self.record_into_context(ctx, "certify", f"Certified occupancy for {mandate.mandate_id}")
+        _record_pce_step(self, ctx, "certify", f"Certified occupancy for {mandate.mandate_id}")
 
         units = ctx.deps.sandbox.load_units()
         final_report = ctx.deps.inspector.inspect_final(

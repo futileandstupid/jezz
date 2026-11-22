@@ -43,6 +43,7 @@ class PceRunStatus(StrEnum):
 
     OCCUPANCY_CERTIFIED = "occupancy_certified"
     HALTED_FOR_ELICITATION = "halted_for_elicitation"
+    HALTED_FOR_PLAN_APPROVAL = "halted_for_plan_approval"
     ESCALATED_AFTER_RED_TAG = "escalated_after_red_tag"
 
 

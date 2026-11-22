@@ -8,7 +8,7 @@ from typing import Annotated
 from pydantic import Field
 from pydantic_graph import Graph, GraphBuilder
 
-from jezz.agents.nodes import ElicitationCallback, FrameNode, PceGraphDeps
+from jezz.agents.nodes import ElicitationCallback, FrameNode, PceGraphDeps, PceInteractionHooks
 from jezz.agents.schemas import (
     ElicitationTicket,
     PceRuntimeBudget,
@@ -61,6 +61,14 @@ def build_pce_workflow_graph() -> Annotated[Graph, InstanceGuard(Graph)]:
     return builder.build()
 
 
+def _coerce_interaction_hooks(
+    raw: ElicitationCallback | PceInteractionHooks | None,
+) -> PceInteractionHooks:
+    if isinstance(raw, PceInteractionHooks):
+        return raw
+    return PceInteractionHooks(on_elicit=raw)
+
+
 class PceWorkflowOrchestrator:
     """Single-duty orchestrator executing greenfield, brownfield, and resumable PCE runs."""
 
@@ -72,13 +80,13 @@ class PceWorkflowOrchestrator:
         inspector: BuildingInspector | None = None,
         gate_runner: Annotated[DynamicGatePort, InstanceGuard(DynamicGatePort)] | None = None,
         budget: PceRuntimeBudget | None = None,
-        elicitation_callback: ElicitationCallback | None = None,
+        elicitation_callback: ElicitationCallback | PceInteractionHooks | None = None,
     ) -> None:
         self._models = models
         self._inspector = inspector
         self._gate_runner: DynamicGatePort = gate_runner or InProcessGateRunner()
         self._budget = budget or PceRuntimeBudget()
-        self._elicitation_callback = elicitation_callback
+        self._interaction: PceInteractionHooks = _coerce_interaction_hooks(elicitation_callback)
 
     async def _run_workflow(self, spec: _WorkflowLaunchSpec) -> PceWorkflowResult:
         resolved_root = spec.repo_root.resolve()
@@ -104,7 +112,9 @@ class PceWorkflowOrchestrator:
             mandate=spec.mandate,
             prior_draft_mandate=prior_draft,
             clarifications=spec.clarifications,
-            elicitation_callback=self._elicitation_callback,
+            elicitation_callback=self._interaction.on_elicit,
+            progress_callback=self._interaction.on_progress,
+            plan_only=self._interaction.plan_only,
             telemetry=prior_telemetry,
         )
         workflow = build_pce_workflow_graph()

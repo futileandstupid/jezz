@@ -32,17 +32,21 @@ uv run jezz inspect <repo_path> (--changed-since origin/main | --staged) [--perm
 # Audit a 5-phase PCE EngineeringDossier against compiled workspace symbols and SHA-256 digest
 uv run jezz audit <dossier.json> [--repo <repo_path>] [--format markdown|json]
 
-# Execute a greenfield PCE prompt or mandate (uses [tool.jezz.models] or CLI tier overrides)
-uv run jezz run <repo_path> [--model <provider:model>] [--architect-model <provider:model>] (--prompt "..." | --mandate mandate.json | --resume-elicitation elicit.json --clarification "...")
+# Bootstrap Antigravity plugin (MCP + Stop hook + PCE skill + rules), [tool.jezz.models], & optional pre-commit ratchet
+uv run jezz init [repo_path] [--plugin-scope workspace|global|none] [--pre-commit] [--overwrite]
+
+# Execute a greenfield PCE prompt or mandate (interactive TTY ELICIT + live progress + optional --plan-only review)
+uv run jezz run <repo_path> [--model <provider:model>] [--architect-model <provider:model>] (--prompt "..." | --mandate mandate.json | --resume-elicitation elicit.json --clarification "...") [--plan-only --write-mandate mandate.json] [--interactive] [--progress]
 
 # Renovate an existing brownfield repository to zero-variance JBC v1.1 occupancy via BHV-17 REFACTOR
-uv run jezz renovate <repo_path> [--model <provider:model>] [--builder-model <provider:model>] (--prompt "..." | --mandate mandate.json) [--write-dossier dossier.json]
+uv run jezz renovate <repo_path> [--model <provider:model>] [--builder-model <provider:model>] (--prompt "..." | --mandate mandate.json) [--plan-only --write-mandate mandate.json] [--write-dossier dossier.json]
 
 # Execute Track 4 controlled pydantic-evals A/B benchmark (Prose SDD vs. Jezz PCE)
 uv run jezz benchmark <work_dir> [--model <provider:model>] [--architect-model <provider:model>] [--max-concurrency 2] [--write-json ab.json]
 
-# Launch the read-only JBC v1.1 & PCE statutory MCP server over stdio (jailed to --root)
+# Launch the read-only JBC v1.1 & PCE statutory MCP server or Antigravity Stop lifecycle gate over stdio
 uv run jezz mcp [--root <repo_path>]
+uv run jezz hook stop [--root <repo_path>] [--max-continuations 3] [--require-marker]
 ```
 
 ## Statutory MCP Gate Server (`jezz mcp`)

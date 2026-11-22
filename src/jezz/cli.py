@@ -35,6 +35,16 @@ from jezz.agents.schemas import (
 )
 from jezz.agents.specialists import GuardedModel
 from jezz.agents.workspace import DynamicGatePort, InProcessGateRunner, UvSubprocessGateRunner
+from jezz.cli_interactive import (
+    CliIoStreams,
+    handle_hook_command,
+    handle_init_command,
+    persist_mandate_json,
+    register_hook_parser,
+    register_init_parser,
+    register_interactive_workflow_flags,
+    resolve_workflow_interaction_hooks,
+)
 from jezz.codes.ast_utils import SourceUnit
 from jezz.codes.discovery import (
     build_workspace_inspector,
@@ -80,7 +90,7 @@ from jezz.secrets import (
 
 type CliExitCode = Annotated[int, Field(ge=0, le=2)]
 type GuardedTextStream = Annotated[io.TextIOBase, InstanceGuard(io.TextIOBase)]
-type _CommandHandler = Callable[[argparse.Namespace, io.TextIOBase], CliExitCode]
+type _CommandHandler = Callable[[argparse.Namespace, CliIoStreams], CliExitCode]
 
 
 class OutputFormat(StrEnum):
@@ -95,6 +105,15 @@ class GateRunnerChoice(StrEnum):
 
     SUBPROCESS = "subprocess"
     IN_PROCESS = "in-process"
+
+
+def _append_plan_approval_lines(lines: list[str], mandate: EngineeringMandate) -> None:
+    lines.extend(["", "## Framed Mandate & Write Scopes", f"- **Objective:** {mandate.objective}"])
+    for inv in mandate.invariants:
+        lines.append(f"- `{inv.invariant_id}` (`{inv.verification_symbol}`): {inv.statement}")
+    for scope in mandate.write_scopes:
+        owned = ", ".join(f"`{p}`" for p in sorted(scope.owned_files))
+        lines.append(f"- **Scope `{scope.scope_id}`:** {owned}")
 
 
 @jezz_callable
@@ -114,6 +133,8 @@ def format_workflow_markdown(result: PceWorkflowResult) -> BoundedText:
         lines.append(f"- **Models Exercised:** {models_str}")
     if result.certificate is not None:
         lines.append(f"- **Occupancy Seal:** `{result.certificate.inspector_seal}`")
+    if result.status == PceRunStatus.HALTED_FOR_PLAN_APPROVAL:
+        _append_plan_approval_lines(lines, result.mandate)
     if result.mandate.open_ambiguities:
         lines.extend(["", "## Open Ambiguities (Elicitation Required)"])
         for item in result.mandate.open_ambiguities:
@@ -185,12 +206,14 @@ def _handle_differential_inspect(
     return 0 if diff_report.is_occupiable else 1
 
 
-def _handle_inspect(ns: argparse.Namespace, out_stream: io.TextIOBase) -> CliExitCode:
+def _handle_inspect(ns: argparse.Namespace, streams: CliIoStreams) -> CliExitCode:
     resolved_repo, units = _require_units(ns.repo_path, ns.target_dirs)
     permit = _load_optional_permit(ns.permit)
     inspector = build_workspace_inspector(resolved_repo, units)
     if ns.changed_since is not None or bool(ns.staged):
-        return _handle_differential_inspect(ns, resolved_repo, units, inspector, permit, out_stream)
+        return _handle_differential_inspect(
+            ns, resolved_repo, units, inspector, permit, streams.stdout
+        )
     reference_date = parse_optional_iso_date(ns.as_of)
     report = inspector.inspect_rough_in(units, permit=permit, reference_date=reference_date)
     rendered = (
@@ -198,11 +221,11 @@ def _handle_inspect(ns: argparse.Namespace, out_stream: io.TextIOBase) -> CliExi
         if ns.output_format == OutputFormat.JSON
         else report.to_markdown()
     )
-    _write_line(out_stream, rendered)
+    _write_line(streams.stdout, rendered)
     return 0 if report.is_occupiable else 1
 
 
-def _handle_audit(ns: argparse.Namespace, out_stream: io.TextIOBase) -> CliExitCode:
+def _handle_audit(ns: argparse.Namespace, streams: CliIoStreams) -> CliExitCode:
     dossier = EngineeringDossier.model_validate_json(_read_json_file(ns.dossier_json))
     repo_dir: Path = ns.repo if ns.repo is not None else ns.dossier_json.resolve().parent
     _, units = _require_units(repo_dir, ns.target_dirs)
@@ -212,7 +235,7 @@ def _handle_audit(ns: argparse.Namespace, out_stream: io.TextIOBase) -> CliExitC
         if ns.output_format == OutputFormat.JSON
         else audit_report.to_markdown()
     )
-    _write_line(out_stream, rendered)
+    _write_line(streams.stdout, rendered)
     return 0 if audit_report.is_occupancy_sealed else 1
 
 
@@ -543,6 +566,7 @@ def _execute_pce_run(
     ns: argparse.Namespace,
     resolved_repo: Path,
     permit: CodePermit | None,
+    streams: CliIoStreams,
     *,
     mode: PceWorkflowMode = PceWorkflowMode.GREENFIELD,
 ) -> PceWorkflowResult:
@@ -563,16 +587,17 @@ def _execute_pce_run(
         tool_calls_limit_per_step=48,
         total_tokens_limit_per_step=524_288,
     )
-    callback = (
+    pre_supplied = (
         _one_shot_clarification_callback(ns.clarifications)
         if ns.resume_elicitation is None
         else None
     )
+    hooks = resolve_workflow_interaction_hooks(ns, streams, pre_supplied)
     orchestrator = PceWorkflowOrchestrator(
         suite,
         gate_runner=runner,
         budget=budget,
-        elicitation_callback=callback,
+        elicitation_callback=hooks,
     )
     coro = _dispatch_orchestrator_coro(orchestrator, ns, resolved_repo, permit, mode)
     return asyncio.run(_await_with_deadline(coro, timeout_sec))
@@ -615,9 +640,15 @@ def _persist_elicitation_ticket(target_path: Path, result: PceWorkflowResult) ->
         fh.write(result.elicitation_ticket.model_dump_json(indent=2) + "\n")
 
 
+def _is_successful_workflow_exit(result: PceWorkflowResult, *, plan_only: bool) -> bool:
+    if result.status == PceRunStatus.OCCUPANCY_CERTIFIED:
+        return True
+    return plan_only and result.status == PceRunStatus.HALTED_FOR_PLAN_APPROVAL
+
+
 def _run_workflow_command(
     ns: argparse.Namespace,
-    out_stream: io.TextIOBase,
+    streams: CliIoStreams,
     mode: PceWorkflowMode,
 ) -> CliExitCode:
     resolved_repo = ns.repo_path.resolve()
@@ -626,10 +657,12 @@ def _run_workflow_command(
         raise FileNotFoundError(msg)
     permit = _load_optional_permit(ns.permit)
     result = (
-        _execute_pce_run(ns, resolved_repo, permit)
+        _execute_pce_run(ns, resolved_repo, permit, streams)
         if mode == PceWorkflowMode.GREENFIELD
-        else _execute_pce_run(ns, resolved_repo, permit, mode=mode)
+        else _execute_pce_run(ns, resolved_repo, permit, streams, mode=mode)
     )
+    if ns.write_mandate is not None:
+        persist_mandate_json(resolved_repo, ns.write_mandate, result.mandate)
     if ns.write_elicitation is not None:
         _persist_elicitation_ticket(ns.write_elicitation, result)
     if ns.write_dossier is not None and result.inspection_report is not None:
@@ -639,16 +672,16 @@ def _run_workflow_command(
         if ns.output_format == OutputFormat.JSON
         else format_workflow_markdown(result)
     )
-    _write_line(out_stream, rendered)
-    return 0 if result.status == PceRunStatus.OCCUPANCY_CERTIFIED else 1
+    _write_line(streams.stdout, rendered)
+    return 0 if _is_successful_workflow_exit(result, plan_only=bool(ns.plan_only)) else 1
 
 
-def _handle_run(ns: argparse.Namespace, out_stream: io.TextIOBase) -> CliExitCode:
-    return _run_workflow_command(ns, out_stream, PceWorkflowMode.GREENFIELD)
+def _handle_run(ns: argparse.Namespace, streams: CliIoStreams) -> CliExitCode:
+    return _run_workflow_command(ns, streams, PceWorkflowMode.GREENFIELD)
 
 
-def _handle_renovate(ns: argparse.Namespace, out_stream: io.TextIOBase) -> CliExitCode:
-    return _run_workflow_command(ns, out_stream, PceWorkflowMode.RENOVATE)
+def _handle_renovate(ns: argparse.Namespace, streams: CliIoStreams) -> CliExitCode:
+    return _run_workflow_command(ns, streams, PceWorkflowMode.RENOVATE)
 
 
 def _select_benchmark_dataset(case_ids: Sequence[str] | None) -> GuardedDataset:
@@ -690,7 +723,7 @@ def _execute_cli_benchmark(ns: argparse.Namespace, work_dir: Path) -> AbBenchmar
     return asyncio.run(_await_with_deadline(coro, timeout_sec))
 
 
-def _handle_benchmark(ns: argparse.Namespace, out_stream: io.TextIOBase) -> CliExitCode:
+def _handle_benchmark(ns: argparse.Namespace, streams: CliIoStreams) -> CliExitCode:
     resolved_work = ns.work_dir.resolve()
     resolved_work.mkdir(parents=True, exist_ok=True)
     comparison = _execute_cli_benchmark(ns, resolved_work)
@@ -704,14 +737,14 @@ def _handle_benchmark(ns: argparse.Namespace, out_stream: io.TextIOBase) -> CliE
         if ns.output_format == OutputFormat.JSON
         else format_ab_benchmark_markdown(comparison)
     )
-    _write_line(out_stream, rendered)
+    _write_line(streams.stdout, rendered)
     t = comparison.treatment_summary
     passed = t.cases_jbc_occupiable == t.cases_total and t.cases_oracle_passed == t.cases_total
     return 0 if passed else 1
 
 
-def _handle_mcp(ns: argparse.Namespace, out_stream: io.TextIOBase) -> CliExitCode:
-    _ = out_stream
+def _handle_mcp(ns: argparse.Namespace, streams: CliIoStreams) -> CliExitCode:
+    _ = streams
     workspace_root: Path | None = ns.workspace_root
     run_stdio_mcp_server(workspace_root=workspace_root)
     return 0
@@ -725,6 +758,8 @@ _COMMAND_HANDLERS: Final[Mapping[str, _CommandHandler]] = MappingProxyType(
         "renovate": _handle_renovate,
         "benchmark": _handle_benchmark,
         "mcp": _handle_mcp,
+        "init": handle_init_command,
+        "hook": handle_hook_command,
     }
 )
 
@@ -805,6 +840,7 @@ def _register_workflow_subparser(
     p_wf.add_argument("--gate-runner", choices=("subprocess", "in-process"), default="subprocess")
     p_wf.add_argument("--timeout-sec", type=float, default=600.0)
     p_wf.add_argument("--write-dossier", default=None, help="Relative path to save dossier JSON.")
+    register_interactive_workflow_flags(p_wf)
     _register_secret_flags(p_wf)
     p_wf.add_argument(
         "--format", dest="output_format", choices=("markdown", "json"), default="markdown"
@@ -908,6 +944,15 @@ def _build_cli_parser() -> argparse.ArgumentParser:
     )
     _register_benchmark_subparser(sub)
     _register_mcp_subparser(sub)
+    register_init_parser(
+        sub.add_parser(
+            "init",
+            help="Install the Antigravity jezz plugin (MCP + Stop hook + PCE skill) and config.",
+        )
+    )
+    register_hook_parser(
+        sub.add_parser("hook", help="Execute an Antigravity lifecycle hook handler over stdio.")
+    )
     return parser
 
 
@@ -925,17 +970,27 @@ def _parse_cli_args(
             return None, code
 
 
+def _resolve_default_stdin(explicit_stdin: GuardedTextStream | None) -> io.TextIOBase:
+    if explicit_stdin is not None:
+        return explicit_stdin
+    if isinstance(sys.stdin, io.TextIOBase):
+        return sys.stdin
+    return io.StringIO("")
+
+
 @jezz_callable
 def main(
     argv: Annotated[Sequence[BoundedText], Field(max_length=256)] | None = None,
     *,
     stdout: GuardedTextStream | None = None,
     stderr: GuardedTextStream | None = None,
+    stdin: GuardedTextStream | None = None,
 ) -> CliExitCode:
     """Execute the ``jezz`` CLI and return POSIX exit code ``0``, ``1``, or ``2``."""
     raw_args = tuple(sys.argv[1:]) if argv is None else tuple(argv)
     out_stream = stdout if stdout is not None else sys.stdout
     err_stream = stderr if stderr is not None else sys.stderr
+    in_stream = _resolve_default_stdin(stdin)
     if not isinstance(out_stream, io.TextIOBase) or not isinstance(err_stream, io.TextIOBase):
         msg = "Active standard streams must inherit from io.TextIOBase."
         raise TypeError(msg)
@@ -949,8 +1004,9 @@ def main(
         _write_line(err_stream, f"jezz error: unknown subcommand '{namespace.command}'.")
         return 2
 
+    streams = CliIoStreams(stdin=in_stream, stdout=out_stream, stderr=err_stream)
     try:
-        return handler(namespace, out_stream)
+        return handler(namespace, streams)
     except (
         FileNotFoundError,
         SyntaxError,
