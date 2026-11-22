@@ -346,7 +346,12 @@ def _validate_instrument_output(
         bundle.test_patches,
         "Phase III falsification suite",
     )
-    if ctx.deps.mandate is not None:
+    expected = (
+        ctx.deps.scoped_invariants
+        if ctx.deps.scoped_invariants is not None
+        else (ctx.deps.mandate.invariants if ctx.deps.mandate is not None else ())
+    )
+    if expected:
         patched_paths = {u.file_path for u in test_units}
         prior_tests = [
             u
@@ -356,7 +361,7 @@ def _validate_instrument_output(
         compiled_tests = extract_compiled_symbols((*prior_tests, *test_units))
         missing_verif = [
             inv.verification_symbol
-            for inv in ctx.deps.mandate.invariants
+            for inv in expected
             if inv.verification_symbol not in compiled_tests
         ]
         if missing_verif:
@@ -540,11 +545,16 @@ def build_frame_agent(model: GuardedModel) -> GuardedAgent[FramedMandateProposal
             "contract_symbols (never file paths or 'file.py:sym' pytest nodeids). Every "
             "ModuleWriteScope must own at least one non-test src/.../*.py file (place paired "
             "tests/test_*.py files inside the same ModuleWriteScope rather than a separate "
-            "test-only scope). State invariants as strict falsifiable conditions; never emit "
-            "Agile user stories ('As a ..., I want ...'), Markdown checkboxes ('- [ ]'), "
-            "ceremony jargon, or weasel modals ('should'/'might'/'ideally'/'maybe'/'try to'). "
+            "test-only scope). State invariants as strict falsifiable conditions (prefer 3..5 "
+            "cohesive DomainInvariants per module rather than fragmenting trivial field/enum "
+            "checks into separate invariants); never emit Agile user stories ('As a ..., I want "
+            "...'), Markdown checkboxes ('- [ ]'), ceremony jargon, or weasel modals "
+            "('should'/'might'/'ideally'/'maybe'/'try to'). "
             "Populate open_ambiguities whenever material domain constraints, bounds, failure "
-            "policies, or edge-case semantics are under-determined rather than guessing. When "
+            "policies, or edge-case semantics are under-determined rather than guessing (note: "
+            "JBC v1.1 conventions are already fixed and never ambiguous — all BaseModels use "
+            "STRICT_FROZEN_CONFIG from jezz.guards, IdentifierStr is 1..256 strict str, "
+            "PositiveInt >= 1, NonNegativeInt >= 0, and public callables use @jezz_callable). When "
             "'Authoritative Clarifications Resolving Open Ambiguities' is provided, integrate "
             "those answers into concrete invariants/write_scopes and set open_ambiguities=() "
             "once resolved."
@@ -669,13 +679,18 @@ def build_instrument_agent(model: GuardedModel) -> GuardedAgent[InstrumentationS
         instructions=(
             "Use the inline 'Existing Authorized File Snapshots' directly (do NOT call read/list "
             "tools on already-inlined or absent files) so imports and field names match Phase III "
-            "contracts exactly. Author pytest and Hypothesis (@given) falsification suites under "
+            "contracts exactly; mandated callable contract_symbols not yet present in Phase III "
+            "src/... snapshots will be synthesized in Phase IV—import them directly from their "
+            "target src/... module without searching the workspace. Author pytest and Hypothesis "
+            "(@given) falsification suites under "
             "authorized tests/... file(s) defining every mandated invariant verification_symbol. "
             "Every test and helper callable in tests/ must have 100% parameter and '-> None' "
             "return annotations with zero Any, <= 6 parameters (when @given needs >6 values, use "
             "'@given(st.data())' with 'data: st.DataObject' instead of >6 args or untyped "
             "@st.composite), and <= 35 statements; name any delegated assertion helper "
-            "'_assert_*', '_verify_*', '_check_*', or '_expect_*' (JBC-VRF-001). When testing "
+            "'_assert_*', '_verify_*', '_check_*', or '_expect_*' (JBC-VRF-001). Under mypy "
+            "--strict (strict_equality), assert StrEnum.MEMBER.value == 'literal' rather than "
+            "StrEnum.MEMBER == 'literal' ([comparison-overlap]). When testing "
             "that invalid inputs or step-budget overruns raise an error, expect "
             "(ValueError, TypeError, icontract.ViolationError, BudgetExceededError); never "
             "combine @given with function-scoped fixtures like tmp_path, and guard any helper "

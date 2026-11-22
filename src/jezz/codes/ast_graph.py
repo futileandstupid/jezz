@@ -192,25 +192,52 @@ def _collect_local_callees(fn_node: ast.FunctionDef | ast.AsyncFunctionDef) -> t
     return tuple(seen)
 
 
+def _format_arg_item(arg: ast.arg, *, prefix: str = "", suffix: str = "") -> str:
+    ann = f": {ast.unparse(arg.annotation)}" if arg.annotation is not None else ""
+    return f"{prefix}{arg.arg}{ann}{suffix}"
+
+
 def _format_callable_signature(ctx: CallableContext) -> str:
     fn = ctx.node
     prefix = "async def" if isinstance(fn, ast.AsyncFunctionDef) else "def"
-    arg_names = [a.arg for a in fn.args.posonlyargs + fn.args.args]
+    arg_parts = [_format_arg_item(a) for a in fn.args.posonlyargs + fn.args.args]
     if fn.args.vararg is not None:
-        arg_names.append(f"*{fn.args.vararg.arg}")
-    arg_names.extend(f"{a.arg}=..." for a in fn.args.kwonlyargs)
+        arg_parts.append(_format_arg_item(fn.args.vararg, prefix="*"))
+    arg_parts.extend(_format_arg_item(a, suffix="=...") for a in fn.args.kwonlyargs)
     if fn.args.kwarg is not None:
-        arg_names.append(f"**{fn.args.kwarg.arg}")
+        arg_parts.append(_format_arg_item(fn.args.kwarg, prefix="**"))
     ret_str = f" -> {ast.unparse(fn.returns)}" if fn.returns is not None else ""
-    raw = f"{prefix} {ctx.qualname}({', '.join(arg_names)}){ret_str}"
+    raw = f"{prefix} {ctx.qualname}({', '.join(arg_parts)}){ret_str}"
     return raw[:512]
+
+
+def _format_class_member_item(stmt: ast.stmt) -> str | None:
+    if isinstance(stmt, ast.AnnAssign) and isinstance(stmt.target, ast.Name):
+        name = stmt.target.id
+        if not name.startswith("_") and name != "model_config":
+            return f"{name}: {ast.unparse(stmt.annotation)}"
+    if isinstance(stmt, ast.Assign) and len(stmt.targets) == 1:
+        first_target = stmt.targets[0]
+        if isinstance(first_target, ast.Name):
+            name = first_target.id
+            if not name.startswith("_") and name != "model_config":
+                return f"{name}={ast.unparse(stmt.value)}"
+    return None
+
+
+def _format_class_signature(cls_node: ast.ClassDef) -> str:
+    bases = [ast.unparse(b) for b in cls_node.bases[:4]]
+    base_str = f"({', '.join(bases)})" if bases else ""
+    members = [
+        m for stmt in cls_node.body[:16] if (m := _format_class_member_item(stmt)) is not None
+    ]
+    member_str = f" {{{', '.join(members[:12])}}}" if members else ""
+    return f"class {cls_node.name}{base_str}{member_str}"[:512]
 
 
 def _extract_unit_symbols(unit: SourceUnit) -> list[SymbolGraphEntry]:
     entries: list[SymbolGraphEntry] = []
     for cls_node in unit.classes:
-        bases = [ast.unparse(b) for b in cls_node.bases[:4]]
-        base_str = f"({', '.join(bases)})" if bases else ""
         start_ln = _start_line_with_decorators(cls_node)
         entries.append(
             SymbolGraphEntry(
@@ -220,7 +247,7 @@ def _extract_unit_symbols(unit: SourceUnit) -> list[SymbolGraphEntry]:
                 kind=SymbolNodeKind.CLASS,
                 start_line=start_ln,
                 end_line=cls_node.end_lineno or start_ln,
-                signature_summary=f"class {cls_node.name}{base_str}"[:512],
+                signature_summary=_format_class_signature(cls_node),
             )
         )
     for stmt in unit.tree.body:

@@ -224,6 +224,53 @@ def load_setup_cfg_dependencies(
     )
 
 
+def _package_root_from_rel_spec(raw_spec: str) -> str | None:
+    trimmed = raw_spec.strip().strip("/")
+    if trimmed.startswith("src/"):
+        trimmed = trimmed[4:]
+    head = trimmed.split("/", maxsplit=1)[0].split(".", maxsplit=1)[0]
+    return head if head.isidentifier() else None
+
+
+def _extract_hatch_wheel_packages(tool: dict[str, object]) -> list[str]:
+    hatch = tool.get("hatch")
+    build = hatch.get("build") if isinstance(hatch, dict) else None
+    targets = build.get("targets") if isinstance(build, dict) else None
+    wheel = targets.get("wheel") if isinstance(targets, dict) else None
+    raw_pkgs = wheel.get("packages") if isinstance(wheel, dict) else None
+    return _extract_dep_strings(raw_pkgs)
+
+
+def _extract_pyproject_package_roots(data: dict[str, object]) -> set[str]:
+    tool = data.get("tool")
+    if not isinstance(tool, dict):
+        return set()
+    setuptools_tbl = tool.get("setuptools")
+    setuptools_pkgs = (
+        _extract_dep_strings(setuptools_tbl.get("packages"))
+        if isinstance(setuptools_tbl, dict)
+        else []
+    )
+    roots: set[str] = set()
+    for raw in (*_extract_hatch_wheel_packages(tool), *setuptools_pkgs):
+        pkg = _package_root_from_rel_spec(raw)
+        if pkg is not None:
+            roots.add(pkg)
+    return roots
+
+
+def _discover_src_layout_roots(repo_root: Path) -> set[str]:
+    src_contained = ContainedPath.from_parts(repo_root.resolve(), "src")
+    if not src_contained.resolved_path.is_dir():
+        return set()
+    roots: set[str] = set()
+    for entry in sorted(src_contained.resolved_path.iterdir()):
+        candidate = entry.stem if entry.suffix == ".py" and entry.is_file() else entry.name
+        if (entry.is_dir() or entry.suffix == ".py") and candidate.isidentifier():
+            roots.add(candidate)
+    return roots - {"__init__"}
+
+
 @jezz_callable
 def load_pyproject_dependencies(pyproject_target: ContainedPath) -> ManifestDependencies:
     """Parse ``pyproject.toml`` to extract runtime, dev, and project import roots."""
@@ -245,7 +292,7 @@ def load_pyproject_dependencies(pyproject_target: ContainedPath) -> ManifestDepe
     ]
     dev_roots = _expand_import_roots(dev_specs)
 
-    ws_roots: set[str] = {"tests"}
+    ws_roots: set[str] = {"tests", *_extract_pyproject_package_roots(data)}
     proj_name = project.get("name")
     if isinstance(proj_name, str) and proj_name:
         ws_roots.add(normalize_pep508_to_import_root(proj_name))
@@ -438,6 +485,12 @@ def _run_per_unit_code(
     if rule_fn is not None:
         return [item for unit in units for item in rule_fn(unit)]
     if code_id == "JBC-VRF-003":
+        unit_roots = {
+            u.module_name.split(".", maxsplit=1)[0]
+            for u in units
+            if u.module_name and not u.is_test_file
+        }
+        merged_ws = manifest.workspace_roots | unit_roots
         return [
             item
             for unit in units
@@ -445,7 +498,7 @@ def _run_per_unit_code(
                 unit,
                 runtime_roots=manifest.runtime_roots,
                 dev_roots=manifest.dev_roots,
-                workspace_roots=manifest.workspace_roots,
+                workspace_roots=merged_ws,
             )
         ]
     return []
@@ -481,14 +534,21 @@ class BuildingInspector:
             if pyproject.resolved_path.is_file()
             else ManifestDependencies()
         )
+        src_roots = _discover_src_layout_roots(repo_root)
         setup_cfg = ContainedPath.from_parts(repo_root, "setup.cfg")
         if not setup_cfg.resolved_path.is_file():
-            return BuildingInspector(manifest=base)
+            return BuildingInspector(
+                manifest=ManifestDependencies(
+                    runtime_roots=base.runtime_roots,
+                    dev_roots=base.dev_roots,
+                    workspace_roots=frozenset(base.workspace_roots | src_roots),
+                )
+            )
         cfg_run, cfg_dev = load_setup_cfg_dependencies(setup_cfg)
         merged = ManifestDependencies(
             runtime_roots=frozenset(base.runtime_roots | cfg_run),
             dev_roots=frozenset(base.dev_roots | cfg_dev),
-            workspace_roots=base.workspace_roots,
+            workspace_roots=frozenset(base.workspace_roots | src_roots),
         )
         return BuildingInspector(manifest=merged)
 

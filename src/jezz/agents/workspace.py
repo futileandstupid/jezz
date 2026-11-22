@@ -37,7 +37,7 @@ from jezz.guards import (
     read_bounded_text,
 )
 from jezz.methodology.dossier import extract_compiled_symbols
-from jezz.methodology.mandate import EngineeringMandate, ModuleWriteScope
+from jezz.methodology.mandate import DomainInvariant, EngineeringMandate, ModuleWriteScope
 
 type DynamicCheckFn = Callable[["WorkspaceSandbox", Sequence[SourceUnit]], PositiveInt]
 
@@ -136,6 +136,11 @@ class WorkspaceSandbox:
         _write_contained_utf8(target, content)
         self._modified_files.add(target.relative_posix)
         return target
+
+    @jezz_callable
+    def has_checkpoint(self, checkpoint_id: IdentifierStr) -> bool:
+        """Return whether ``checkpoint_id`` exists in this sandbox's snapshot store."""
+        return checkpoint_id in self._snapshots
 
     @jezz_callable
     def create_checkpoint(self, checkpoint_id: IdentifierStr) -> IdentifierStr:
@@ -313,7 +318,11 @@ class UvSubprocessGateRunner:
         count = max(1, len(units))
         return (
             self._run_uv_gate(
-                sandbox.repo_root, GateKind.DYNAMIC_SUITE, "pytest", ("pytest", "-q"), count
+                sandbox.repo_root,
+                GateKind.DYNAMIC_SUITE,
+                "pytest",
+                ("pytest", "-q", "--tb=short", "--no-header"),
+                count,
             ),
             self._run_uv_gate(
                 sandbox.repo_root, GateKind.STATIC_TYPES, "mypy", ("mypy", "."), count
@@ -330,6 +339,7 @@ class JezzAgentDeps:
     permit: CodePermit
     mandate: EngineeringMandate | None = None
     active_scope: ModuleWriteScope | None = None
+    scoped_invariants: tuple[DomainInvariant, ...] | None = None
 
 
 def _tool_list_authorized_files(ctx: RunContext[JezzAgentDeps]) -> tuple[str, ...]:
@@ -625,8 +635,12 @@ def _tool_inspect_package_api(
     _ = ctx
     try:
         summary = inspect_installed_package_api(module_path, symbol_filter=symbol_filter)
-    except (ImportError, ValueError) as exc:
-        raise ModelRetry(str(exc)) from exc
+    except ImportError, ValueError:
+        return (
+            f"# NOT_FOUND: '{module_path}' is not an importable installed dotted module "
+            "(pass e.g. 'hypothesis.strategies' or 'pydantic', and use workspace file/AST "
+            "tools for local src/... modules)."
+        )
     return summary.to_compact_text()
 
 
@@ -634,7 +648,12 @@ def _missing_test_verification_symbols(
     deps: JezzAgentDeps,
     candidate_unit: SourceUnit,
 ) -> list[str]:
-    if deps.mandate is None:
+    expected = (
+        deps.scoped_invariants
+        if deps.scoped_invariants is not None
+        else (deps.mandate.invariants if deps.mandate is not None else ())
+    )
+    if not expected:
         return []
     other_tests = [
         u
@@ -642,11 +661,7 @@ def _missing_test_verification_symbols(
         if u.is_test_file and u.file_path != candidate_unit.file_path
     ]
     compiled = extract_compiled_symbols((candidate_unit, *other_tests))
-    return [
-        inv.verification_symbol
-        for inv in deps.mandate.invariants
-        if inv.verification_symbol not in compiled
-    ]
+    return [inv.verification_symbol for inv in expected if inv.verification_symbol not in compiled]
 
 
 def _tool_preview_rough_in(
@@ -658,7 +673,7 @@ def _tool_preview_rough_in(
     try:
         unit = parse_source_unit(rel_path, candidate_source)
     except SyntaxError as exc:
-        raise ModelRetry(f"SyntaxError at line {exc.lineno}: {exc.msg}") from exc
+        return f"RED_TAG (SyntaxError at line {exc.lineno}): {exc.msg}"
     report = ctx.deps.inspector.inspect_rough_in((unit,), permit=ctx.deps.permit)
     if not report.is_occupiable:
         lines = [
@@ -708,7 +723,7 @@ def build_readonly_toolset() -> Annotated[
             _tool_read_symbol_slice,
             _tool_inspect_package_api,
         ),
-        max_retries=2,
+        max_retries=4,
         timeout=10.0,
         id="jezz_readonly_epistemic",
     )
@@ -731,7 +746,7 @@ def build_scoped_write_toolset() -> Annotated[
             _tool_inspect_package_api,
             _tool_preview_rough_in,
         ),
-        max_retries=2,
+        max_retries=4,
         timeout=10.0,
         id="jezz_scoped_mutation",
     )

@@ -1,10 +1,11 @@
 """Pillar 4: Typed pydantic-graph AtomicBehaviorGraphNodes enacting the 5-phase PCE lifecycle."""
 
 import asyncio
+import re
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import ClassVar
+from typing import ClassVar, Final
 
 from pydantic_graph import End, GraphRunContext
 
@@ -13,6 +14,7 @@ from jezz.agents.schemas import (
     ConstructionPatchBundle,
     ElicitationTicket,
     FilePatchArtifact,
+    InstrumentationSuiteBundle,
     PceRunStatus,
     PceRuntimeBudget,
     PceWorkflowMode,
@@ -55,6 +57,7 @@ from jezz.methodology.dossier import (
     extract_compiled_symbols,
 )
 from jezz.methodology.mandate import (
+    DomainInvariant,
     EngineeringMandate,
     ModuleWriteScope,
     compute_scope_execution_waves,
@@ -119,6 +122,7 @@ def _make_agent_deps(
     deps: PceGraphDeps,
     *,
     scope: ModuleWriteScope | None = None,
+    scoped_invariants: tuple[DomainInvariant, ...] | None = None,
 ) -> JezzAgentDeps:
     active_sandbox = deps.sandbox.scoped_view(scope) if scope is not None else deps.sandbox
     return JezzAgentDeps(
@@ -127,6 +131,7 @@ def _make_agent_deps(
         permit=deps.permit,
         mandate=deps.mandate,
         active_scope=scope,
+        scoped_invariants=scoped_invariants,
     )
 
 
@@ -167,6 +172,37 @@ def _render_inline_authorized_snapshots(
     return "\nExisting Authorized File Snapshots:\n" + "\n".join(sections)
 
 
+def _is_public_qualname(qualname: str) -> bool:
+    parts = qualname.split(".")
+    return all(not p.startswith("_") or p == "__init__" for p in parts)
+
+
+def _render_upstream_src_context(
+    sandbox: WorkspaceSandbox,
+    *,
+    max_chars: int = 12_000,
+) -> str:
+    src_units = [
+        u
+        for u in sandbox.load_units(target_dirs=("src",))
+        if u.file_path not in sandbox.authorized_files
+    ]
+    if not src_units:
+        return ""
+    graph = build_workspace_ast_graph(src_units)
+    lines: list[str] = ["\nUpstream Workspace Module Signatures (read-only imports):"]
+    used = len(lines[0])
+    for sym in graph.symbols:
+        if not _is_public_qualname(sym.qualname):
+            continue
+        row = f"- {sym.module_name}.{sym.qualname}: {sym.signature_summary}"
+        if used + len(row) + 1 > max_chars:
+            break
+        lines.append(row)
+        used += len(row) + 1
+    return "\n".join(lines) if len(lines) > 1 else ""
+
+
 def _format_mandate_prompt(
     mandate: EngineeringMandate,
     sandbox: WorkspaceSandbox,
@@ -183,12 +219,14 @@ def _format_mandate_prompt(
     )
     existing = _existing_authorized_files(sandbox)
     snapshots = _render_inline_authorized_snapshots(sandbox, existing)
+    upstream = _render_upstream_src_context(sandbox)
     base = (
         f"Mandate {mandate.mandate_id}: {mandate.title}\n"
         f"Objective: {mandate.objective}\n"
         f"Invariants: {inv_lines}\n"
         f"Write Scopes: {scope_lines}\n"
         f"Existing Authorized Files On Disk: {existing}"
+        f"{upstream}"
         f"{snapshots}"
     )
     if guidance:
@@ -578,6 +616,94 @@ class SpecifyNode(AtomicBehaviorGraphNode[PceGraphDeps, PceWorkflowResult]):
         return InstrumentNode()
 
 
+def _test_owning_scopes(mandate: EngineeringMandate) -> tuple[ModuleWriteScope, ...]:
+    return tuple(
+        s
+        for s in mandate.write_scopes
+        if any(p.startswith(("tests/", "test/")) for p in s.owned_files)
+    )
+
+
+def _scope_invariant_match_key(
+    inv: DomainInvariant,
+    scope: ModuleWriteScope,
+    wave_idx_by_scope: dict[str, int],
+) -> tuple[int, int, int]:
+    wave_idx = wave_idx_by_scope.get(scope.scope_id, 0)
+    if inv.verification_symbol in scope.contract_symbols:
+        return 2, wave_idx, 100
+    haystack = f"{inv.verification_symbol} {inv.statement}"
+    sym_hits = sum(
+        1 for sym in scope.contract_symbols if re.search(rf"\b{re.escape(sym)}\b", haystack)
+    )
+    if sym_hits > 0:
+        return 1, wave_idx, sym_hits
+    stems = {Path(p).stem.removeprefix("test_") for p in scope.owned_files}
+    stem_hits = sum(1 for st in stems if st and st.lower() in inv.verification_symbol.lower())
+    return 0, stem_hits, wave_idx
+
+
+def _partition_invariants_by_test_scope(
+    mandate: EngineeringMandate,
+    test_scopes: Sequence[ModuleWriteScope],
+) -> tuple[tuple[ModuleWriteScope, tuple[DomainInvariant, ...]], ...]:
+    wave_idx_by_scope = {
+        s.scope_id: w_idx for w_idx, wave in enumerate(mandate.execution_waves()) for s in wave
+    }
+    buckets: dict[str, list[DomainInvariant]] = {s.scope_id: [] for s in test_scopes}
+    for inv in mandate.invariants:
+        winner = max(
+            test_scopes,
+            key=lambda s: _scope_invariant_match_key(inv, s, wave_idx_by_scope),
+        )
+        buckets[winner.scope_id].append(inv)
+    return tuple((s, tuple(buckets[s.scope_id])) for s in test_scopes if buckets[s.scope_id])
+
+
+async def _run_scoped_instrument_slice(
+    deps: PceGraphDeps,
+    base_prompt: str,
+    scope: ModuleWriteScope,
+    invariants: tuple[DomainInvariant, ...],
+) -> tuple[InstrumentationSuiteBundle, AgentInvocationTelemetry]:
+    test_files = sorted(p for p in scope.owned_files if p.startswith(("tests/", "test/")))
+    inv_list = "; ".join(f"{i.invariant_id} ({i.verification_symbol})" for i in invariants)
+    footer = (
+        f"\nActive Instrumentation Scope: {scope.scope_id} owning test file(s) {test_files} ONLY.\n"
+        f"Mandated Invariants For This Scope ONLY: {inv_list}.\n"
+        f"Emit ONLY {test_files} defining those exact verification_symbol functions; other "
+        "scopes' invariants are instrumented concurrently by sibling workers."
+    )
+    return await run_bounded_agent(
+        build_instrument_agent(deps.models.instrument_model),
+        behavior_kind=BehaviorKind.INSTRUMENT,
+        prompt=f"{base_prompt}{footer}"[:60_000],
+        deps=_make_agent_deps(deps, scope=scope, scoped_invariants=invariants),
+        budget=deps.budget,
+    )
+
+
+async def _run_parallel_instrument_scopes(
+    deps: PceGraphDeps,
+    base_prompt: str,
+    assignments: Sequence[tuple[ModuleWriteScope, tuple[DomainInvariant, ...]]],
+) -> tuple[tuple[FilePatchArtifact, ...], str]:
+    tasks: list[asyncio.Task[tuple[InstrumentationSuiteBundle, AgentInvocationTelemetry]]] = []
+    async with asyncio.TaskGroup() as tg:
+        for scope, invs in assignments:
+            tasks.append(
+                tg.create_task(_run_scoped_instrument_slice(deps, base_prompt, scope, invs))
+            )
+    patches: list[FilePatchArtifact] = []
+    summaries: list[str] = []
+    for finished in tasks:
+        bundle, tel = finished.result()
+        deps.telemetry.append(tel)
+        patches.extend(bundle.test_patches)
+        summaries.append(bundle.summary)
+    return tuple(patches), " | ".join(summaries)
+
+
 @dataclass
 class InstrumentNode(AtomicBehaviorGraphNode[PceGraphDeps, PceWorkflowResult]):
     """Phase III (BHV-15 INSTRUMENT): Emit pytest and Hypothesis falsification suites."""
@@ -589,23 +715,40 @@ class InstrumentNode(AtomicBehaviorGraphNode[PceGraphDeps, PceWorkflowResult]):
         ctx: GraphRunContext[AgentExecutionState, PceGraphDeps],
     ) -> CheckpointImplNode:
         mandate = _require_mandate(ctx.deps)
-        prompt = _format_mandate_prompt(mandate, ctx.deps.sandbox)
+        prompt = _format_mandate_prompt(
+            mandate,
+            ctx.deps.sandbox,
+            ctx.deps.remediation_guidance,
+        )
         if ctx.deps.workflow_mode == PceWorkflowMode.RENOVATE:
             prompt = (
                 f"{prompt}\nBrownfield Renovation Mode: Preserve/lock existing observable "
                 "public behavior from src/... snapshots while defining every mandated "
                 "verification_symbol under full JBC v1.1 test compliance."
             )[:60_000]
-        bundle, tel = await run_bounded_agent(
-            build_instrument_agent(ctx.deps.models.instrument_model),
-            behavior_kind=BehaviorKind.INSTRUMENT,
-            prompt=prompt,
-            deps=_make_agent_deps(ctx.deps),
-            budget=ctx.deps.budget,
+        test_scopes = _test_owning_scopes(mandate)
+        assignments = (
+            _partition_invariants_by_test_scope(mandate, test_scopes)
+            if len(test_scopes) >= 2
+            else ()
         )
-        ctx.deps.telemetry.append(tel)
-        _apply_patches_to_state(ctx.state, ctx.deps.sandbox, bundle.test_patches)
-        _record_pce_step(self, ctx, "instrument", bundle.summary[:240])
+        if len(assignments) >= 2:
+            test_patches, summary = await _run_parallel_instrument_scopes(
+                ctx.deps, prompt, assignments
+            )
+        else:
+            bundle, tel = await run_bounded_agent(
+                build_instrument_agent(ctx.deps.models.instrument_model),
+                behavior_kind=BehaviorKind.INSTRUMENT,
+                prompt=prompt,
+                deps=_make_agent_deps(ctx.deps),
+                budget=ctx.deps.budget,
+            )
+            ctx.deps.telemetry.append(tel)
+            test_patches, summary = bundle.test_patches, bundle.summary
+        ctx.deps.remediation_guidance = ""
+        _apply_patches_to_state(ctx.state, ctx.deps.sandbox, test_patches)
+        _record_pce_step(self, ctx, "instrument", summary[:240])
         return CheckpointImplNode()
 
 
@@ -895,6 +1038,10 @@ class VerifyDynamicNode(AtomicBehaviorGraphNode[PceGraphDeps, PceWorkflowResult]
         return CertifyNode()
 
 
+_MYPY_TEST_ERR_RE: Final[re.Pattern[str]] = re.compile(r"(?:^|\s)tests/[^\s:]+:\d+:\s*error:")
+_MYPY_SRC_ERR_RE: Final[re.Pattern[str]] = re.compile(r"(?:^|\s)src/[^\s:]+:\d+:\s*error:")
+
+
 def _summarize_red_tag_findings(report: InspectionReport | None, stage: str) -> str:
     if report is None:
         return f"{stage}:unknown_red_tag"
@@ -903,6 +1050,44 @@ def _summarize_red_tag_findings(report: InspectionReport | None, stage: str) -> 
         for f in report.unwaived_violations()[:6]
     ]
     return f"{stage}_red_tag: " + "; ".join(items)
+
+
+def _capture_failed_src_snapshot(sandbox: WorkspaceSandbox) -> str:
+    blocks: list[str] = []
+    for rel in sorted(sandbox.modified_files):
+        if rel.startswith(("tests/", "test/")):
+            continue
+        try:
+            content = sandbox.read_file(rel)
+        except FileNotFoundError, IsADirectoryError:
+            continue
+        blocks.append(f"--- FAILED CANDIDATE {rel} ---\n{content[:8000]}")
+    return "\n".join(blocks)[:20_000]
+
+
+def _finding_targets_tests_only(code_id: str, file_path: str, message: str) -> bool:
+    if file_path.startswith(("tests/", "test/")):
+        return True
+    if code_id == "JBC-VRF-005":
+        return (
+            _MYPY_TEST_ERR_RE.search(message) is not None
+            and _MYPY_SRC_ERR_RE.search(message) is None
+        )
+    return False
+
+
+def _is_test_only_static_red_tag(
+    report: InspectionReport | None,
+    mandate: EngineeringMandate,
+) -> bool:
+    if report is None or not _has_authorized_tests(mandate):
+        return False
+    violations = report.unwaived_violations()
+    if not violations:
+        return False
+    return all(
+        _finding_targets_tests_only(f.code_id, f.location.file_path, f.message) for f in violations
+    )
 
 
 @dataclass
@@ -916,6 +1101,7 @@ class RevertNode(AtomicBehaviorGraphNode[PceGraphDeps, PceWorkflowResult]):
         self,
         ctx: GraphRunContext[AgentExecutionState, PceGraphDeps],
     ) -> HypothesizeNode | ElicitNode:
+        failed_excerpt = _capture_failed_src_snapshot(ctx.deps.sandbox)
         restored = ctx.deps.sandbox.restore_checkpoint(_IMPL_CHECKPOINT_ID)
         ctx.state.workspace.modified_artifacts = set(restored)
         summary = _summarize_red_tag_findings(ctx.deps.latest_report, self.stage)
@@ -925,11 +1111,17 @@ class RevertNode(AtomicBehaviorGraphNode[PceGraphDeps, PceWorkflowResult]):
         try:
             ctx.deps.remediation_loop.tick()
         except BudgetExceededError:
+            if ctx.deps.sandbox.has_checkpoint("checkpoint_contract"):
+                clean_files = ctx.deps.sandbox.restore_checkpoint("checkpoint_contract")
+                ctx.state.workspace.modified_artifacts = set(clean_files)
             return ElicitNode(
                 reason=f"Remediation budget exhausted after {self.stage} RED_TAG.",
                 escalated_red_tag=True,
             )
-        return HypothesizeNode(red_tag_summary=summary)
+        return HypothesizeNode(
+            red_tag_summary=summary,
+            failed_candidate_excerpt=failed_excerpt,
+        )
 
 
 @dataclass
@@ -938,14 +1130,20 @@ class HypothesizeNode(AtomicBehaviorGraphNode[PceGraphDeps, PceWorkflowResult]):
 
     behavior_kind: ClassVar[BehaviorKind] = BehaviorKind.HYPOTHESIZE
     red_tag_summary: str
+    failed_candidate_excerpt: str = ""
 
     async def run(
         self,
         ctx: GraphRunContext[AgentExecutionState, PceGraphDeps],
-    ) -> CheckpointImplNode:
+    ) -> InstrumentNode | CheckpointImplNode:
         mandate = _require_mandate(ctx.deps)
         base_prompt = _format_mandate_prompt(mandate, ctx.deps.sandbox)
-        prompt = f"{base_prompt}\nRED_TAG Citations: {self.red_tag_summary}"
+        cand_sec = (
+            f"\nFailed Candidate Snapshot (prior to REVERT):\n{self.failed_candidate_excerpt}"
+            if self.failed_candidate_excerpt
+            else ""
+        )
+        prompt = f"{base_prompt}{cand_sec}\nRED_TAG Citations: {self.red_tag_summary}"[:60_000]
         hypothesis, tel = await run_bounded_agent(
             build_hypothesize_agent(ctx.deps.models.hypothesize_model),
             behavior_kind=BehaviorKind.HYPOTHESIZE,
@@ -957,6 +1155,8 @@ class HypothesizeNode(AtomicBehaviorGraphNode[PceGraphDeps, PceWorkflowResult]):
         ctx.deps.remediation_guidance = hypothesis.remediation_plan
         ctx.state.world_model.active_hypotheses.append(hypothesis.remediation_plan)
         _record_pce_step(self, ctx, "hypothesize", hypothesis.remediation_plan[:240])
+        if _is_test_only_static_red_tag(ctx.deps.latest_report, mandate):
+            return InstrumentNode()
         return CheckpointImplNode()
 
 

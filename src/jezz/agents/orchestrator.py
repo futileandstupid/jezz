@@ -69,6 +69,13 @@ def _coerce_interaction_hooks(
     return PceInteractionHooks(on_elicit=raw)
 
 
+def _rollback_aborted_sandbox(sandbox: WorkspaceSandbox) -> None:
+    for ckpt_id in ("checkpoint_contract", "checkpoint_impl"):
+        if sandbox.has_checkpoint(ckpt_id):
+            sandbox.restore_checkpoint(ckpt_id)
+            return
+
+
 class PceWorkflowOrchestrator:
     """Single-duty orchestrator executing greenfield, brownfield, and resumable PCE runs."""
 
@@ -121,7 +128,11 @@ class PceWorkflowOrchestrator:
         state = AgentExecutionState()
         if spec.ticket is not None:
             state.trace.extend(spec.ticket.prior_trace)
-        outcome: object = await workflow.run(state=state, deps=deps, inputs=FrameNode())
+        try:
+            outcome: object = await workflow.run(state=state, deps=deps, inputs=FrameNode())
+        except BaseException:
+            _rollback_aborted_sandbox(deps.sandbox)
+            raise
         if not isinstance(outcome, PceWorkflowResult):
             msg = f"Unexpected workflow output type: {type(outcome).__name__}."
             raise RuntimeError(msg)

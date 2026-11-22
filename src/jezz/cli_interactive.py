@@ -118,9 +118,7 @@ def resolve_workflow_interaction_hooks(
     pre_supplied_callback: ElicitationCallback | None,
 ) -> Annotated[PceInteractionHooks, InstanceGuard(PceInteractionHooks)]:
     """Assemble elicitation, stderr progress, and ``--plan-only`` hooks for a workflow run."""
-    interactive_flag = bool(ns.interactive) or (
-        not bool(ns.no_interactive) and _stream_is_tty(streams.stdin)
-    )
+    interactive_flag = bool(ns.interactive) and not bool(ns.no_interactive)
     active_elicit = (
         pre_supplied_callback
         if pre_supplied_callback is not None

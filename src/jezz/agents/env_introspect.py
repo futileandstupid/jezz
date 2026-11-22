@@ -84,6 +84,23 @@ def _validate_safe_module_path(module_path: str) -> str:
     return root
 
 
+def _import_module_or_parent_symbol(
+    module_path: str,
+    symbol_filter: str | None,
+) -> tuple[ModuleType, str, str | None]:
+    importlib.invalidate_caches()
+    try:
+        return importlib.import_module(module_path), module_path, symbol_filter
+    except ModuleNotFoundError:
+        if "." not in module_path:
+            raise
+        parent_path, tail_symbol = module_path.rsplit(".", maxsplit=1)
+        mod = importlib.import_module(parent_path)
+        if not hasattr(mod, tail_symbol):
+            raise
+        return mod, parent_path, symbol_filter or tail_symbol
+
+
 def _resolve_dist_version(root_pkg: str) -> str:
     candidates = (root_pkg, root_pkg.replace("_", "-"))
     for name in candidates:
@@ -130,7 +147,10 @@ def inspect_installed_package_api(
 ) -> PackageApiSummary:
     """Introspect exported classes, callables, and signatures of an installed Python module."""
     root_pkg = _validate_safe_module_path(module_path)
-    mod = importlib.import_module(module_path)
+    mod, resolved_mod_path, effective_filter = _import_module_or_parent_symbol(
+        module_path,
+        symbol_filter,
+    )
     version = _resolve_dist_version(root_pkg)
 
     classes: list[str] = []
@@ -139,7 +159,7 @@ def inspect_installed_package_api(
     namespace = vars(mod)
 
     for name in _public_member_names(mod):
-        if not _matches_symbol_filter(name, symbol_filter) or len(name) > 256:
+        if not _matches_symbol_filter(name, effective_filter) or len(name) > 256:
             continue
         obj = namespace.get(name)
         if obj is None:
@@ -154,7 +174,7 @@ def inspect_installed_package_api(
                 signatures.append(formatted)
 
     return PackageApiSummary(
-        module_path=module_path,
+        module_path=resolved_mod_path,
         distribution_version=version,
         exported_classes=tuple(classes[:256]),
         exported_callables=tuple(callables[:256]),

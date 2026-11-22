@@ -257,6 +257,16 @@ def check_vrf_004(unit: SourceUnit) -> list[RawDiscrepancy]:
     return discrepancies
 
 
+def _first_failed_gate_detail(
+    attestations: Sequence[GateAttestation],
+    kind: GateKind,
+) -> str:
+    for att in attestations:
+        if att.gate_kind == kind and (not att.passed or att.exit_code != 0) and att.summary:
+            return att.summary.strip()[:400]
+    return ""
+
+
 @jezz_callable
 def check_vrf_005(attestations: Sequence[GateAttestation]) -> list[RawDiscrepancy]:
     """Verify JBC-VRF-005 (passing static type soundness gate attestation)."""
@@ -265,11 +275,17 @@ def check_vrf_005(attestations: Sequence[GateAttestation]) -> list[RawDiscrepanc
     )
     if has_passing:
         return []
+    detail = _first_failed_gate_detail(attestations, GateKind.STATIC_TYPES)
+    message = (
+        f"Static type-verification gate failed: {detail}"
+        if detail
+        else "Missing or failed static type-verification GateAttestation (e.g., mypy)."
+    )
     return [
         RawDiscrepancy(
             code_id="JBC-VRF-005",
             location=SourceSpan(file_path="<gate:static_types>", line=1),
-            message="Missing or failed static type-verification GateAttestation (e.g., mypy).",
+            message=message,
             remediation="Execute 'uv run mypy .' cleanly and attach passing GateAttestation.",
         )
     ]
@@ -291,11 +307,17 @@ def check_vrf_006(attestations: Sequence[GateAttestation]) -> list[RawDiscrepanc
     """Verify JBC-VRF-006 (passing dynamic suite within duration & memory watchdog ceilings)."""
     if any(_dynamic_attestation_valid(a) for a in attestations):
         return []
+    detail = _first_failed_gate_detail(attestations, GateKind.DYNAMIC_SUITE)
+    message = (
+        f"Dynamic verification gate failed: {detail}"
+        if detail
+        else "Missing, failed, zero-test, or watchdog-exceeding dynamic GateAttestation."
+    )
     return [
         RawDiscrepancy(
             code_id="JBC-VRF-006",
             location=SourceSpan(file_path="<gate:dynamic_suite>", line=1),
-            message="Missing, failed, zero-test, or watchdog-exceeding dynamic GateAttestation.",
+            message=message,
             remediation=(
                 "Run 'uv run pytest' within duration/memory ceilings and attach GateAttestation."
             ),
