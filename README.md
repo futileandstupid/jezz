@@ -1,5 +1,7 @@
 # `jezz` — Licensure-Grade Software Engineering & Coding-Agent Framework
 
+> **Technical White Paper:** **[Permit-and-Contract Engineering: Licensure-Grade Software Building Codes, Behavioral Control-Flow Verification, and Empirical Evaluation of Coding Agents](docs/whitepaper.md)**
+
 `jezz` is an experimental software engineering and coding-agent framework structured around four integrated pillars:
 
 1. **[Pillar 1 — Complete Agent Behavior Basis (`jezz.behaviors`)](docs/pillar-1-behavior-basis.md):**
