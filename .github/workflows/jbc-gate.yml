@@ -1,0 +1,58 @@
+name: JBC v1.1 Statutory Gate
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+concurrency:
+  group: jbc-gate-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  jbc-occupancy-gate:
+    name: Enforce JBC Edition 1.1 & Verification Suite
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout repository with full Git graph
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Install pinned Python runtime (.python-version)
+        run: uv python install
+
+      - name: Sync locked environment
+        run: uv sync --locked --all-groups
+
+      - name: Gate 1 — Ruff lint & format check
+        run: |
+          uv run ruff check .
+          uv run ruff format --check .
+
+      - name: Gate 2 — Mypy strict static soundness (JBC-VRF-005)
+        run: uv run mypy .
+
+      - name: Gate 3 — Pytest & Hypothesis falsification suite (JBC-VRF-006)
+        run: uv run pytest
+
+      - name: Gate 4 — Differential Occupancy Ratchet (PR diff)
+        if: github.event_name == 'pull_request'
+        env:
+          BASE_REF: origin/${{ github.base_ref }}
+        run: uv run jezz inspect . --changed-since "$BASE_REF"
+
+      - name: Gate 5 — Full-Repository JBC v1.1 Rough-In Inspection
+        run: uv run jezz inspect .

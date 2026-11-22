@@ -22,7 +22,10 @@
 
 ```bash
 # Run JBC v1.1 Rough-In inspection on any Python repository (exit 0 = APPROVED, 1 = RED_TAG)
-uv run jezz inspect <repo_path> [--permit permit.json] [--format markdown|json]
+uv run jezz inspect <repo_path> [--permit permit.json] [--as-of YYYY-MM-DD] [--format markdown|json]
+
+# Differential Occupancy Ratchet: gate only Git-modified or staged files (plus whole-repo import cycles)
+uv run jezz inspect <repo_path> (--changed-since origin/main | --staged) [--permit permit.json]
 
 # Audit a 5-phase PCE EngineeringDossier against compiled workspace symbols and SHA-256 digest
 uv run jezz audit <dossier.json> [--repo <repo_path>] [--format markdown|json]

@@ -3,6 +3,7 @@
 import hashlib
 from collections.abc import Sequence
 from collections.abc import Set as AbstractSet
+from datetime import date
 from enum import StrEnum
 from typing import Annotated, Self
 
@@ -40,6 +41,7 @@ class CodeVariance(BaseModel):
     symbol: Annotated[str, Field(max_length=256)] = ""
     authorized_by: Annotated[str, Field(min_length=2, max_length=128)]
     justification: Annotated[str, Field(min_length=15, max_length=1024)]
+    expires_on: date | None = None
 
     @model_validator(mode="after")
     def _validate_waivable_code(self) -> Self:
@@ -56,11 +58,29 @@ class CodeVariance(BaseModel):
         return self
 
     @jezz_callable
-    def matches(self, code_id: IdentifierStr, span: SourceSpan) -> bool:
-        """Return True iff this variance covers ``code_id`` at ``span``."""
+    def covers_span(self, code_id: IdentifierStr, span: SourceSpan) -> bool:
+        """Return True iff this variance targets ``code_id`` at ``span`` regardless of expiry."""
         if self.code_id != code_id or self.file_path != span.file_path:
             return False
         return not self.symbol or self.symbol == span.symbol
+
+    @jezz_callable
+    def is_expired(self, reference_date: date) -> bool:
+        """Return True iff ``expires_on`` is set and ``reference_date`` is strictly after it."""
+        return self.expires_on is not None and reference_date > self.expires_on
+
+    @jezz_callable
+    def matches(
+        self,
+        code_id: IdentifierStr,
+        span: SourceSpan,
+        *,
+        reference_date: date | None = None,
+    ) -> bool:
+        """Return True iff this variance covers ``code_id`` at ``span`` and has not expired."""
+        if not self.covers_span(code_id, span):
+            return False
+        return reference_date is None or not self.is_expired(reference_date)
 
 
 class CodePermit(BaseModel):
@@ -135,10 +155,30 @@ class CodePermit(BaseModel):
         )
 
     @jezz_callable
-    def find_variance(self, code_id: IdentifierStr, span: SourceSpan) -> CodeVariance | None:
-        """Return the first matching ``CodeVariance`` for ``(code_id, span)``, if any."""
+    def find_variance(
+        self,
+        code_id: IdentifierStr,
+        span: SourceSpan,
+        *,
+        reference_date: date | None = None,
+    ) -> CodeVariance | None:
+        """Return the first active ``CodeVariance`` matching ``(code_id, span)``, if any."""
         for variance in self.variances:
-            if variance.matches(code_id, span):
+            if variance.matches(code_id, span, reference_date=reference_date):
+                return variance
+        return None
+
+    @jezz_callable
+    def find_expired_variance(
+        self,
+        code_id: IdentifierStr,
+        span: SourceSpan,
+        *,
+        reference_date: date,
+    ) -> CodeVariance | None:
+        """Return the first expired ``CodeVariance`` targeting ``(code_id, span)``, if any."""
+        for variance in self.variances:
+            if variance.covers_span(code_id, span) and variance.is_expired(reference_date):
                 return variance
         return None
 

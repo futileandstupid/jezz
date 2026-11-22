@@ -7,6 +7,7 @@ import re
 import tomllib
 from collections.abc import Callable, Mapping, Sequence
 from collections.abc import Set as AbstractSet
+from datetime import UTC, date, datetime
 from pathlib import Path
 from types import MappingProxyType
 from typing import Annotated, Final, Literal
@@ -21,6 +22,7 @@ from jezz.codes.permits import (
     CertificateOfOccupancy,
     CodePermit,
     CodeSectionVerdict,
+    CodeVariance,
     FindingDisposition,
     GateAttestation,
     InspectionFinding,
@@ -75,6 +77,7 @@ from jezz.guards import (
     BoundedText,
     ContainedPath,
     IdentifierStr,
+    NonNegativeInt,
     jezz_callable,
     read_bounded_text,
 )
@@ -314,14 +317,22 @@ def detect_hazard_triggers(units: Sequence[SourceUnit]) -> frozenset[CodeTrigger
     return frozenset(detected)
 
 
+def _format_expired_variance_message(base_message: str, expired_var: CodeVariance) -> str:
+    sunset = expired_var.expires_on.isoformat() if expired_var.expires_on is not None else "unknown"
+    suffix = f" [Expired variance '{expired_var.variance_id}' (sunset {sunset})]"
+    combined = f"{base_message}{suffix}"
+    return combined if len(combined) <= 1024 else f"{combined[:1021]}..."
+
+
 def _apply_permit_variances(
     discrepancies: Sequence[RawDiscrepancy],
     permit: CodePermit,
+    reference_date: date,
 ) -> list[InspectionFinding]:
     findings: list[InspectionFinding] = []
     for raw in discrepancies:
         code = CODE_BOOK[raw.code_id]
-        matched_var = permit.find_variance(raw.code_id, raw.location)
+        matched_var = permit.find_variance(raw.code_id, raw.location, reference_date=reference_date)
         if matched_var is not None:
             findings.append(
                 InspectionFinding(
@@ -335,13 +346,21 @@ def _apply_permit_variances(
                 )
             )
             continue
+        expired_var = permit.find_expired_variance(
+            raw.code_id, raw.location, reference_date=reference_date
+        )
+        message = (
+            _format_expired_variance_message(raw.message, expired_var)
+            if expired_var is not None
+            else raw.message
+        )
         findings.append(
             InspectionFinding(
                 code_id=raw.code_id,
                 severity=code.severity,
                 disposition=FindingDisposition.VIOLATION,
                 location=raw.location,
-                message=raw.message,
+                message=message,
                 remediation=raw.remediation,
             )
         )
@@ -388,14 +407,17 @@ def _derive_ruling(verdicts: Sequence[CodeSectionVerdict]) -> OccupancyRuling:
     return OccupancyRuling.APPROVED
 
 
-def _assemble_inspection_report(
+@jezz_callable
+def assemble_inspection_report(
     permit: CodePermit,
     detected_triggers: frozenset[CodeTrigger],
-    effective_ids: frozenset[str],
+    effective_ids: frozenset[IdentifierStr],
     raw_discrepancies: Sequence[RawDiscrepancy],
-    unit_count: int,
+    unit_count: NonNegativeInt,
+    reference_date: date,
 ) -> InspectionReport:
-    findings = _apply_permit_variances(raw_discrepancies, permit)
+    """Apply active/expired variances and assemble a canonical ``InspectionReport``."""
+    findings = _apply_permit_variances(raw_discrepancies, permit, reference_date)
     verdicts = _build_section_verdicts(effective_ids, findings, unit_count)
     return InspectionReport(
         permit_id=permit.permit_id,
@@ -405,6 +427,41 @@ def _assemble_inspection_report(
         section_verdicts=verdicts,
         findings=tuple(findings),
     )
+
+
+def _run_per_unit_code(
+    manifest: ManifestDependencies,
+    code_id: str,
+    units: Sequence[SourceUnit],
+) -> list[RawDiscrepancy]:
+    rule_fn = _PER_UNIT_RULES.get(code_id)
+    if rule_fn is not None:
+        return [item for unit in units for item in rule_fn(unit)]
+    if code_id == "JBC-VRF-003":
+        return [
+            item
+            for unit in units
+            for item in check_vrf_003(
+                unit,
+                runtime_roots=manifest.runtime_roots,
+                dev_roots=manifest.dev_roots,
+                workspace_roots=manifest.workspace_roots,
+            )
+        ]
+    return []
+
+
+@jezz_callable
+def collect_per_unit_discrepancies(
+    manifest: ManifestDependencies,
+    units: Sequence[SourceUnit],
+    active_code_ids: AbstractSet[IdentifierStr],
+) -> list[RawDiscrepancy]:
+    """Run all per-unit static AST/lexical/cohesion codes across ``units``."""
+    discrepancies: list[RawDiscrepancy] = []
+    for code_id in sorted(active_code_ids):
+        discrepancies.extend(_run_per_unit_code(manifest, code_id, units))
+    return discrepancies
 
 
 class BuildingInspector:
@@ -435,29 +492,6 @@ class BuildingInspector:
         )
         return BuildingInspector(manifest=merged)
 
-    def _run_single_static_code(
-        self,
-        code_id: str,
-        units: Sequence[SourceUnit],
-    ) -> list[RawDiscrepancy]:
-        rule_fn = _PER_UNIT_RULES.get(code_id)
-        if rule_fn is not None:
-            return [item for unit in units for item in rule_fn(unit)]
-        if code_id == "JBC-COG-003":
-            return check_cog_003(units)
-        if code_id == "JBC-VRF-003":
-            return [
-                item
-                for unit in units
-                for item in check_vrf_003(
-                    unit,
-                    runtime_roots=self.manifest.runtime_roots,
-                    dev_roots=self.manifest.dev_roots,
-                    workspace_roots=self.manifest.workspace_roots,
-                )
-            ]
-        return []
-
     def _collect_static_discrepancies(
         self,
         units: Sequence[SourceUnit],
@@ -465,7 +499,10 @@ class BuildingInspector:
     ) -> list[RawDiscrepancy]:
         discrepancies: list[RawDiscrepancy] = []
         for code_id in sorted(active_code_ids):
-            discrepancies.extend(self._run_single_static_code(code_id, units))
+            if code_id == "JBC-COG-003":
+                discrepancies.extend(check_cog_003(units))
+                continue
+            discrepancies.extend(_run_per_unit_code(self.manifest, code_id, units))
         return discrepancies
 
     @jezz_callable
@@ -474,9 +511,11 @@ class BuildingInspector:
         units: Sequence[SourceUnit],
         *,
         permit: CodePermit | None = None,
+        reference_date: date | None = None,
     ) -> InspectionReport:
         """Run static/AST/graph/lexical rough-in inspection (BHV-18 VERIFY_STATIC)."""
         active_permit = permit or CodePermit.full_book(permit_id="PERMIT-ROUGH-IN")
+        active_date = reference_date if reference_date is not None else datetime.now(UTC).date()
         detected = detect_hazard_triggers(units)
         triggered_ids = {c.code_id for c in codes_for_triggers(detected)}
         candidate_ids = active_permit.bound_code_ids | triggered_ids
@@ -486,7 +525,9 @@ class BuildingInspector:
             if CODE_BOOK[cid].inspection_method != InspectionMethod.GATE_ATTESTATION
         )
         raw = self._collect_static_discrepancies(units, static_ids)
-        return _assemble_inspection_report(active_permit, detected, static_ids, raw, len(units))
+        return assemble_inspection_report(
+            active_permit, detected, static_ids, raw, len(units), active_date
+        )
 
     @jezz_callable
     def inspect_final(
@@ -495,9 +536,11 @@ class BuildingInspector:
         *,
         permit: CodePermit | None = None,
         attestations: Sequence[GateAttestation] = (),
+        reference_date: date | None = None,
     ) -> InspectionReport:
         """Run full rough-in + gate-attestation final inspection for occupancy certification."""
         active_permit = permit or CodePermit.full_book(permit_id="PERMIT-FINAL")
+        active_date = reference_date if reference_date is not None else datetime.now(UTC).date()
         detected = detect_hazard_triggers(units)
         triggered_ids = {c.code_id for c in codes_for_triggers(detected)}
         effective_ids = frozenset(active_permit.bound_code_ids | triggered_ids)
@@ -508,7 +551,9 @@ class BuildingInspector:
         if "JBC-VRF-006" in effective_ids:
             raw.extend(check_vrf_006(attestations))
 
-        return _assemble_inspection_report(active_permit, detected, effective_ids, raw, len(units))
+        return assemble_inspection_report(
+            active_permit, detected, effective_ids, raw, len(units), active_date
+        )
 
 
 @jezz_callable

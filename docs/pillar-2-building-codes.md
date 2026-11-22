@@ -31,6 +31,10 @@ Because arbitrary `while cond:` termination is undecidable, `JBC` adopts the saf
 - **Closing Sonar's `elif` Blind Spot (`JBC-COG-004`):** Sonar Cognitive Complexity charges only `+1` per `elif` with zero nesting penalty. `JBC-COG-004` caps chains at **$\le 1$ `elif`** (forcing 3+ way routing onto immutable `MappingProxyType` dispatch tables or `match`), bans `else`/`elif` after terminal jumps (`return`/`raise`/`break`/`continue`), and bans mutable module-level dispatch dicts.
 - **Mathematical Single Responsibility (`JBC-COG-005`):** Replaces subjective "one reason to change" prose with objective graph & capacity laws: **Role Purity** (no external I/O on `BaseModel`s), **`LCOM4 <= 1`** (Hitz & Montazeri connected state/method components), **zero stateless instance methods**, **$\le 5$ behavioral instance attributes**, **$\le 7$ public methods**, and **class `WMC <= 35`**.
 
+### D. Time-Bounded Sunset Variances & Differential Occupancy Ratchet (`jezz.codes.ratchet`)
+- **Statutory Sunset Expiration (`CodeVariance.expires_on`):** Non-`LIFE_SAFETY` variances support an optional `expires_on: datetime.date` sunset deadline evaluated against an explicit `reference_date` (`--as-of YYYY-MM-DD`, defaulting to UTC today). Once `reference_date > expires_on`, `BuildingInspector` automatically flips the discrepancy from `VARIANCE_WAIVED` back to `VIOLATION` (`RED_TAG`) with an explicit `[Expired variance '...' (sunset YYYY-MM-DD)]` citation so temporary waivers never calcify into permanent `# noqa` debt.
+- **Differential Occupancy Ratchet (`jezz inspect --changed-since <ref>` / `--staged`):** Enables immediate CI adoption on unrenovated brownfield repositories. `inspect_differential_rough_in` parses the full workspace so cross-module provisions (`JBC-COG-003` Tarjan cycle detection and intra-package enclosure rules) retain whole-graph visibility—catching cycles introduced between a touched module and an untouched legacy module—while scoping per-unit `RED_TAG` enforcement strictly to touched Python files resolved via `ContainedPath`-validated `git merge-base` or staged-index diffs.
+
 ---
 
 ## 3. Edition 1.1 Code Book — 30 Provisions Across 6 Articles

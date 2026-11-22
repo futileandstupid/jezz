@@ -2,6 +2,7 @@
 
 import ast
 from collections.abc import Iterator, Mapping, Sequence
+from collections.abc import Set as AbstractSet
 from dataclasses import dataclass
 from typing import Final
 
@@ -26,7 +27,7 @@ from jezz.codes.complexity import (
     MAX_STATEMENT_COUNT_LIMIT,
     compute_callable_metrics,
 )
-from jezz.guards import LoopBudget, RecursionBudget, jezz_callable
+from jezz.guards import IdentifierStr, LoopBudget, RecursionBudget, jezz_callable
 
 _MAX_ELIF_BRANCHES: Final[int] = 1
 
@@ -292,9 +293,9 @@ def _is_intra_package_submodule_import(
     return False
 
 
-@jezz_callable
-def check_cog_003(units: Sequence[SourceUnit]) -> list[RawDiscrepancy]:
-    """Inspect ``units`` for JBC-COG-003 (acyclic graph, no wildcards, no _private imports)."""
+def _scan_cog_003_units(
+    units: Sequence[SourceUnit],
+) -> tuple[list[RawDiscrepancy], dict[str, SourceUnit], dict[str, frozenset[str]]]:
     discrepancies: list[RawDiscrepancy] = []
     units_by_mod = {u.module_name: u for u in units if u.module_name}
     known_mods = set(units_by_mod)
@@ -337,7 +338,13 @@ def check_cog_003(units: Sequence[SourceUnit]) -> list[RawDiscrepancy]:
                 if target in known_mods and target != unit.module_name
             }
             graph[unit.module_name] = frozenset(deps)
+    return discrepancies, units_by_mod, graph
 
+
+@jezz_callable
+def check_cog_003(units: Sequence[SourceUnit]) -> list[RawDiscrepancy]:
+    """Inspect ``units`` for JBC-COG-003 (acyclic graph, no wildcards, no _private imports)."""
+    discrepancies, units_by_mod, graph = _scan_cog_003_units(units)
     for cycle in _find_module_cycles(graph):
         anchor_unit = units_by_mod[cycle[0]]
         cycle_text = _format_bounded_list(cycle, limit=8, sep=" <-> ")
@@ -345,6 +352,32 @@ def check_cog_003(units: Sequence[SourceUnit]) -> list[RawDiscrepancy]:
             RawDiscrepancy(
                 code_id="JBC-COG-003",
                 location=SourceSpan(file_path=anchor_unit.file_path, line=1, symbol=cycle[0]),
+                message=f"Cyclic runtime module dependency detected: {cycle_text}.",
+                remediation="Break import cycle by extracting shared types into a lower layer.",
+            )
+        )
+    return discrepancies
+
+
+@jezz_callable
+def check_cog_003_for_paths(
+    units: Sequence[SourceUnit],
+    target_paths: AbstractSet[IdentifierStr],
+) -> list[RawDiscrepancy]:
+    """Run whole-graph JBC-COG-003 over ``units`` and filter findings touching ``target_paths``."""
+    per_unit, units_by_mod, graph = _scan_cog_003_units(units)
+    discrepancies = [d for d in per_unit if d.location.file_path in target_paths]
+    for cycle in _find_module_cycles(graph):
+        touched_mods = [mod for mod in cycle if units_by_mod[mod].file_path in target_paths]
+        if not touched_mods:
+            continue
+        anchor_mod = touched_mods[0]
+        anchor_unit = units_by_mod[anchor_mod]
+        cycle_text = _format_bounded_list(cycle, limit=8, sep=" <-> ")
+        discrepancies.append(
+            RawDiscrepancy(
+                code_id="JBC-COG-003",
+                location=SourceSpan(file_path=anchor_unit.file_path, line=1, symbol=anchor_mod),
                 message=f"Cyclic runtime module dependency detected: {cycle_text}.",
                 remediation="Break import cycle by extracting shared types into a lower layer.",
             )

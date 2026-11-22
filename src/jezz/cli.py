@@ -6,6 +6,7 @@ import contextlib
 import io
 import sys
 from collections.abc import Callable, Coroutine, Mapping, Sequence
+from datetime import date
 from enum import StrEnum
 from pathlib import Path, PurePosixPath
 from types import MappingProxyType
@@ -32,6 +33,13 @@ from jezz.agents.workspace import DynamicGatePort, InProcessGateRunner, UvSubpro
 from jezz.codes.ast_utils import SourceUnit, parse_source_unit
 from jezz.codes.inspector import BuildingInspector, ManifestDependencies
 from jezz.codes.permits import CodePermit
+from jezz.codes.ratchet import (
+    DiffBaseMode,
+    DifferentialScope,
+    GitDiffError,
+    inspect_differential_rough_in,
+    resolve_git_changed_paths,
+)
 from jezz.evals.evaluators import GuardedDataset, build_track4_dataset
 from jezz.evals.runner import (
     default_harness_deps,
@@ -229,11 +237,52 @@ def _build_workspace_inspector(
     return BuildingInspector(manifest=manifest)
 
 
+def _parse_optional_iso_date(raw_date: str | None) -> date | None:
+    if raw_date is None:
+        return None
+    return date.fromisoformat(raw_date)
+
+
+def _handle_differential_inspect(
+    ns: argparse.Namespace,
+    resolved_repo: Path,
+    units: Sequence[SourceUnit],
+    inspector: BuildingInspector,
+    permit: CodePermit | None,
+    out_stream: io.TextIOBase,
+) -> CliExitCode:
+    reference_date = _parse_optional_iso_date(ns.as_of)
+    staged_only = bool(ns.staged)
+    base_ref = str(ns.changed_since) if ns.changed_since is not None else None
+    changed_paths = resolve_git_changed_paths(
+        resolved_repo,
+        base_ref=base_ref,
+        staged_only=staged_only,
+    )
+    scope = DifferentialScope(
+        changed_paths=changed_paths,
+        diff_mode=DiffBaseMode.STAGED_INDEX if staged_only else DiffBaseMode.GIT_REF,
+        base_ref=base_ref,
+        reference_date=reference_date,
+    )
+    diff_report = inspect_differential_rough_in(inspector, units, scope, permit=permit)
+    rendered = (
+        diff_report.model_dump_json(indent=2)
+        if ns.output_format == OutputFormat.JSON
+        else diff_report.to_markdown()
+    )
+    _write_line(out_stream, rendered)
+    return 0 if diff_report.is_occupiable else 1
+
+
 def _handle_inspect(ns: argparse.Namespace, out_stream: io.TextIOBase) -> CliExitCode:
     resolved_repo, units = _require_units(ns.repo_path, ns.target_dirs)
     permit = _load_optional_permit(ns.permit)
     inspector = _build_workspace_inspector(resolved_repo, units)
-    report = inspector.inspect_rough_in(units, permit=permit)
+    if ns.changed_since is not None or bool(ns.staged):
+        return _handle_differential_inspect(ns, resolved_repo, units, inspector, permit, out_stream)
+    reference_date = _parse_optional_iso_date(ns.as_of)
+    report = inspector.inspect_rough_in(units, permit=permit, reference_date=reference_date)
     rendered = (
         report.model_dump_json(indent=2)
         if ns.output_format == OutputFormat.JSON
@@ -804,6 +853,38 @@ def _register_benchmark_subparser(
     )
 
 
+def _register_inspect_subparser(
+    sub: argparse._SubParsersAction[argparse.ArgumentParser],
+) -> None:
+    p_ins = sub.add_parser("inspect", help="Run JBC v1.1 Rough-In inspection on a repository.")
+    p_ins.add_argument("repo_path", type=Path, help="Target repository root directory.")
+    p_ins.add_argument("--target-dir", dest="target_dirs", action="append", default=None)
+    p_ins.add_argument("--permit", type=Path, default=None, help="Optional CodePermit JSON file.")
+    diff_grp = p_ins.add_mutually_exclusive_group()
+    diff_grp.add_argument(
+        "--changed-since",
+        dest="changed_since",
+        default=None,
+        help="Git ref (e.g. origin/main, HEAD~1) for Differential Occupancy Ratchet.",
+    )
+    diff_grp.add_argument(
+        "--staged",
+        dest="staged",
+        action="store_true",
+        default=False,
+        help="Ratchet only Git-staged Python files in the index.",
+    )
+    p_ins.add_argument(
+        "--as-of",
+        dest="as_of",
+        default=None,
+        help="ISO-8601 date (YYYY-MM-DD) for evaluating CodeVariance sunset expiration.",
+    )
+    p_ins.add_argument(
+        "--format", dest="output_format", choices=("markdown", "json"), default="markdown"
+    )
+
+
 def _build_cli_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="jezz",
@@ -811,13 +892,7 @@ def _build_cli_parser() -> argparse.ArgumentParser:
     )
     sub = parser.add_subparsers(dest="command", required=True)
 
-    p_ins = sub.add_parser("inspect", help="Run JBC v1.1 Rough-In inspection on a repository.")
-    p_ins.add_argument("repo_path", type=Path, help="Target repository root directory.")
-    p_ins.add_argument("--target-dir", dest="target_dirs", action="append", default=None)
-    p_ins.add_argument("--permit", type=Path, default=None, help="Optional CodePermit JSON file.")
-    p_ins.add_argument(
-        "--format", dest="output_format", choices=("markdown", "json"), default="markdown"
-    )
+    _register_inspect_subparser(sub)
 
     p_aud = sub.add_parser("audit", help="Audit a 5-phase PCE EngineeringDossier JSON file.")
     p_aud.add_argument("dossier_json", type=Path, help="Path to EngineeringDossier JSON.")
@@ -891,6 +966,7 @@ def main(
         AgentRunError,
         ModelAPIError,
         BudgetExceededError,
+        GitDiffError,
         SecretResolutionError,
         TimeoutError,
         OSError,
