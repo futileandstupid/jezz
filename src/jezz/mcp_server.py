@@ -1,4 +1,4 @@
-"""Read-only Model Context Protocol (MCP) statutory gate server for JBC v1.2 and PCE."""
+"""Read-only Model Context Protocol (MCP) statutory gate server for polyglot JBC v1.2 and PCE."""
 
 import asyncio
 import json
@@ -12,13 +12,13 @@ from mcp.types import ToolAnnotations
 from pydantic import BaseModel, BeforeValidator, Field, ValidationError
 
 from jezz.behaviors.graph import BehaviorGraph, GraphVerificationReport, verify_behavior_graph
+from jezz.codes.adapters import parse_any_source_unit
 from jezz.codes.ast_graph import (
     ModuleGraphEntry,
     SymbolGraphEntry,
     build_workspace_ast_graph,
     extract_symbol_source_slice,
 )
-from jezz.codes.ast_utils import SourceUnit, parse_source_unit
 from jezz.codes.codebook import CODE_BOOK, CODEBOOK_EDITION
 from jezz.codes.discovery import (
     build_workspace_inspector,
@@ -29,6 +29,7 @@ from jezz.codes.discovery import (
     require_workspace_units,
 )
 from jezz.codes.permits import InspectionReport
+from jezz.codes.polyglot_ir import InspectedUnit, is_supported_source_path
 from jezz.codes.ratchet import (
     DiffBaseMode,
     DifferentialInspectionReport,
@@ -71,10 +72,11 @@ _READ_ONLY_ANNOTATIONS: Final[ToolAnnotations] = ToolAnnotations(
 
 _SERVER_INSTRUCTIONS: Final[str] = (
     "Jezz Software Building Code (JBC Edition 1.2) & Permit-and-Contract Engineering (PCE) "
-    "statutory gate server. Use jbc_preview_source to validate candidate Python buffers in "
-    "memory (including whole-workspace JBC-COG-003 cycle/encapsulation checks) before writing "
-    "to disk; use jbc_inspect_differential or jbc_inspect_workspace for Rough-In verification; "
-    "use jbc_query_ast_graph for workspace AST import/call/symbol slices; use jbc_get_code / "
+    "polyglot statutory gate server across Python (.py), TypeScript (.ts, .tsx), Rust (.rs), "
+    "and Go (.go). Use jbc_preview_source to validate candidate source buffers in memory "
+    "(including whole-workspace JBC-COG-003 cycle/encapsulation checks) before writing to disk; "
+    "use jbc_inspect_differential or jbc_inspect_workspace for Rough-In verification; use "
+    "jbc_query_ast_graph for workspace AST/CST import/call/symbol slices; use jbc_get_code / "
     "jbc_list_codes for normative JBC provisions; and use jbc_verify_behavior_graph and "
     "jbc_audit_dossier for Pillar 1 and Pillar 3 verification."
 )
@@ -146,7 +148,7 @@ class JbcCatalogPayload(BaseModel):
 
 
 class AstGraphQueryResult(BaseModel):
-    """Structured AST import, call, and symbol-slice query response for ``jbc_query_ast_graph``."""
+    """Structured AST/CST import, call, and symbol-slice response for ``jbc_query_ast_graph``."""
 
     model_config = STRICT_FROZEN_CONFIG
 
@@ -211,7 +213,7 @@ def _format_syntax_failure(exc: SyntaxError) -> str:
     target = exc.filename or "<preview>"
     line_part = f" at line {exc.lineno}" if exc.lineno is not None else ""
     detail = exc.msg or "invalid syntax"
-    return f"Python SyntaxError in '{target}'{line_part}: {detail}"
+    return f"Source SyntaxError in '{target}'{line_part}: {detail}"
 
 
 def _run_tool_safely[ResultT](operation: Callable[[], ResultT]) -> ResultT:
@@ -249,9 +251,9 @@ def _resolve_optional_file(anchor_root: Path, raw_path: str | None) -> Contained
 
 
 def _overlay_candidate_unit(
-    existing_units: Sequence[SourceUnit],
-    candidate_unit: SourceUnit,
-) -> tuple[SourceUnit, ...]:
+    existing_units: Sequence[InspectedUnit],
+    candidate_unit: InspectedUnit,
+) -> tuple[InspectedUnit, ...]:
     retained = [u for u in existing_units if u.file_path != candidate_unit.file_path]
     retained.append(candidate_unit)
     retained.sort(key=lambda u: u.file_path)
@@ -315,12 +317,15 @@ def _run_preview_inspection(
     target_repo = _resolve_contained_dir(anchor_root, workspace_subpath)
     candidate_target = ContainedPath.from_parts(target_repo, file_path)
     rel_posix = candidate_target.relative_posix
-    if rel_posix == "." or not rel_posix.endswith(".py"):
-        msg = f"Preview file_path '{file_path}' must target a '.py' path inside the workspace."
+    if rel_posix == "." or not is_supported_source_path(rel_posix, include_ambient_dts=True):
+        msg = (
+            f"Preview file_path '{file_path}' must target a supported source path "
+            "('.py', '.ts', '.tsx', '.rs', '.go') inside the workspace."
+        )
         raise ToolError(msg)
     permit = load_contained_permit(_resolve_optional_file(anchor_root, permit_path))
     reference_date = parse_optional_iso_date(as_of)
-    candidate_unit = parse_source_unit(rel_posix, source_code)
+    candidate_unit = parse_any_source_unit(rel_posix, source_code)
     existing_units = discover_workspace_units(target_repo)
     merged_units = _overlay_candidate_unit(existing_units, candidate_unit)
     inspector = build_workspace_inspector(target_repo, merged_units)
@@ -381,7 +386,7 @@ def _run_ast_graph_query(
 
 
 class JezzWorkspaceGate:
-    """Workspace-jailed JBC v1.2 and PCE verification gate bound to ``anchor_root``."""
+    """Workspace-jailed polyglot JBC v1.2 and PCE verification gate bound to ``anchor_root``."""
 
     @jezz_callable
     def __init__(self, workspace_root: Path | None = None) -> None:
@@ -409,7 +414,7 @@ class JezzWorkspaceGate:
         permit_path: IdentifierStr | None = None,
         as_of: IdentifierStr | None = None,
     ) -> InspectionReport:
-        """Run JBC Edition 1.2 Rough-In static inspection across the workspace."""
+        """Run JBC Edition 1.2 Rough-In static inspection across workspace source files."""
         return _run_tool_safely(
             lambda: _run_workspace_inspection(
                 self._anchor_root,
@@ -429,7 +434,7 @@ class JezzWorkspaceGate:
         permit_path: IdentifierStr | None = None,
         as_of: IdentifierStr | None = None,
     ) -> DifferentialInspectionReport:
-        """Run Git-aware Differential Occupancy Ratchet on touched Python files."""
+        """Run Git-aware Differential Occupancy Ratchet on touched polyglot source files."""
         return _run_tool_safely(
             lambda: _run_differential_inspection(
                 self._anchor_root,
@@ -450,7 +455,7 @@ class JezzWorkspaceGate:
         permit_path: IdentifierStr | None = None,
         as_of: IdentifierStr | None = None,
     ) -> DifferentialInspectionReport:
-        """Validate an unsaved Python buffer in memory overlaid onto the workspace graph."""
+        """Validate an unsaved source buffer (.py/.ts/.tsx/.rs/.go) overlaid onto the workspace."""
         return _run_tool_safely(
             lambda: _run_preview_inspection(
                 self._anchor_root,
@@ -474,7 +479,7 @@ class JezzWorkspaceGate:
             Field(max_length=64),
         ] = (),
     ) -> DossierAuditReport:
-        """Audit a 5-phase PCE EngineeringDossier against compiled workspace AST symbols."""
+        """Audit a 5-phase PCE EngineeringDossier against compiled polyglot workspace symbols."""
         return _run_tool_safely(
             lambda: _run_dossier_audit(
                 self._anchor_root,
@@ -497,7 +502,7 @@ class JezzWorkspaceGate:
         symbol_query: IdentifierStr | None = None,
         caller_of: IdentifierStr | None = None,
     ) -> AstGraphQueryResult:
-        """Query the workspace AST import/topological-layer graph, callers, and symbol slices."""
+        """Query the polyglot workspace AST/CST import/layer graph, callers, and symbol slices."""
         return _run_tool_safely(
             lambda: _run_ast_graph_query(
                 self._anchor_root,
@@ -551,19 +556,19 @@ def _register_statutory_tools(server: MCPServer[object], gate: JezzWorkspaceGate
         (
             "jbc_inspect_workspace",
             "Inspect Workspace (JBC Rough-In)",
-            "Run full JBC v1.2 Rough-In static inspection across workspace Python files.",
+            "Run JBC v1.2 Rough-In static inspection across workspace .py/.ts/.tsx/.rs/.go files.",
             gate.inspect_workspace,
         ),
         (
             "jbc_inspect_differential",
             "Inspect Differential Scope (Git Ratchet)",
-            "Gate Git-modified/untracked (--changed-since, default HEAD) or staged Python files.",
+            "Gate Git-modified/untracked (--changed-since, default HEAD) or staged source files.",
             gate.inspect_differential,
         ),
         (
             "jbc_preview_source",
-            "Preview Unsaved Python Buffer",
-            "Overlay an in-memory Python buffer onto the workspace graph for pre-write JBC check.",
+            "Preview Unsaved Source Buffer",
+            "Overlay an in-memory .py/.ts/.tsx/.rs/.go buffer onto the workspace for JBC check.",
             _make_preview_handler(gate),
         ),
         (
@@ -575,7 +580,7 @@ def _register_statutory_tools(server: MCPServer[object], gate: JezzWorkspaceGate
         (
             "jbc_query_ast_graph",
             "Query Workspace AST Graph",
-            "Inspect deterministic module import layers, symbol call sites, and AST source slices.",
+            "Inspect deterministic module import layers, symbol call sites, and AST/CST slices.",
             gate.query_ast_graph,
         ),
     )

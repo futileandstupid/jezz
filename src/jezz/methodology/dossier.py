@@ -1,4 +1,4 @@
-"""Pillar 3 (PCE): EngineeringDossier and deterministic 5-phase occupancy auditor."""
+"""Pillar 3 (PCE): EngineeringDossier and deterministic 5-phase polyglot occupancy auditor."""
 
 from collections.abc import Mapping, Sequence
 from enum import StrEnum
@@ -10,9 +10,9 @@ from pydantic import BaseModel, Field
 
 from jezz.behaviors.graph import BehaviorGraph, verify_behavior_graph
 from jezz.behaviors.taxonomy import BehaviorKind
-from jezz.codes.ast_utils import SourceUnit
 from jezz.codes.inspector import compute_units_digest
 from jezz.codes.permits import CertificateOfOccupancy, CodePermit, InspectionReport
+from jezz.codes.polyglot_ir import InspectedUnit, PolyglotUnit
 from jezz.guards import STRICT_FROZEN_CONFIG, BoundedText, IdentifierStr, ShortText, jezz_callable
 from jezz.methodology.mandate import EngineeringMandate, PcePhase
 
@@ -111,18 +111,45 @@ def _add_qualified_symbol(
     src_prefix: str,
     name: str,
 ) -> None:
-    symbols.add(name)
+    symbols.add(name[:256])
+    rust_name = name.replace(".", "::")
+    symbols.add(rust_name[:256])
     if prefix:
-        symbols.add(f"{prefix}{name}")
+        dot_full = f"{prefix}{name}"
+        symbols.add(dot_full[:256])
+        symbols.add(dot_full.replace(".", "::")[:256])
     if src_prefix:
-        symbols.add(f"{src_prefix}{name}")
+        symbols.add(f"{src_prefix}{name}"[:256])
+
+
+def _extract_polyglot_unit_symbols(unit: PolyglotUnit, symbols: set[str]) -> None:
+    norm_mod = unit.module_name.replace("/", ".")
+    prefix = f"{norm_mod}." if norm_mod else ""
+    leaf_mod = norm_mod.rsplit(".", maxsplit=1)[-1] if "." in norm_mod else ""
+    leaf_prefix = f"{leaf_mod}." if leaf_mod else ""
+    src_prefix = f"src.{prefix}" if (prefix and unit.file_path.startswith("src/")) else ""
+    for decl in unit.types:
+        _add_qualified_symbol(symbols, prefix, src_prefix, decl.name)
+        if leaf_prefix:
+            _add_qualified_symbol(symbols, leaf_prefix, "", decl.name)
+    for fn in unit.callables:
+        _add_qualified_symbol(symbols, prefix, src_prefix, fn.name)
+        _add_qualified_symbol(symbols, prefix, src_prefix, fn.qualname)
+        if leaf_prefix:
+            _add_qualified_symbol(symbols, leaf_prefix, "", fn.name)
+            _add_qualified_symbol(symbols, leaf_prefix, "", fn.qualname)
 
 
 @jezz_callable
-def extract_compiled_symbols(units: Sequence[SourceUnit]) -> frozenset[IdentifierStr]:
-    """Extract all compiled class and callable symbols (short and module-qualified) in ``units``."""
+def extract_compiled_symbols(
+    units: Annotated[Sequence[InspectedUnit], Field(max_length=100_000)],
+) -> frozenset[IdentifierStr]:
+    """Extract all compiled type and callable symbols across Python, TS, Rust, and Go ``units``."""
     symbols: set[str] = set()
     for unit in units:
+        if isinstance(unit, PolyglotUnit):
+            _extract_polyglot_unit_symbols(unit, symbols)
+            continue
         prefix = f"{unit.module_name}." if unit.module_name else ""
         src_prefix = f"src.{prefix}" if (prefix and unit.file_path.startswith("src/")) else ""
         for cls_node in unit.classes:
@@ -192,7 +219,7 @@ def _check_symbol_and_scope_grounding(
     verified: list[str] = []
 
     for sym in _expected_mandate_symbols(dossier.mandate):
-        if sym in compiled_symbols:
+        if sym in compiled_symbols or sym.replace("::", ".") in compiled_symbols:
             verified.append(sym)
             continue
         violations.append(
@@ -222,7 +249,7 @@ def _check_symbol_and_scope_grounding(
 
 def _check_inspection_and_occupancy(
     dossier: EngineeringDossier,
-    units: Sequence[SourceUnit],
+    units: Sequence[InspectedUnit],
 ) -> list[DossierViolation]:
     violations: list[DossierViolation] = []
     uninspected = sorted(
@@ -280,7 +307,7 @@ def _resolve_highest_phase(violations: Sequence[DossierViolation]) -> PcePhase:
 @jezz_callable
 def audit_pce_dossier(
     dossier: EngineeringDossier,
-    units: Annotated[Sequence[SourceUnit], Field(min_length=1, max_length=100_000)],
+    units: Annotated[Sequence[InspectedUnit], Field(min_length=1, max_length=100_000)],
 ) -> DossierAuditReport:
     """Verify all five Permit-and-Contract Engineering (PCE) gates on ``dossier``."""
     compiled = extract_compiled_symbols(units)

@@ -1,6 +1,5 @@
 """Automated Software Building Inspector (JBC v1.2) and Pillar 1 runtime governance bridge."""
 
-import ast
 import configparser
 import hashlib
 import re
@@ -16,6 +15,7 @@ import icontract
 from pydantic import BaseModel, Field
 
 from jezz.behaviors.runtime import AgentExecutionState
+from jezz.codes.adapters import detect_unit_triggers
 from jezz.codes.ast_utils import RawDiscrepancy, SourceUnit, parse_source_unit
 from jezz.codes.codebook import CODE_BOOK, codes_for_triggers
 from jezz.codes.permits import (
@@ -31,6 +31,18 @@ from jezz.codes.permits import (
     RedTagError,
     issue_certificate,
 )
+from jezz.codes.polyglot_ir import (
+    EcosystemManifest,
+    InspectedUnit,
+    PolyglotManifest,
+    PolyglotUnit,
+)
+from jezz.codes.polyglot_manifests import (
+    load_cargo_toml_manifest,
+    load_go_mod_manifest,
+    load_package_json_manifest,
+)
+from jezz.codes.polyglot_rules import check_polyglot_cog_003, check_polyglot_unit_code
 from jezz.codes.rules_cog import (
     check_cog_001,
     check_cog_002,
@@ -310,7 +322,7 @@ def load_pyproject_dependencies(pyproject_target: ContainedPath) -> ManifestDepe
 def load_workspace_units(
     repo_root: Path,
     *,
-    target_dirs: Sequence[IdentifierStr] = ("src", "tests"),
+    target_dirs: Annotated[Sequence[IdentifierStr], Field(max_length=64)] = ("src", "tests"),
 ) -> tuple[SourceUnit, ...]:
     """Load and parse all Python ``.py`` files under ``target_dirs`` inside ``repo_root``."""
     resolved_root = repo_root.resolve()
@@ -327,11 +339,11 @@ def load_workspace_units(
     return tuple(units)
 
 
-@icontract.require(lambda units: len(units) >= 1, "At least one SourceUnit is required.")
+@icontract.require(lambda units: len(units) >= 1, "At least one InspectedUnit is required.")
 @icontract.ensure(lambda result: len(result) == 64)
 @jezz_callable
 def compute_units_digest(
-    units: Annotated[Sequence[SourceUnit], Field(min_length=1, max_length=100_000)],
+    units: Annotated[Sequence[InspectedUnit], Field(min_length=1, max_length=100_000)],
 ) -> Annotated[str, Field(min_length=64, max_length=64)]:
     """Compute a deterministic SHA-256 hex digest over sorted ``(file_path, source)`` pairs."""
     hasher = hashlib.sha256()
@@ -343,26 +355,14 @@ def compute_units_digest(
     return hasher.hexdigest()
 
 
-def _unit_triggers(unit: SourceUnit) -> set[CodeTrigger]:
-    triggers: set[CodeTrigger] = {CodeTrigger.UNIVERSAL}
-    if unit.is_test_file:
-        triggers.add(CodeTrigger.VERIFICATION_SUITE)
-    if unit.classes:
-        triggers.add(CodeTrigger.CONSTRAINED_DOMAIN)
-    for node in ast.walk(unit.tree):
-        if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Div | ast.FloorDiv | ast.Mod):
-            triggers.add(CodeTrigger.CONSTRAINED_DOMAIN)
-        if isinstance(node, ast.Call):
-            triggers.add(CodeTrigger.EXTERNAL_BOUNDARY)
-    return triggers
-
-
 @jezz_callable
-def detect_hazard_triggers(units: Sequence[SourceUnit]) -> frozenset[CodeTrigger]:
+def detect_hazard_triggers(
+    units: Annotated[Sequence[InspectedUnit], Field(max_length=100_000)],
+) -> frozenset[CodeTrigger]:
     """Auto-detect occupancy/hazard triggers across ``units`` so hazards cannot go unbound."""
     detected: set[CodeTrigger] = {CodeTrigger.UNIVERSAL}
     for unit in units:
-        detected |= _unit_triggers(unit)
+        detected |= detect_unit_triggers(unit)
     return frozenset(detected)
 
 
@@ -461,7 +461,7 @@ def assemble_inspection_report(
     permit: CodePermit,
     detected_triggers: frozenset[CodeTrigger],
     effective_ids: frozenset[IdentifierStr],
-    raw_discrepancies: Sequence[RawDiscrepancy],
+    raw_discrepancies: Annotated[Sequence[RawDiscrepancy], Field(max_length=250_000)],
     unit_count: NonNegativeInt,
     reference_date: date,
 ) -> InspectionReport:
@@ -478,7 +478,20 @@ def assemble_inspection_report(
     )
 
 
-def _run_per_unit_code(
+def _partition_inspected_units(
+    units: Sequence[InspectedUnit],
+) -> tuple[list[SourceUnit], list[PolyglotUnit]]:
+    py_units: list[SourceUnit] = []
+    poly_units: list[PolyglotUnit] = []
+    for unit in units:
+        if isinstance(unit, SourceUnit):
+            py_units.append(unit)
+        else:
+            poly_units.append(unit)
+    return py_units, poly_units
+
+
+def _run_python_per_unit_code(
     manifest: ManifestDependencies,
     code_id: str,
     units: Sequence[SourceUnit],
@@ -506,76 +519,141 @@ def _run_per_unit_code(
     return []
 
 
+def _run_polyglot_per_unit_code(
+    poly_manifest: PolyglotManifest,
+    code_id: str,
+    units: Sequence[PolyglotUnit],
+) -> list[RawDiscrepancy]:
+    if not units:
+        return []
+    local_roots = frozenset(
+        u.module_name.split(".", maxsplit=1)[0]
+        for u in units
+        if u.module_name and not u.is_test_file
+    )
+    return [
+        item
+        for unit in units
+        for item in check_polyglot_unit_code(
+            code_id,
+            unit,
+            poly_manifest,
+            local_roots=local_roots,
+        )
+    ]
+
+
 @jezz_callable
 def collect_per_unit_discrepancies(
     manifest: ManifestDependencies,
-    units: Sequence[SourceUnit],
+    units: Annotated[Sequence[InspectedUnit], Field(max_length=100_000)],
     active_code_ids: AbstractSet[IdentifierStr],
+    *,
+    polyglot_manifest: PolyglotManifest | None = None,
 ) -> list[RawDiscrepancy]:
-    """Run all per-unit static AST/lexical/cohesion codes across ``units``."""
+    """Run all per-unit static AST/CST/lexical/cohesion codes across ``units``."""
+    py_units, poly_units = _partition_inspected_units(units)
+    eff_poly = polyglot_manifest or PolyglotManifest()
     discrepancies: list[RawDiscrepancy] = []
     for code_id in sorted(active_code_ids):
-        discrepancies.extend(_run_per_unit_code(manifest, code_id, units))
+        if py_units:
+            discrepancies.extend(_run_python_per_unit_code(manifest, code_id, py_units))
+        if poly_units:
+            discrepancies.extend(_run_polyglot_per_unit_code(eff_poly, code_id, poly_units))
     return discrepancies
 
 
+def _load_python_manifest_for_repo(repo_root: Path) -> ManifestDependencies:
+    pyproject = ContainedPath.from_parts(repo_root, "pyproject.toml")
+    base = (
+        load_pyproject_dependencies(pyproject)
+        if pyproject.resolved_path.is_file()
+        else ManifestDependencies()
+    )
+    src_roots = _discover_src_layout_roots(repo_root)
+    setup_cfg = ContainedPath.from_parts(repo_root, "setup.cfg")
+    if not setup_cfg.resolved_path.is_file():
+        return ManifestDependencies(
+            runtime_roots=base.runtime_roots,
+            dev_roots=base.dev_roots,
+            workspace_roots=frozenset(base.workspace_roots | src_roots),
+        )
+    cfg_run, cfg_dev = load_setup_cfg_dependencies(setup_cfg)
+    return ManifestDependencies(
+        runtime_roots=frozenset(base.runtime_roots | cfg_run),
+        dev_roots=frozenset(base.dev_roots | cfg_dev),
+        workspace_roots=frozenset(base.workspace_roots | src_roots),
+    )
+
+
 class BuildingInspector:
-    """Deterministic enforcement engine for the Jezz Software Building Code (JBC v1.2)."""
+    """Deterministic polyglot enforcement engine for the Jezz Software Building Code (JBC v1.2)."""
 
     @jezz_callable
-    def __init__(self, manifest: ManifestDependencies | None = None) -> None:
-        self.manifest = manifest or ManifestDependencies(workspace_roots=frozenset({"jezz"}))
+    def __init__(
+        self,
+        manifest: ManifestDependencies | None = None,
+        *,
+        polyglot_manifest: PolyglotManifest | None = None,
+    ) -> None:
+        py_manifest = manifest or ManifestDependencies(workspace_roots=frozenset({"jezz"}))
+        self.manifest = py_manifest
+        self.polyglot_manifest = polyglot_manifest or PolyglotManifest(
+            python=EcosystemManifest(
+                runtime_roots=py_manifest.runtime_roots,
+                dev_roots=py_manifest.dev_roots,
+                workspace_roots=py_manifest.workspace_roots,
+            )
+        )
 
     @classmethod
     @jezz_callable
     def from_workspace(cls, repo_root: Path) -> BuildingInspector:
-        """Create a ``BuildingInspector`` grounded in ``pyproject.toml`` and ``setup.cfg``."""
-        pyproject = ContainedPath.from_parts(repo_root, "pyproject.toml")
-        base = (
-            load_pyproject_dependencies(pyproject)
-            if pyproject.resolved_path.is_file()
-            else ManifestDependencies()
+        """Create a ``BuildingInspector`` grounded in Python, npm, Cargo, and Go manifests."""
+        py_manifest = _load_python_manifest_for_repo(repo_root)
+        poly_manifest = PolyglotManifest(
+            python=EcosystemManifest(
+                runtime_roots=py_manifest.runtime_roots,
+                dev_roots=py_manifest.dev_roots,
+                workspace_roots=py_manifest.workspace_roots,
+            ),
+            typescript=load_package_json_manifest(repo_root),
+            rust=load_cargo_toml_manifest(repo_root),
+            go=load_go_mod_manifest(repo_root),
         )
-        src_roots = _discover_src_layout_roots(repo_root)
-        setup_cfg = ContainedPath.from_parts(repo_root, "setup.cfg")
-        if not setup_cfg.resolved_path.is_file():
-            return BuildingInspector(
-                manifest=ManifestDependencies(
-                    runtime_roots=base.runtime_roots,
-                    dev_roots=base.dev_roots,
-                    workspace_roots=frozenset(base.workspace_roots | src_roots),
-                )
-            )
-        cfg_run, cfg_dev = load_setup_cfg_dependencies(setup_cfg)
-        merged = ManifestDependencies(
-            runtime_roots=frozenset(base.runtime_roots | cfg_run),
-            dev_roots=frozenset(base.dev_roots | cfg_dev),
-            workspace_roots=frozenset(base.workspace_roots | src_roots),
-        )
-        return BuildingInspector(manifest=merged)
+        return BuildingInspector(manifest=py_manifest, polyglot_manifest=poly_manifest)
 
     def _collect_static_discrepancies(
         self,
-        units: Sequence[SourceUnit],
+        units: Sequence[InspectedUnit],
         active_code_ids: AbstractSet[str],
     ) -> list[RawDiscrepancy]:
+        py_units, poly_units = _partition_inspected_units(units)
         discrepancies: list[RawDiscrepancy] = []
         for code_id in sorted(active_code_ids):
             if code_id == "JBC-COG-003":
-                discrepancies.extend(check_cog_003(units))
+                if py_units:
+                    discrepancies.extend(check_cog_003(py_units))
+                if poly_units:
+                    discrepancies.extend(check_polyglot_cog_003(poly_units))
                 continue
-            discrepancies.extend(_run_per_unit_code(self.manifest, code_id, units))
+            if py_units:
+                discrepancies.extend(_run_python_per_unit_code(self.manifest, code_id, py_units))
+            if poly_units:
+                discrepancies.extend(
+                    _run_polyglot_per_unit_code(self.polyglot_manifest, code_id, poly_units)
+                )
         return discrepancies
 
     @jezz_callable
     def inspect_rough_in(
         self,
-        units: Sequence[SourceUnit],
+        units: Annotated[Sequence[InspectedUnit], Field(max_length=100_000)],
         *,
         permit: CodePermit | None = None,
         reference_date: date | None = None,
     ) -> InspectionReport:
-        """Run static/AST/graph/lexical rough-in inspection (BHV-18 VERIFY_STATIC)."""
+        """Run static AST/CST/graph/lexical rough-in inspection (BHV-18 VERIFY_STATIC)."""
         active_permit = permit or CodePermit.full_book(permit_id="PERMIT-ROUGH-IN")
         active_date = reference_date if reference_date is not None else datetime.now(UTC).date()
         detected = detect_hazard_triggers(units)
@@ -594,10 +672,10 @@ class BuildingInspector:
     @jezz_callable
     def inspect_final(
         self,
-        units: Sequence[SourceUnit],
+        units: Annotated[Sequence[InspectedUnit], Field(max_length=100_000)],
         *,
         permit: CodePermit | None = None,
-        attestations: Sequence[GateAttestation] = (),
+        attestations: Annotated[Sequence[GateAttestation], Field(max_length=64)] = (),
         reference_date: date | None = None,
     ) -> InspectionReport:
         """Run full rough-in + gate-attestation final inspection for occupancy certification."""

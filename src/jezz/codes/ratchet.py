@@ -1,4 +1,4 @@
-"""Git-aware Differential Occupancy Ratchet for incremental brownfield JBC v1.2 enforcement."""
+"""Git-aware Differential Occupancy Ratchet for incremental polyglot JBC v1.2 enforcement."""
 
 import re
 import subprocess
@@ -20,6 +20,8 @@ from jezz.codes.inspector import (
     detect_hazard_triggers,
 )
 from jezz.codes.permits import CodePermit, InspectionReport
+from jezz.codes.polyglot_ir import InspectedUnit, PolyglotUnit, is_supported_source_path
+from jezz.codes.polyglot_rules import check_polyglot_cog_003_for_paths
 from jezz.codes.rules_cog import check_cog_003_for_paths
 from jezz.codes.taxonomy import InspectionMethod
 from jezz.guards import (
@@ -124,6 +126,11 @@ class DifferentialInspectionReport(BaseModel):
         """Return True iff the differential ratchet scope achieved zero unwaived violations."""
         return self.report.is_occupiable
 
+    @property
+    def changed_source_paths(self) -> tuple[IdentifierStr, ...]:
+        """Return all changed source paths (Python, TypeScript, Rust, Go) in scope."""
+        return self.changed_python_paths
+
     @jezz_callable
     def to_markdown(
         self,
@@ -204,10 +211,10 @@ def _run_git_command(
     return proc.stdout
 
 
-def _extract_contained_py_paths(resolved_root: Path, nul_output: str) -> set[str]:
+def _extract_contained_source_paths(resolved_root: Path, nul_output: str) -> set[str]:
     paths: set[str] = set()
     for raw_entry in nul_output.split("\x00"):
-        if not raw_entry or not raw_entry.endswith(".py"):
+        if not raw_entry or not is_supported_source_path(raw_entry):
             continue
         contained = ContainedPath.from_parts(resolved_root, raw_entry)
         if contained.resolved_path.is_file():
@@ -224,7 +231,7 @@ def resolve_git_changed_paths(
     include_untracked: bool = True,
     timeout_sec: Annotated[FiniteFloat, Field(gt=0.0, le=120.0)] = 15.0,
 ) -> frozenset[IdentifierStr]:
-    """Return workspace-relative ``.py`` paths modified since ``base_ref`` or staged in index."""
+    """Return workspace-relative supported source paths modified since ``base_ref`` or staged."""
     if (base_ref is not None) == staged_only:
         msg = "Specify exactly one of base_ref or staged_only=True."
         raise ValueError(msg)
@@ -239,7 +246,7 @@ def resolve_git_changed_paths(
             ("diff", "-z", "--cached", "--relative", "--name-only", "--diff-filter=ACMR", "--"),
             timeout_sec,
         )
-        return frozenset(_extract_contained_py_paths(resolved_root, staged_out))
+        return frozenset(_extract_contained_source_paths(resolved_root, staged_out))
 
     if base_ref is None:
         msg = "Specify base_ref when staged_only=False."
@@ -256,30 +263,40 @@ def resolve_git_changed_paths(
         ("diff", "-z", "--relative", "--name-only", "--diff-filter=ACMR", clean_base, "--"),
         timeout_sec,
     )
-    discovered = _extract_contained_py_paths(resolved_root, diff_out)
+    discovered = _extract_contained_source_paths(resolved_root, diff_out)
     if include_untracked:
         untracked_out = _run_git_command(
             resolved_root,
             ("ls-files", "-z", "--others", "--exclude-standard", "--"),
             timeout_sec,
         )
-        discovered |= _extract_contained_py_paths(resolved_root, untracked_out)
+        discovered |= _extract_contained_source_paths(resolved_root, untracked_out)
     return frozenset(discovered)
 
 
 def _collect_differential_discrepancies(
     inspector: BuildingInspector,
-    all_units: Sequence[SourceUnit],
-    touched_units: Sequence[SourceUnit],
+    all_units: Sequence[InspectedUnit],
+    touched_units: Sequence[InspectedUnit],
     touched_paths: frozenset[str],
     static_ids: frozenset[str],
 ) -> list[RawDiscrepancy]:
     if not touched_units:
         return []
-    per_unit = collect_per_unit_discrepancies(inspector.manifest, touched_units, static_ids)
+    per_unit = collect_per_unit_discrepancies(
+        inspector.manifest,
+        touched_units,
+        static_ids,
+        polyglot_manifest=inspector.polyglot_manifest,
+    )
     if "JBC-COG-003" not in static_ids:
         return per_unit
-    cog_003 = check_cog_003_for_paths(all_units, touched_paths)
+    all_py = [u for u in all_units if isinstance(u, SourceUnit)]
+    all_poly = [u for u in all_units if isinstance(u, PolyglotUnit)]
+    cog_003 = [
+        *(check_cog_003_for_paths(all_py, touched_paths) if all_py else []),
+        *(check_polyglot_cog_003_for_paths(all_poly, touched_paths) if all_poly else []),
+    ]
     combined = [*per_unit, *cog_003]
     combined.sort(key=lambda item: (item.code_id, item.location.file_path, item.location.line))
     return combined
@@ -288,7 +305,7 @@ def _collect_differential_discrepancies(
 @jezz_callable
 def inspect_differential_rough_in(
     inspector: GuardedInspector,
-    all_units: Sequence[SourceUnit],
+    all_units: Annotated[Sequence[InspectedUnit], Field(max_length=100_000)],
     scope: DifferentialScope,
     *,
     permit: CodePermit | None = None,

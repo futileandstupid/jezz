@@ -1,4 +1,4 @@
-"""Antigravity lifecycle hook engine enforcing JBC Edition 1.2 statutory Stop gates."""
+"""Antigravity lifecycle hook engine enforcing polyglot JBC Edition 1.2 statutory Stop gates."""
 
 import io
 import json
@@ -9,7 +9,6 @@ from typing import Annotated, Final, Self
 
 from pydantic import BaseModel, Field, TypeAdapter, ValidationError, model_validator
 
-from jezz.codes.ast_utils import SourceUnit
 from jezz.codes.discovery import (
     build_workspace_inspector,
     discover_workspace_units,
@@ -18,6 +17,7 @@ from jezz.codes.discovery import (
 )
 from jezz.codes.inspector import BuildingInspector
 from jezz.codes.permits import CodePermit, InspectionReport
+from jezz.codes.polyglot_ir import InspectedUnit
 from jezz.codes.ratchet import (
     DiffBaseMode,
     DifferentialScope,
@@ -145,13 +145,13 @@ def _block_stop(reason: str) -> StopHookOutput:
 
 @jezz_callable
 def has_jezz_workspace_marker(repo_root: Path) -> bool:
-    """Return True iff ``repo_root`` has a local ``jezz`` plugin or ``[tool.jezz]`` config."""
+    """Return True iff ``repo_root`` has a local ``jezz`` plugin, permit, or ``[tool.jezz]``."""
     resolved = repo_root.resolve()
     if not resolved.is_dir():
         return False
-    plugin_manifest = ContainedPath.from_parts(resolved, _PLUGIN_MANIFEST_RELPATH)
-    if plugin_manifest.resolved_path.is_file():
-        return True
+    for marker_rel in (_PLUGIN_MANIFEST_RELPATH, _DEFAULT_PERMIT_RELPATH):
+        if ContainedPath.from_parts(resolved, marker_rel).resolved_path.is_file():
+            return True
     pyproject = ContainedPath.from_parts(resolved, "pyproject.toml")
     if not pyproject.resolved_path.is_file():
         return False
@@ -188,7 +188,7 @@ def _load_hook_permit(repo_root: Path, explicit_permit: Path | None) -> CodePerm
 
 def _inspect_workspace_changes(
     repo_root: Path,
-    units: tuple[SourceUnit, ...],
+    units: tuple[InspectedUnit, ...],
     inspector: BuildingInspector,
     permit: CodePermit | None,
     reference_date: date | None,
@@ -230,14 +230,14 @@ def _format_stop_remediation(report: InspectionReport) -> str:
     return "\n".join(lines)
 
 
-def _discover_or_block_syntax(repo_root: Path) -> tuple[SourceUnit, ...] | StopHookOutput:
+def _discover_or_block_syntax(repo_root: Path) -> tuple[InspectedUnit, ...] | StopHookOutput:
     try:
         return discover_workspace_units(repo_root)
     except SyntaxError as exc:
         loc = f"{exc.filename or '<unknown>'}:L{exc.lineno or 1}"
         return _block_stop(
             f"JBC v1.2 Statutory Stop Gate (SYNTAX_ERROR at {loc}): {exc.msg}. "
-            "Repair invalid Python syntax before completing your turn."
+            "Repair invalid source syntax before completing your turn."
         )
 
 

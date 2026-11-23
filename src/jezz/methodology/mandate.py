@@ -38,7 +38,7 @@ _WEASEL_MODAL_RE: Final[re.Pattern[str]] = re.compile(
     re.IGNORECASE,
 )
 _PYTHON_SYMBOL_RE: Final[re.Pattern[str]] = re.compile(
-    r"^[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*$"
+    r"^[A-Za-z_][A-Za-z0-9_]*(?:(?:\.|::)[A-Za-z_][A-Za-z0-9_]*)*$"
 )
 _PEP508_PACKAGE_RE: Final[re.Pattern[str]] = re.compile(
     r"^[A-Za-z0-9](?:[A-Za-z0-9._-]{0,126}[A-Za-z0-9])?$"
@@ -47,13 +47,27 @@ _PEP440_CONSTRAINT_RE: Final[re.Pattern[str]] = re.compile(
     r"^(?:\s*(?:===|==|~=|!=|<=|>=|<|>)\s*[A-Za-z0-9._*+-]+"
     r"(?:\s*,\s*(?:===|==|~=|!=|<=|>=|<|>)\s*[A-Za-z0-9._*+-]+)*\s*)?$"
 )
+_AUTHORIZED_MANIFEST_FILES: Final[frozenset[str]] = frozenset(
+    {
+        "pyproject.toml",
+        "uv.lock",
+        "package.json",
+        "package-lock.json",
+        "pnpm-lock.yaml",
+        "Cargo.toml",
+        "Cargo.lock",
+        "go.mod",
+        "go.sum",
+    }
+)
 
 
 def _validate_python_symbol_ref(symbol: str, *, field_label: str) -> None:
     if _PYTHON_SYMBOL_RE.fullmatch(symbol) is None:
         msg = (
-            f"{field_label} '{symbol}' must be a valid Python identifier or dotted qualname "
-            "(e.g. 'test_quota' or 'pkg.mod.ClassName'), never a file path or 'file.py:symbol'."
+            f"{field_label} '{symbol}' must be a valid Python identifier or polyglot qualified "
+            "symbol (e.g. 'test_quota', 'pkg.mod.ClassName', or 'ledger::Escrow::settle'), "
+            "never a file path or 'file.py:symbol'."
         )
         raise ValueError(msg)
 
@@ -346,7 +360,7 @@ class EngineeringMandate(BaseModel):
         """Return manifest/lockfile paths authorized when ``required_dependencies`` is non-empty."""
         if not self.required_dependencies:
             return frozenset()
-        return frozenset({"pyproject.toml", "uv.lock"})
+        return _AUTHORIZED_MANIFEST_FILES
 
     @jezz_callable
     def execution_waves(

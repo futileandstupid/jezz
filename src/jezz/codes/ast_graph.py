@@ -1,4 +1,4 @@
-"""Deterministic AST import, call, topological layer, and symbol-slice graph over SourceUnits."""
+"""Deterministic AST/CST import, call, topological layer, and symbol-slice graph."""
 
 import ast
 from collections import deque
@@ -16,6 +16,7 @@ from jezz.codes.ast_utils import (
     is_type_checking_guard,
     iter_local_scope_nodes,
 )
+from jezz.codes.polyglot_ir import InspectedUnit, PolyglotUnit, SupportedLanguage
 from jezz.guards import (
     STRICT_FROZEN_CONFIG,
     WIRE_TUPLE_VALIDATOR,
@@ -88,13 +89,23 @@ class ModuleGraphEntry(BaseModel):
 
 
 def _matches_call_target(callee: str, target_symbol: str) -> bool:
-    if callee == target_symbol:
+    norm_callee = callee.replace("::", ".")
+    norm_target = target_symbol.replace("::", ".")
+    if norm_callee == norm_target:
         return True
-    tail = callee.rsplit(".", maxsplit=1)[-1]
-    target_tail = target_symbol.rsplit(".", maxsplit=1)[-1]
-    if "." in target_symbol:
-        return callee.endswith(f".{target_symbol}")
+    tail = norm_callee.rsplit(".", maxsplit=1)[-1]
+    target_tail = norm_target.rsplit(".", maxsplit=1)[-1]
+    if "." in norm_target:
+        return norm_callee.endswith(f".{norm_target}")
     return tail == target_tail
+
+
+def _symbol_matches_query(sym: SymbolGraphEntry, query: str) -> bool:
+    norm_q = query.replace("::", ".")
+    norm_qual = sym.qualname.replace("::", ".")
+    if norm_qual == norm_q or norm_qual.rsplit(".", maxsplit=1)[-1] == norm_q:
+        return True
+    return f"{sym.module_name}.{norm_qual}" == norm_q
 
 
 class WorkspaceAstGraph(BaseModel):
@@ -119,7 +130,7 @@ class WorkspaceAstGraph(BaseModel):
         self,
         target_symbol: IdentifierStr,
     ) -> Annotated[tuple[SymbolGraphEntry, ...], Field(max_length=4096)]:
-        """Return all workspace symbols whose AST body invokes ``target_symbol``."""
+        """Return all workspace symbols whose AST/CST body invokes ``target_symbol``."""
         matched = [
             sym
             for sym in self.symbols
@@ -133,13 +144,7 @@ class WorkspaceAstGraph(BaseModel):
         symbol_query: IdentifierStr,
     ) -> Annotated[tuple[SymbolGraphEntry, ...], Field(max_length=1024)]:
         """Return symbols matching ``symbol_query`` by exact qualname, tail, or module qualname."""
-        matched = [
-            sym
-            for sym in self.symbols
-            if sym.qualname == symbol_query
-            or sym.qualname.rsplit(".", maxsplit=1)[-1] == symbol_query
-            or f"{sym.module_name}.{sym.qualname}" == symbol_query
-        ]
+        matched = [sym for sym in self.symbols if _symbol_matches_query(sym, symbol_query)]
         return tuple(matched[:1024])
 
     @jezz_callable
@@ -154,7 +159,7 @@ class WorkspaceAstGraph(BaseModel):
     def to_compact_brief(self, *, max_modules: PositiveInt = 32) -> BoundedText:
         """Render a high-density topological summary of workspace modules, imports, and symbols."""
         if not self.modules:
-            return "Workspace AST Graph: 0 Python modules."
+            return "Workspace AST Graph: 0 source modules."
         ordered = sorted(self.modules, key=lambda m: (m.topological_layer, m.file_path))
         lines = [
             f"Workspace AST Graph ({len(self.modules)} module(s), "
@@ -173,7 +178,9 @@ class WorkspaceAstGraph(BaseModel):
         return "\n".join(lines)[:60_000]
 
 
-def _start_line_with_decorators(node: ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef) -> int:
+def _start_line_with_decorators(
+    node: ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef,
+) -> int:
     if node.decorator_list:
         return min(node.lineno, *(dec.lineno for dec in node.decorator_list))
     return node.lineno
@@ -235,7 +242,7 @@ def _format_class_signature(cls_node: ast.ClassDef) -> str:
     return f"class {cls_node.name}{base_str}{member_str}"[:512]
 
 
-def _extract_unit_symbols(unit: SourceUnit) -> list[SymbolGraphEntry]:
+def _extract_python_unit_symbols(unit: SourceUnit) -> list[SymbolGraphEntry]:
     entries: list[SymbolGraphEntry] = []
     for cls_node in unit.classes:
         start_ln = _start_line_with_decorators(cls_node)
@@ -281,6 +288,44 @@ def _extract_unit_symbols(unit: SourceUnit) -> list[SymbolGraphEntry]:
             )
         )
     return entries
+
+
+def _extract_polyglot_unit_symbols(unit: PolyglotUnit) -> list[SymbolGraphEntry]:
+    entries: list[SymbolGraphEntry] = []
+    for decl in unit.types:
+        kind = SymbolNodeKind.TYPE_ALIAS if decl.kind == "type_alias" else SymbolNodeKind.CLASS
+        entries.append(
+            SymbolGraphEntry(
+                qualname=decl.name,
+                module_name=unit.module_name,
+                file_path=unit.file_path,
+                kind=kind,
+                start_line=decl.line,
+                end_line=max(decl.line, decl.end_line),
+                signature_summary=(decl.signature_summary or f"{decl.kind} {decl.name}")[:512],
+            )
+        )
+    for fn in unit.callables:
+        kind = SymbolNodeKind.METHOD if fn.enclosing_type else SymbolNodeKind.FUNCTION
+        entries.append(
+            SymbolGraphEntry(
+                qualname=fn.qualname,
+                module_name=unit.module_name,
+                file_path=unit.file_path,
+                kind=kind,
+                start_line=fn.start_line,
+                end_line=max(fn.start_line, fn.end_line),
+                signature_summary=(fn.signature_summary or f"fn {fn.qualname}")[:512],
+                calls=fn.calls[:128],
+            )
+        )
+    return entries
+
+
+def _extract_unit_symbols(unit: InspectedUnit) -> list[SymbolGraphEntry]:
+    if isinstance(unit, SourceUnit):
+        return _extract_python_unit_symbols(unit)
+    return _extract_polyglot_unit_symbols(unit)
 
 
 def _resolve_relative_import(
@@ -339,20 +384,101 @@ def _match_known_module(candidate: str, known_modules: frozenset[str]) -> str:
     return ""
 
 
-def _build_import_edges(
-    units: Sequence[SourceUnit],
-) -> tuple[dict[str, set[str]], dict[str, set[str]]]:
-    known = frozenset(u.module_name for u in units if u.module_name)
-    outgoing: dict[str, set[str]] = {u.module_name: set() for u in units if u.module_name}
-    incoming: dict[str, set[str]] = {u.module_name: set() for u in units if u.module_name}
-    for unit in units:
-        if not unit.module_name:
+def _resolve_polyglot_import_edge(
+    unit: PolyglotUnit,
+    known_same_lang: frozenset[str],
+) -> set[str]:
+    matched: set[str] = set()
+    for imp in unit.imports:
+        dotted_hit = _match_known_module(imp.resolved_module, known_same_lang)
+        if dotted_hit:
+            matched.add(dotted_hit)
             continue
-        for raw in _iter_runtime_import_candidates(unit):
-            matched = _match_known_module(raw, known)
-            if matched and matched != unit.module_name:
-                outgoing[unit.module_name].add(matched)
-                incoming[matched].add(unit.module_name)
+        if unit.language == SupportedLanguage.GO:
+            go_hits = [
+                cand
+                for cand in known_same_lang
+                if imp.raw_target == cand or imp.raw_target.endswith(f"/{cand}")
+            ]
+            if go_hits:
+                go_hits.sort(key=len, reverse=True)
+                matched.add(go_hits[0])
+    return matched
+
+
+def _unit_graph_key(unit: InspectedUnit) -> str:
+    lang = "py" if isinstance(unit, SourceUnit) else str(unit.language)
+    return f"{lang}:{unit.module_name or unit.file_path}"
+
+
+def _index_known_modules_by_lang(
+    units: Sequence[InspectedUnit],
+) -> tuple[frozenset[str], dict[SupportedLanguage, frozenset[str]]]:
+    py_known = frozenset(
+        u.module_name for u in units if isinstance(u, SourceUnit) and u.module_name
+    )
+    poly_known: dict[SupportedLanguage, frozenset[str]] = {}
+    for lang in SupportedLanguage:
+        if lang != SupportedLanguage.PYTHON:
+            poly_known[lang] = frozenset(
+                u.module_name
+                for u in units
+                if isinstance(u, PolyglotUnit) and u.language == lang and u.module_name
+            )
+    return py_known, poly_known
+
+
+def _record_edge(
+    outgoing: dict[str, set[str]],
+    incoming: dict[str, set[str]],
+    src_key: str,
+    dst_key: str,
+) -> None:
+    if dst_key in outgoing and dst_key != src_key:
+        outgoing[src_key].add(dst_key)
+        incoming[dst_key].add(src_key)
+
+
+def _record_python_unit_edges(
+    unit: SourceUnit,
+    py_known: frozenset[str],
+    outgoing: dict[str, set[str]],
+    incoming: dict[str, set[str]],
+) -> None:
+    if not unit.module_name:
+        return
+    src_key = _unit_graph_key(unit)
+    for raw in _iter_runtime_import_candidates(unit):
+        hit = _match_known_module(raw, py_known)
+        if hit and hit != unit.module_name:
+            _record_edge(outgoing, incoming, src_key, f"py:{hit}")
+
+
+def _record_polyglot_unit_edges(
+    unit: PolyglotUnit,
+    lang_known: frozenset[str],
+    outgoing: dict[str, set[str]],
+    incoming: dict[str, set[str]],
+) -> None:
+    src_key = _unit_graph_key(unit)
+    for hit in _resolve_polyglot_import_edge(unit, lang_known):
+        if hit != unit.module_name:
+            _record_edge(outgoing, incoming, src_key, f"{unit.language}:{hit}")
+
+
+def _build_import_edges(
+    units: Sequence[InspectedUnit],
+) -> tuple[dict[str, set[str]], dict[str, set[str]]]:
+    py_known, poly_known = _index_known_modules_by_lang(units)
+    keys = [_unit_graph_key(u) for u in units]
+    outgoing: dict[str, set[str]] = {k: set() for k in keys}
+    incoming: dict[str, set[str]] = {k: set() for k in keys}
+    for unit in units:
+        if isinstance(unit, SourceUnit):
+            _record_python_unit_edges(unit, py_known, outgoing, incoming)
+        else:
+            lang_known = poly_known.get(unit.language, frozenset())
+            _record_polyglot_unit_edges(unit, lang_known, outgoing, incoming)
     return outgoing, incoming
 
 
@@ -379,10 +505,14 @@ def _compute_topological_layers(
     return layers, has_cycles
 
 
+def _strip_lang_prefix(graph_key: str) -> str:
+    return graph_key.split(":", maxsplit=1)[1] if ":" in graph_key else graph_key
+
+
 @icontract.ensure(lambda units, result: len(result.modules) == len(units))
 @jezz_callable
 def build_workspace_ast_graph(
-    units: Annotated[Sequence[SourceUnit], Field(max_length=4096)],
+    units: Annotated[Sequence[InspectedUnit], Field(max_length=4096)],
 ) -> WorkspaceAstGraph:
     """Build a deterministic import, call, and topological-layer graph across ``units``."""
     outgoing, incoming = _build_import_edges(units)
@@ -398,14 +528,16 @@ def build_workspace_ast_graph(
             for sym in unit_syms
             if "." not in sym.qualname and not sym.qualname.startswith("_")
         )
-        mod_key = unit.module_name
+        g_key = _unit_graph_key(unit)
+        dep_names = sorted({_strip_lang_prefix(k)[:256] for k in outgoing.get(g_key, set())})
+        rev_names = sorted({_strip_lang_prefix(k)[:256] for k in incoming.get(g_key, set())})
         module_entries.append(
             ModuleGraphEntry(
                 file_path=unit.file_path,
-                module_name=mod_key,
-                imports=tuple(sorted(outgoing.get(mod_key, set())))[:256],
-                imported_by=tuple(sorted(incoming.get(mod_key, set())))[:256],
-                topological_layer=layers.get(mod_key, 0),
+                module_name=unit.module_name,
+                imports=tuple(dep_names)[:256],
+                imported_by=tuple(rev_names)[:256],
+                topological_layer=layers.get(g_key, 0),
                 public_symbols=pub_names[:512],
             )
         )
@@ -417,7 +549,7 @@ def build_workspace_ast_graph(
     )
 
 
-def _format_line_window(unit: SourceUnit, entry: SymbolGraphEntry) -> str:
+def _format_line_window(unit: InspectedUnit, entry: SymbolGraphEntry) -> str:
     src_lines = unit.source.splitlines()
     lo = max(1, entry.start_line)
     hi = min(len(src_lines), entry.end_line, lo + _MAX_SLICE_LINES - 1)
@@ -427,12 +559,12 @@ def _format_line_window(unit: SourceUnit, entry: SymbolGraphEntry) -> str:
 
 @jezz_callable
 def extract_symbol_source_slice(
-    units: Annotated[Sequence[SourceUnit], Field(max_length=4096)],
+    units: Annotated[Sequence[InspectedUnit], Field(max_length=4096)],
     symbol_query: IdentifierStr,
     *,
     file_path: IdentifierStr | None = None,
 ) -> SourceCodeText:
-    """Extract the exact AST source lines for ``symbol_query`` without loading full files."""
+    """Extract the exact AST/CST source lines for ``symbol_query`` without loading full files."""
     filtered_units = (
         tuple(u for u in units if u.file_path == file_path) if file_path is not None else units
     )

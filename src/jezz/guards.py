@@ -55,7 +55,7 @@ def _coerce_json_list_to_tuple(value: object) -> object:
 
 
 def _coerce_json_list_to_frozenset(value: object) -> object:
-    return frozenset(value) if isinstance(value, list) else value
+    return frozenset(value) if isinstance(value, list | set) else value
 
 
 WIRE_TUPLE_VALIDATOR: Final[BeforeValidator] = BeforeValidator(_coerce_json_list_to_tuple)

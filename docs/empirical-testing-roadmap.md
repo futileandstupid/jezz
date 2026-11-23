@@ -1,6 +1,6 @@
 # Empirical Validation & Longitudinal Testing Roadmap
 
-With Pillars 1–4 implemented, self-audited, and passing (`jezz.behaviors`, `jezz.codes`, `jezz.methodology`, `jezz.agents`), this roadmap tracks seven progressive empirical validation and architectural hardening stages evaluating `jezz` against brownfield Python repositories, live single- and multi-mandate LLM workflows, industry "Spec-Driven Development" ("SDD") baselines, full $F_8 = 21$ runtime closure, and cross-provider prompt-caching compression.
+With Pillars 1–4 implemented, self-audited, and passing (`jezz.behaviors`, `jezz.codes`, `jezz.methodology`, `jezz.agents`), this roadmap tracks eight progressive empirical validation and architectural hardening stages evaluating `jezz` against brownfield Python and polyglot (TypeScript, Rust, Go) repositories, live single- and multi-mandate LLM workflows, industry "Spec-Driven Development" ("SDD") baselines, full $F_8 = 21$ runtime closure, and cross-provider prompt-caching compression.
 
 ---
 
@@ -73,3 +73,11 @@ With Pillars 1–4 implemented, self-audited, and passing (`jezz.behaviors`, `je
 **Goal:** Compress `PCE`'s statutory prompt overhead via unified cross-provider prompt caching (`PromptCacheMode.AUTO` enabled by default) and establish continuous multi-provider wire/schema compatibility and matrix benchmarking across Google Gemini, Anthropic Claude, OpenAI (Chat & Responses), and OpenRouter.
 
 - **Report & Verification:** [track-7-prompt-caching-and-providers.md](track-7-prompt-caching-and-providers.md) — Canonicalized static `InstructionPart` prefixes (`JBC_STATUTORY_BRIEF`, `JBC_CANONICAL_EXEMPLAR`) across all `4` `JBC` construction specialists (and symmetric `SDD_CONSTITUTION_MD` across all `4` Control SDD stages), partitioned shared `Mandate + Snapshots` prefixes via `CachePoint` with provider-aware `normalize_prompt_for_model` coalescing on implicit-prefix models, verified **`448 / 448` offline cross-provider wire probes** (`16` agents $\times$ `7` provider models $\times$ `4` cache modes), and executed **`10` live Gemini workspace builds (`Waves 7A & 7B`)** proving **`68.7%–72.5%` `PCE` cache hit ratios** (`-61.8%` to `-65.2%` effective billed-input compression, vs. **`0.0%`** cache hits on open-loop Control SDD) with `100%` post-calibration `JBC` v1.2 occupancy and oracle survival.
+
+---
+
+## Track 8 — Polyglot `JBC` Inspector (`Python`, `TypeScript`, `Rust`, & `Go`) — *Completed*
+
+**Goal:** Generalize `JBC` Edition `1.2` static inspection, `WorkspaceAstGraph`, ecosystem manifest grounding, CLI/MCP/Stop-hook Differential Occupancy Ratchets, and `PCE` `EngineeringDossier` seal auditing across **Python (`.py`), TypeScript (`.ts`, `.tsx`), Rust (`.rs`), and Go (`.go`)** via a hexagonal `LanguageAdapterPort` and official C-extension `tree-sitter` grammars, validated on a 4-language `PCE` crucible and real-world brownfield repositories.
+
+- **Report & Calibrations:** [track-8-polyglot-inspector.md](track-8-polyglot-inspector.md) — Implemented `PolyglotUnit` / `InspectedUnit`, `package.json` (monorepo `packages/*`/`apps/*` + `@types/*`), `Cargo.toml` (`[workspace.members]`), and `go.mod` manifest loaders (`JBC-VRF-003`), universal CST complexity/`LCOM4`/Tarjan SCC evaluators, and idiomatic TypeScript/Rust/Go hazard scanners; verified `OCCUPANCY_SEALED` on a 4-language `PCE` crucible (`tests/test_track8_polyglot_inspector.py`); and audited **6 open-source repositories (`colinhacks/zod`, `honojs/hono`, `BurntSushi/ripgrep`, `serde-rs/json`, `go-chi/chi`, `spf13/cobra` — `1,110` units / `300,067` LOC / `15,936` AST/CST symbols)** in `62.95s` (`0` crashes, `0` CST parse errors, `6,926` calibrated violations after Calibrations `8A–8D`).

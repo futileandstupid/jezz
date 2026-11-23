@@ -48,7 +48,6 @@ from jezz.cli_interactive import (
     register_interactive_workflow_flags,
     resolve_workflow_interaction_hooks,
 )
-from jezz.codes.ast_utils import SourceUnit
 from jezz.codes.discovery import (
     build_workspace_inspector,
     discover_workspace_units,
@@ -57,6 +56,7 @@ from jezz.codes.discovery import (
 )
 from jezz.codes.inspector import BuildingInspector
 from jezz.codes.permits import CodePermit
+from jezz.codes.polyglot_ir import InspectedUnit, SupportedLanguage
 from jezz.codes.ratchet import (
     DiffBaseMode,
     DifferentialScope,
@@ -187,14 +187,16 @@ def _load_optional_permit(permit_path: Path | None) -> CodePermit | None:
 def _require_units(
     repo_path: Path,
     raw_dirs: Sequence[str] | None,
-) -> tuple[Path, tuple[SourceUnit, ...]]:
-    return require_workspace_units(repo_path, tuple(raw_dirs or ()))
+    raw_languages: Sequence[str] | None = None,
+) -> tuple[Path, tuple[InspectedUnit, ...]]:
+    lang_set = frozenset(SupportedLanguage(raw) for raw in raw_languages) if raw_languages else None
+    return require_workspace_units(repo_path, tuple(raw_dirs or ()), languages=lang_set)
 
 
 def _handle_differential_inspect(
     ns: argparse.Namespace,
     resolved_repo: Path,
-    units: Sequence[SourceUnit],
+    units: Sequence[InspectedUnit],
     inspector: BuildingInspector,
     permit: CodePermit | None,
     out_stream: io.TextIOBase,
@@ -224,7 +226,7 @@ def _handle_differential_inspect(
 
 
 def _handle_inspect(ns: argparse.Namespace, streams: CliIoStreams) -> CliExitCode:
-    resolved_repo, units = _require_units(ns.repo_path, ns.target_dirs)
+    resolved_repo, units = _require_units(ns.repo_path, ns.target_dirs, ns.languages)
     permit = _load_optional_permit(ns.permit)
     inspector = build_workspace_inspector(resolved_repo, units)
     if ns.changed_since is not None or bool(ns.staged):
@@ -754,9 +756,20 @@ def _register_benchmark_subparser(
 def _register_inspect_subparser(
     sub: argparse._SubParsersAction[argparse.ArgumentParser],
 ) -> None:
-    p_ins = sub.add_parser("inspect", help="Run JBC v1.2 Rough-In inspection on a repository.")
+    p_ins = sub.add_parser(
+        "inspect",
+        help="Run polyglot JBC v1.2 Rough-In inspection (.py, .ts, .tsx, .rs, .go).",
+    )
     p_ins.add_argument("repo_path", type=Path, help="Target repository root directory.")
     p_ins.add_argument("--target-dir", dest="target_dirs", action="append", default=None)
+    p_ins.add_argument(
+        "--language",
+        dest="languages",
+        action="append",
+        choices=tuple(lang.value for lang in SupportedLanguage),
+        default=None,
+        help="Restrict inspection to specific language(s) (repeatable).",
+    )
     p_ins.add_argument("--permit", type=Path, default=None, help="Optional CodePermit JSON file.")
     diff_grp = p_ins.add_mutually_exclusive_group()
     diff_grp.add_argument(
@@ -770,7 +783,7 @@ def _register_inspect_subparser(
         dest="staged",
         action="store_true",
         default=False,
-        help="Ratchet only Git-staged Python files in the index.",
+        help="Ratchet only Git-staged source files in the index.",
     )
     p_ins.add_argument(
         "--as-of",

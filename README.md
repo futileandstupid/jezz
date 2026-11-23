@@ -7,7 +7,7 @@
 1. **[Pillar 1 — Complete Agent Behavior Basis (`jezz.behaviors`)](docs/pillar-1-behavior-basis.md):**
    An exhaustive taxonomy of atomic coding-agent behaviors with Fibonacci cardinality ($F_8 = 21$, `BHV-01`..`BHV-21`), local state-machine transition legality, and Kildall monotone dataflow verification.
 2. **[Pillar 2 — Enforceable Software Building Codes (`jezz.codes`)](docs/pillar-2-building-codes.md):**
-   The **Jezz Software Building Code (`JBC` Edition 1.2)**—31 machine-checkable provisions across 6 Articles (`DBC`, `FLT`, `SEC`, `COG`, `OBS`, `VRF`), enforced via `CodePermit`, `CodeVariance`, Rough-In & Final `BuildingInspector` gates, and SHA-256 `CertificateOfOccupancy` seals.
+   The **Jezz Software Building Code (`JBC` Edition 1.2)**—31 machine-checkable provisions across 6 Articles (`DBC`, `FLT`, `SEC`, `COG`, `OBS`, `VRF`), enforced across **Python (`.py`), TypeScript (`.ts`/`.tsx`), Rust (`.rs`), and Go (`.go`)** via `LanguageAdapterPort`, ecosystem manifest grounding (`pyproject.toml`, `package.json`, `Cargo.toml`, `go.mod`), `CodePermit`, `CodeVariance`, Rough-In & Final `BuildingInspector` gates, and SHA-256 `CertificateOfOccupancy` seals.
 3. **Pillar 3 — SDD Forensic Teardown & Permit-and-Contract Engineering (`jezz.methodology`):**
    - **[Pillar 3A — Forensic Teardown of Industry "SDD"](docs/pillar-3a-sdd-teardown.md):** Primary-source critique of GitHub `spec-kit`, Fission `OpenSpec`, and AWS Kiro.
    - **[Pillar 3B — Permit-and-Contract Engineering (`PCE`)](docs/pillar-3b-pce-methodology.md):** A 5-phase, anti-Agile, anti-theatre engineering process (`Mandate` $\to$ `Permit` $\to$ `Contract` $\to$ `Construction` $\to$ `Occupancy`) audited deterministically by `audit_pce_dossier`.
@@ -22,15 +22,16 @@
 - **[Track 5 — Multi-Mandate Longitudinal Crucible & `JBC` Edition `1.2` Report](docs/track-5-multi-mandate-crucible.md):** 4-mandate longitudinal build of `jezz-crucible-ledger` (`11` units / `2,693` LOC across domain algebra, parameterized savepoint SQLite store, 2-wave topological DAG escrow + SHA-256 reconciliation, and brownfield CLI renovation under live `jezz hook stop` gates), 8 runtime/introspection calibrations, and `JBC-SEC-006` dynamic path anchoring.
 - **[Track 6 — Full $F_8 = 21$ Behavior Runtime Closure & Persistent Memory](docs/track-6-full-basis-runtime.md):** Complete `21 / 21` (`100%`) `AtomicBehaviorGraphNode` runtime coverage (`InspectEnvNode`, `ConsultNode`, `CurateMemoryNode`, `ProvisionNode`), rollback-safe `ProvisionPort` (`uv add`) + `BuildingInspector` manifest reload, symmetric `12`-slot specialist routing, and cross-mandate `.jezz/memory.json` continuity.
 - **[Track 7 — Token Cost Compression & Cross-Provider Generalizability](docs/track-7-prompt-caching-and-providers.md):** Enabled-by-default cross-provider prompt caching (`PromptCacheMode`, static `InstructionPart` canonicalization, provider-aware `CachePoint` slice partitioning), `448`-probe offline wire compatibility across Google/Anthropic/OpenAI/OpenRouter, repeatable `jezz benchmark --suite` matrix evaluation, and live Gemini Waves 7A–7B (`10` workspace builds) achieving `68.7%–72.5%` `PCE` cache hit ratios (`-61.8%` to `-65.2%` effective billed-input compression vs. `0.0%` on open-loop SDD).
+- **[Track 8 — Polyglot `JBC` Inspector & Six-Repository Field Trial](docs/track-8-polyglot-inspector.md):** Hexagonal `LanguageAdapterPort` + official `tree-sitter` CST backends extending `JBC` Edition `1.2`, `WorkspaceAstGraph`, CLI/MCP/Stop-hook ratchets, and `PCE` dossier seals across Python (`.py`), TypeScript (`.ts`/`.tsx`), Rust (`.rs`), and Go (`.go`), validated on a 4-language `PCE` crucible and `6` open-source repositories (`zod`, `hono`, `ripgrep`, `serde_json`, `chi`, `cobra` — `1,110` units / `300,067` LOC, `0` crashes).
 
 ## CLI Usage
 
 ```bash
-# Run JBC v1.2 Rough-In inspection on any Python repository (exit 0 = APPROVED, 1 = RED_TAG)
-uv run jezz inspect <repo_path> [--permit permit.json] [--as-of YYYY-MM-DD] [--format markdown|json]
+# Run polyglot JBC v1.2 Rough-In inspection (.py, .ts, .tsx, .rs, .go; exit 0 = APPROVED, 1 = RED_TAG)
+uv run jezz inspect <repo_path> [--language python|typescript|rust|go] [--permit permit.json] [--as-of YYYY-MM-DD] [--format markdown|json]
 
-# Differential Occupancy Ratchet: gate only Git-modified or staged files (plus whole-repo import cycles)
-uv run jezz inspect <repo_path> (--changed-since origin/main | --staged) [--permit permit.json]
+# Differential Occupancy Ratchet: gate only Git-modified or staged source files (plus whole-repo import cycles)
+uv run jezz inspect <repo_path> (--changed-since origin/main | --staged) [--language ...] [--permit permit.json]
 
 # Audit a 5-phase PCE EngineeringDossier against compiled workspace symbols and SHA-256 digest
 uv run jezz audit <dossier.json> [--repo <repo_path>] [--format markdown|json]
@@ -56,10 +57,10 @@ uv run jezz hook stop [--root <repo_path>] [--max-continuations 3] [--require-ma
 
 External interactive coding agents (Antigravity, Claude Code, Cursor, Codex, JetBrains AI) can mount `jezz` as a zero-mutation, zero-shell `stdio` MCP server (`src/jezz/mcp_server.py`), exposing 8 structured tools jailed inside `--root` via `ContainedPath` (`JBC-SEC-005`):
 
-- `jbc_preview_source`: Pre-write in-memory Rough-In inspection of an unsaved Python buffer overlaid onto the workspace module graph (catching both per-unit violations and cross-module `JBC-COG-003` circular imports / `_private` leaks before touching disk).
-- `jbc_inspect_differential`: Git-aware Differential Occupancy Ratchet (`--changed-since`, defaulting to `HEAD`, or `staged=True`).
-- `jbc_inspect_workspace`: Full repository `JBC` Edition 1.2 Rough-In inspection with `CodePermit` and sunset `as_of` support.
-- `jbc_query_ast_graph`: Deterministic workspace AST import/topological-layer map, cross-module symbol call-site lookup (`caller_of`), and exact AST line-slice extraction (`symbol_query`).
+- `jbc_preview_source`: Pre-write in-memory Rough-In inspection of an unsaved `.py`, `.ts`, `.tsx`, `.rs`, or `.go` buffer overlaid onto the workspace module graph (catching both per-unit violations and cross-module `JBC-COG-003` circular imports / `_private` / `/internal/` leaks before touching disk).
+- `jbc_inspect_differential`: Git-aware polyglot Differential Occupancy Ratchet (`--changed-since`, defaulting to `HEAD`, or `staged=True`).
+- `jbc_inspect_workspace`: Full repository `JBC` Edition 1.2 Rough-In inspection across `.py`, `.ts`, `.tsx`, `.rs`, and `.go` units with `CodePermit` and sunset `as_of` support.
+- `jbc_query_ast_graph`: Deterministic polyglot AST/CST import/topological-layer map, cross-module symbol call-site lookup (`caller_of`), and exact line-slice extraction (`symbol_query`).
 - `jbc_list_codes` / `jbc_get_code`: On-demand statutory catalog and verbatim ISO/IEEE/CWE/CERT lineage lookup across all 31 `JBC` provisions.
 - `jbc_verify_behavior_graph`: Pillar 1 `BehaviorGraph` transition-matrix and Kildall monotone dataflow verifier.
 - `jbc_audit_dossier`: Pillar 3 `EngineeringDossier` 5-phase Permit-and-Contract Engineering (`PCE`) auditor (accepting `dossier_path` or fileless `dossier_json`).
