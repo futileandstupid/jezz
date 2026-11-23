@@ -15,6 +15,7 @@ from jezz.guards import (
     BoundedText,
     ColumnOffset,
     IdentifierStr,
+    InstanceGuard,
     LineNumber,
     LoopBudget,
     RecursionBudget,
@@ -82,6 +83,9 @@ class SourceUnit:
     is_test_file: bool
     callables: tuple[CallableContext, ...]
     classes: tuple[ast.ClassDef, ...]
+
+
+type GuardedSourceUnit = Annotated[SourceUnit, InstanceGuard(SourceUnit)]
 
 
 @dataclass
@@ -292,7 +296,7 @@ def parse_source_unit(
     *,
     module_name: BoundedText = "",
     is_test_file: bool | None = None,
-) -> SourceUnit:
+) -> GuardedSourceUnit:
     """Parse ``source`` into an immutable ``SourceUnit`` with AST and comment tokens."""
     tree = ast.parse(source, filename=file_path)
     collector = _UnitCollector()

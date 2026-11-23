@@ -24,6 +24,7 @@ from jezz.codes.complexity import (
 )
 from jezz.codes.polyglot_ir import (
     EcosystemManifest,
+    GuardedPolyglotUnit,
     PolyglotCallable,
     PolyglotImport,
     PolyglotManifest,
@@ -653,7 +654,7 @@ _POLYGLOT_RULE_DISPATCH: Final[Mapping[str, _UnitRuleFn]] = MappingProxyType(
 @jezz_callable
 def check_polyglot_unit_code(
     code_id: IdentifierStr,
-    unit: PolyglotUnit,
+    unit: GuardedPolyglotUnit,
     manifest: PolyglotManifest,
     *,
     local_roots: Annotated[AbstractSet[IdentifierStr], WIRE_FROZENSET_VALIDATOR] = frozenset(),
@@ -847,7 +848,7 @@ def _scan_language_cog_003(
 
 @jezz_callable
 def check_polyglot_cog_003(
-    units: Annotated[Sequence[PolyglotUnit], Field(max_length=100_000)],
+    units: Annotated[Sequence[GuardedPolyglotUnit], Field(max_length=100_000)],
 ) -> list[RawDiscrepancy]:
     """Run whole-graph JBC-COG-003 cycle, wildcard, and private-import checks over ``units``."""
     return check_polyglot_cog_003_for_paths(
@@ -858,7 +859,7 @@ def check_polyglot_cog_003(
 
 @jezz_callable
 def check_polyglot_cog_003_for_paths(
-    units: Annotated[Sequence[PolyglotUnit], Field(max_length=100_000)],
+    units: Annotated[Sequence[GuardedPolyglotUnit], Field(max_length=100_000)],
     target_paths: Annotated[AbstractSet[IdentifierStr], WIRE_FROZENSET_VALIDATOR],
 ) -> list[RawDiscrepancy]:
     """Run whole-graph JBC-COG-003 per language and return findings touching ``target_paths``."""

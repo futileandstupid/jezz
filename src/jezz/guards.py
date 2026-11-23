@@ -94,19 +94,26 @@ def jezz_generator[**P, R](func: Callable[P, R]) -> Callable[P, R]:
     return _build_lazy_breaker(func, check_return=False)
 
 
+type _TypeOrTypeTuple = (
+    type[object] | Annotated[tuple[type[object], ...], Field(min_length=1, max_length=16)]
+)
+
+
 class InstanceGuard:
     """Pydantic annotation enforcing runtime isinstance(v, cls) without dataclass recursion."""
 
     @jezz_callable
-    def __init__(self, expected_type: type[object]) -> None:
-        self._expected_type = expected_type
+    def __init__(self, expected_type: _TypeOrTypeTuple) -> None:
+        self._expected_type: _TypeOrTypeTuple = expected_type
 
     def _validate_instance(self, value: object) -> object:
         if not isinstance(value, self._expected_type):
-            msg = (
-                f"Expected instance of '{self._expected_type.__name__}', "
-                f"got '{type(value).__name__}'."
+            expected_label = (
+                " | ".join(cls.__name__ for cls in self._expected_type)
+                if isinstance(self._expected_type, tuple)
+                else self._expected_type.__name__
             )
+            msg = f"Expected instance of '{expected_label}', got '{type(value).__name__}'."
             raise TypeError(msg)
         return value
 

@@ -6,6 +6,7 @@ from typing import Final
 
 from jezz.codes.ast_utils import (
     CallableContext,
+    GuardedSourceUnit,
     RawDiscrepancy,
     SourceSpan,
     SourceUnit,
@@ -170,7 +171,7 @@ def _is_path_join_div(node: ast.BinOp) -> bool:
 
 
 @jezz_callable
-def check_dbc_001(unit: SourceUnit) -> list[RawDiscrepancy]:
+def check_dbc_001(unit: GuardedSourceUnit) -> list[RawDiscrepancy]:
     """Inspect ``unit`` for JBC-DBC-001 (preconditions, postconditions, & validators)."""
     discrepancies: list[RawDiscrepancy] = []
     for ctx in unit.callables:
@@ -284,7 +285,7 @@ def _node_type_annotation(node: ast.AST) -> ast.expr | None:
 
 
 @jezz_callable
-def check_dbc_002(unit: SourceUnit) -> list[RawDiscrepancy]:
+def check_dbc_002(unit: GuardedSourceUnit) -> list[RawDiscrepancy]:
     """Inspect ``unit`` for JBC-DBC-002 (100% callable annotations & zero Any erasure)."""
     discrepancies: list[RawDiscrepancy] = []
     for ctx in unit.callables:
@@ -380,7 +381,7 @@ def _is_side_effect_visitor_method(
 
 
 @jezz_callable
-def check_dbc_003(unit: SourceUnit) -> list[RawDiscrepancy]:
+def check_dbc_003(unit: GuardedSourceUnit) -> list[RawDiscrepancy]:
     """Inspect ``unit`` for JBC-DBC-003 (total return paths & no mixed bare/value returns)."""
     discrepancies: list[RawDiscrepancy] = []
     for ctx in unit.callables:
@@ -460,7 +461,7 @@ def _requires_public_breaker(ctx: CallableContext, unit_path: str) -> bool:
 
 
 @jezz_callable
-def check_dbc_004(unit: SourceUnit) -> list[RawDiscrepancy]:
+def check_dbc_004(unit: GuardedSourceUnit) -> list[RawDiscrepancy]:
     """Inspect ``unit`` for JBC-DBC-004 (Option A @jezz_callable signature & return breakers)."""
     if unit.is_test_file:
         return []
@@ -615,7 +616,7 @@ def _check_public_param_bounds(unit: SourceUnit, ctx: CallableContext) -> list[R
 
 
 @jezz_callable
-def check_dbc_005(unit: SourceUnit) -> list[RawDiscrepancy]:
+def check_dbc_005(unit: GuardedSourceUnit) -> list[RawDiscrepancy]:
     """Inspect ``unit`` for JBC-DBC-005 (bounded domain scalars, collections, & TypeAliases)."""
     if unit.is_test_file:
         return []

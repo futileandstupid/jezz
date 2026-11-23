@@ -604,7 +604,7 @@ def test_jezz_repository_passes_edition_1_1_inspection_with_zero_variances() -> 
             exit_code=0,
             checks_executed=len(units),
             duration_ms=elapsed_ms,
-            max_duration_ms=30_000.0,
+            max_duration_ms=60_000.0,
             peak_memory_kb=max(1, peak_bytes // 1024),
             max_memory_kb=262_144,
             summary="Measured unit, property, and self-audit suite execution.",

@@ -7,6 +7,7 @@ from typing import Final
 
 from jezz.codes.ast_utils import (
     CallableContext,
+    GuardedSourceUnit,
     RawDiscrepancy,
     SourceSpan,
     SourceUnit,
@@ -112,7 +113,7 @@ def _inspect_except_handler(
 
 
 @jezz_callable
-def check_flt_001(unit: SourceUnit) -> list[RawDiscrepancy]:
+def check_flt_001(unit: GuardedSourceUnit) -> list[RawDiscrepancy]:
     """Inspect ``unit`` for JBC-FLT-001 (prohibition of silent fault suppression)."""
     discrepancies: list[RawDiscrepancy] = []
     for node in ast.walk(unit.tree):
@@ -210,7 +211,7 @@ def _inspect_handler_chaining(
 
 
 @jezz_callable
-def check_flt_002(unit: SourceUnit) -> list[RawDiscrepancy]:
+def check_flt_002(unit: GuardedSourceUnit) -> list[RawDiscrepancy]:
     """Inspect ``unit`` for JBC-FLT-002 (causal exception chaining & diagnostic messages)."""
     abstract_ids = {
         id(sub)
@@ -282,7 +283,7 @@ def _check_retry_decorators(unit: SourceUnit, ctx: CallableContext) -> list[RawD
 
 
 @jezz_callable
-def check_flt_003(unit: SourceUnit) -> list[RawDiscrepancy]:
+def check_flt_003(unit: GuardedSourceUnit) -> list[RawDiscrepancy]:
     """Inspect ``unit`` for JBC-FLT-003 (managed handles, sync timeouts, & bounded retries)."""
     discrepancies: list[RawDiscrepancy] = []
     managed_ids = _managed_call_ids(unit.tree)
@@ -399,7 +400,7 @@ def _node_in_call_cycle(start: str, graph: Mapping[str, set[str]]) -> bool:
 
 
 @jezz_callable
-def check_flt_004(unit: SourceUnit) -> list[RawDiscrepancy]:
+def check_flt_004(unit: GuardedSourceUnit) -> list[RawDiscrepancy]:
     """Inspect ``unit`` for JBC-FLT-004 (LoopBudget on while & fuel bounds on recursion)."""
     discrepancies: list[RawDiscrepancy] = []
     for node in ast.walk(unit.tree):
@@ -503,7 +504,7 @@ def _is_unstructured_spawn_call(call: ast.Call, tg_vars: set[str]) -> bool:
 
 
 @jezz_callable
-def check_flt_005(unit: SourceUnit) -> list[RawDiscrepancy]:
+def check_flt_005(unit: GuardedSourceUnit) -> list[RawDiscrepancy]:
     """Inspect ``unit`` for JBC-FLT-005 (structured concurrency & async wall-clock deadlines)."""
     discrepancies: list[RawDiscrepancy] = []
     tg_vars = _task_group_var_names(unit.tree)
@@ -573,7 +574,7 @@ def _is_unbounded_stream_slurp(call: ast.Call) -> bool:
 
 
 @jezz_callable
-def check_flt_006(unit: SourceUnit) -> list[RawDiscrepancy]:
+def check_flt_006(unit: GuardedSourceUnit) -> list[RawDiscrepancy]:
     """Inspect ``unit`` for JBC-FLT-006 (bounded caches & capped stream/file/DB reads)."""
     discrepancies: list[RawDiscrepancy] = []
     for ctx in unit.callables:

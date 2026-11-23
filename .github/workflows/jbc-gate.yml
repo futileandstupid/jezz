@@ -1,4 +1,4 @@
-name: JBC v1.1 Statutory Gate
+name: JBC v1.2 Statutory Gate
 
 on:
   push:
@@ -17,17 +17,17 @@ concurrency:
 
 jobs:
   jbc-occupancy-gate:
-    name: Enforce JBC Edition 1.1 & Verification Suite
+    name: Enforce JBC Edition 1.2 & Verification Suite
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
       - name: Checkout repository with full Git graph
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           fetch-depth: 0
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v5
+        uses: astral-sh/setup-uv@v10.4.0
         with:
           enable-cache: true
 
@@ -54,5 +54,5 @@ jobs:
           BASE_REF: origin/${{ github.base_ref }}
         run: uv run jezz inspect . --changed-since "$BASE_REF"
 
-      - name: Gate 5 — Full-Repository JBC v1.1 Rough-In Inspection
+      - name: Gate 5 — Full-Repository JBC v1.2 Rough-In Inspection
         run: uv run jezz inspect .

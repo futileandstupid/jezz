@@ -6,6 +6,7 @@ from typing import Final
 
 from jezz.codes.ast_utils import (
     CallableContext,
+    GuardedSourceUnit,
     RawDiscrepancy,
     SourceSpan,
     SourceUnit,
@@ -157,7 +158,7 @@ def _inspect_sec_001_call(unit: SourceUnit, call: ast.Call) -> RawDiscrepancy | 
 
 
 @jezz_callable
-def check_sec_001(unit: SourceUnit) -> list[RawDiscrepancy]:
+def check_sec_001(unit: GuardedSourceUnit) -> list[RawDiscrepancy]:
     """Inspect ``unit`` for JBC-SEC-001 (injection immunity & eval/deserialization ban)."""
     discrepancies: list[RawDiscrepancy] = []
     for node in ast.walk(unit.tree):
@@ -351,7 +352,7 @@ def _check_pydantic_sensitive_fields(unit: SourceUnit) -> list[RawDiscrepancy]:
 
 
 @jezz_callable
-def check_sec_002(unit: SourceUnit) -> list[RawDiscrepancy]:
+def check_sec_002(unit: GuardedSourceUnit) -> list[RawDiscrepancy]:
     """Inspect ``unit`` for JBC-SEC-002 (secret containment & redaction)."""
     return [
         *_check_hardcoded_credentials(unit),
@@ -402,7 +403,7 @@ def _model_is_strictly_closed(cls_node: ast.ClassDef) -> bool:
 
 
 @jezz_callable
-def check_sec_003(unit: SourceUnit) -> list[RawDiscrepancy]:
+def check_sec_003(unit: GuardedSourceUnit) -> list[RawDiscrepancy]:
     """Inspect ``unit`` for JBC-SEC-003 (extra='forbid', strict=True, allow_inf_nan=False)."""
     discrepancies: list[RawDiscrepancy] = []
     for cls_node in unit.classes:
@@ -487,7 +488,7 @@ def _check_public_bag_signatures(unit: SourceUnit, ctx: CallableContext) -> list
 
 
 @jezz_callable
-def check_sec_004(unit: SourceUnit) -> list[RawDiscrepancy]:
+def check_sec_004(unit: GuardedSourceUnit) -> list[RawDiscrepancy]:
     """Inspect ``unit`` for JBC-SEC-004 (typed wire ingress & explicit egress projection)."""
     if unit.is_test_file:
         return []
@@ -514,7 +515,7 @@ def check_sec_004(unit: SourceUnit) -> list[RawDiscrepancy]:
 
 
 @jezz_callable
-def check_sec_005(unit: SourceUnit) -> list[RawDiscrepancy]:
+def check_sec_005(unit: GuardedSourceUnit) -> list[RawDiscrepancy]:
     """Inspect ``unit`` for JBC-SEC-005 (taint separation & canonicalized path/URL sinks)."""
     if unit.is_test_file:
         return []
@@ -617,7 +618,7 @@ def _inspect_sec_006_call(
 
 
 @jezz_callable
-def check_sec_006(unit: SourceUnit) -> list[RawDiscrepancy]:
+def check_sec_006(unit: GuardedSourceUnit) -> list[RawDiscrepancy]:
     """Inspect ``unit`` for JBC-SEC-006 (dynamic path anchoring & hardcoded path prohibition)."""
     skip_ids = _docstring_constant_ids(unit.tree)
     discrepancies: list[RawDiscrepancy] = []
@@ -652,7 +653,7 @@ def check_sec_006(unit: SourceUnit) -> list[RawDiscrepancy]:
 
 
 @jezz_callable
-def check_obs_001(unit: SourceUnit) -> list[RawDiscrepancy]:
+def check_obs_001(unit: GuardedSourceUnit) -> list[RawDiscrepancy]:
     """Inspect ``unit`` for JBC-OBS-001 (structured telemetry & debug trap ban)."""
     discrepancies: list[RawDiscrepancy] = []
     for node in ast.walk(unit.tree):
@@ -693,7 +694,7 @@ def _is_mutable_default_expr(expr: ast.expr | None) -> bool:
 
 
 @jezz_callable
-def check_obs_002(unit: SourceUnit) -> list[RawDiscrepancy]:
+def check_obs_002(unit: GuardedSourceUnit) -> list[RawDiscrepancy]:
     """Inspect ``unit`` for JBC-OBS-002 (no mutable default args & no global statement)."""
     discrepancies: list[RawDiscrepancy] = []
     for ctx in unit.callables:
@@ -746,7 +747,7 @@ def _is_os_environ_mutation(node: ast.AST) -> bool:
 
 
 @jezz_callable
-def check_obs_003(unit: SourceUnit) -> list[RawDiscrepancy]:
+def check_obs_003(unit: GuardedSourceUnit) -> list[RawDiscrepancy]:
     """Inspect ``unit`` for JBC-OBS-003 (controlled nondeterminism & env isolation)."""
     discrepancies: list[RawDiscrepancy] = []
     for node in ast.walk(unit.tree):

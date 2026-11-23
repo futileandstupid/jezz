@@ -9,9 +9,9 @@ from typing import Final
 
 from jezz.codes.ast_utils import (
     CallableContext,
+    GuardedSourceUnit,
     RawDiscrepancy,
     SourceSpan,
-    SourceUnit,
     dotted_expr_name,
     is_abstract_or_overload,
     is_node_visitor_class,
@@ -62,7 +62,7 @@ def _callable_has_real_verification(ctx: CallableContext) -> bool:
 
 
 @jezz_callable
-def check_vrf_001(unit: SourceUnit) -> list[RawDiscrepancy]:
+def check_vrf_001(unit: GuardedSourceUnit) -> list[RawDiscrepancy]:
     """Inspect test ``unit`` for JBC-VRF-001 (anti-theatre & non-tautological assertions)."""
     if not unit.is_test_file:
         return []
@@ -114,7 +114,7 @@ def _is_stub_body(stmts: Sequence[ast.stmt]) -> bool:
 
 
 @jezz_callable
-def check_vrf_002(unit: SourceUnit) -> list[RawDiscrepancy]:
+def check_vrf_002(unit: GuardedSourceUnit) -> list[RawDiscrepancy]:
     """Inspect ``unit`` for JBC-VRF-002 (no hollow stubs or deferred TODO/FIXME comments)."""
     discrepancies: list[RawDiscrepancy] = []
     if not unit.is_test_file:
@@ -169,7 +169,7 @@ def _iter_absolute_import_roots(tree: ast.Module) -> list[tuple[str, int, int]]:
 
 @jezz_callable
 def check_vrf_003(
-    unit: SourceUnit,
+    unit: GuardedSourceUnit,
     *,
     runtime_roots: AbstractSet[IdentifierStr],
     dev_roots: AbstractSet[IdentifierStr],
@@ -209,7 +209,7 @@ def check_vrf_003(
 
 
 @jezz_callable
-def check_vrf_004(unit: SourceUnit) -> list[RawDiscrepancy]:
+def check_vrf_004(unit: GuardedSourceUnit) -> list[RawDiscrepancy]:
     """Inspect ``unit`` for JBC-VRF-004 (unpermitted gate suppression comments & test skips)."""
     discrepancies: list[RawDiscrepancy] = []
     for comment in unit.comments:

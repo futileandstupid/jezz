@@ -10,7 +10,7 @@ from typing import Annotated, Final
 import tree_sitter as ts
 from pydantic import BaseModel, Field
 
-from jezz.codes.ast_utils import CommentToken, RawDiscrepancy, SourceUnit
+from jezz.codes.ast_utils import CommentToken, GuardedSourceUnit, RawDiscrepancy, SourceUnit
 from jezz.guards import (
     STRICT_FROZEN_CONFIG,
     WIRE_FROZENSET_VALIDATOR,
@@ -267,7 +267,32 @@ class PolyglotUnit:
     has_arithmetic_div: bool = False
 
 
-type InspectedUnit = SourceUnit | PolyglotUnit
+type GuardedPolyglotUnit = Annotated[PolyglotUnit, InstanceGuard(PolyglotUnit)]
+type InspectedUnit = Annotated[
+    SourceUnit | PolyglotUnit,
+    InstanceGuard((SourceUnit, PolyglotUnit)),
+]
+
+__all__ = [
+    "LANGUAGE_DISPLAY_NAMES",
+    "SUPPORTED_SOURCE_EXTENSIONS",
+    "EcosystemManifest",
+    "GuardedPolyglotUnit",
+    "GuardedSourceUnit",
+    "GuardedTsLanguage",
+    "GuardedTsNode",
+    "InspectedUnit",
+    "PolyglotCallable",
+    "PolyglotImport",
+    "PolyglotManifest",
+    "PolyglotParam",
+    "PolyglotTypeDecl",
+    "PolyglotUnit",
+    "SupportedLanguage",
+    "detect_language_for_path",
+    "is_supported_source_path",
+    "parse_cst_root",
+]
 
 
 def _first_syntax_error_node(root: ts.Node) -> ts.Node | None:

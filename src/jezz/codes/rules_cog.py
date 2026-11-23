@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from typing import Final
 
 from jezz.codes.ast_utils import (
+    GuardedSourceUnit,
     RawDiscrepancy,
     SourceSpan,
     SourceUnit,
@@ -33,7 +34,7 @@ _MAX_ELIF_BRANCHES: Final[int] = 1
 
 
 @jezz_callable
-def check_cog_001(unit: SourceUnit) -> list[RawDiscrepancy]:
+def check_cog_001(unit: GuardedSourceUnit) -> list[RawDiscrepancy]:
     """Inspect ``unit`` for JBC-COG-001 (Cognitive Complexity <= 15)."""
     discrepancies: list[RawDiscrepancy] = []
     for ctx in unit.callables:
@@ -63,7 +64,7 @@ def check_cog_001(unit: SourceUnit) -> list[RawDiscrepancy]:
 
 
 @jezz_callable
-def check_cog_002(unit: SourceUnit) -> list[RawDiscrepancy]:
+def check_cog_002(unit: GuardedSourceUnit) -> list[RawDiscrepancy]:
     """Inspect ``unit`` for JBC-COG-002 (nesting <= 4, parameters <= 6, statements <= 35)."""
     discrepancies: list[RawDiscrepancy] = []
     for ctx in unit.callables:
@@ -342,7 +343,7 @@ def _scan_cog_003_units(
 
 
 @jezz_callable
-def check_cog_003(units: Sequence[SourceUnit]) -> list[RawDiscrepancy]:
+def check_cog_003(units: Sequence[GuardedSourceUnit]) -> list[RawDiscrepancy]:
     """Inspect ``units`` for JBC-COG-003 (acyclic graph, no wildcards, no _private imports)."""
     discrepancies, units_by_mod, graph = _scan_cog_003_units(units)
     for cycle in _find_module_cycles(graph):
@@ -361,7 +362,7 @@ def check_cog_003(units: Sequence[SourceUnit]) -> list[RawDiscrepancy]:
 
 @jezz_callable
 def check_cog_003_for_paths(
-    units: Sequence[SourceUnit],
+    units: Sequence[GuardedSourceUnit],
     target_paths: AbstractSet[IdentifierStr],
 ) -> list[RawDiscrepancy]:
     """Run whole-graph JBC-COG-003 over ``units`` and filter findings touching ``target_paths``."""
@@ -420,7 +421,7 @@ def _is_mutable_dispatch_dict(stmt: ast.stmt) -> tuple[bool, int, int]:
 
 
 @jezz_callable
-def check_cog_004(unit: SourceUnit) -> list[RawDiscrepancy]:
+def check_cog_004(unit: GuardedSourceUnit) -> list[RawDiscrepancy]:
     """Inspect ``unit`` for JBC-COG-004 (dispatch tables, <=1 elif, no post-jump else)."""
     discrepancies: list[RawDiscrepancy] = []
     elif_child_ids = _collect_elif_child_ids(unit.tree)
@@ -548,7 +549,7 @@ def _evaluate_class_metrics(
 
 
 @jezz_callable
-def check_cog_005(unit: SourceUnit) -> list[RawDiscrepancy]:
+def check_cog_005(unit: GuardedSourceUnit) -> list[RawDiscrepancy]:
     """Inspect ``unit`` for JBC-COG-005 (LCOM4 == 1, role purity, & class panel capacity)."""
     discrepancies: list[RawDiscrepancy] = []
     for cls_node in unit.classes:
