@@ -9,8 +9,14 @@ from typing import Annotated, Final, Protocol, runtime_checkable
 import icontract
 from pydantic import Field
 from pydantic_ai import Agent, ModelRetry, RunContext, UsageLimits
+from pydantic_ai.messages import InstructionPart
 from pydantic_ai.models import Model
 
+from jezz.agents.caching import (
+    CachedUserPrompt,
+    normalize_prompt_for_model,
+    resolve_cache_model_settings,
+)
 from jezz.agents.memory import validate_curated_digest_invariants
 from jezz.agents.schemas import (
     AgentInvocationTelemetry,
@@ -509,7 +515,7 @@ def _validate_provision_output(
     return plan
 
 
-_JBC_CANONICAL_EXEMPLAR: Final[str] = (
+JBC_CANONICAL_EXEMPLAR: Final[str] = (
     "Canonical JBC v1.2 Idioms (copy exact jezz.guards signatures):\n"
     "```python\n"
     "from pathlib import Path\n"
@@ -552,7 +558,7 @@ _JBC_CANONICAL_EXEMPLAR: Final[str] = (
 )
 
 
-_JBC_STATUTORY_BRIEF: Final[str] = (
+JBC_STATUTORY_BRIEF: Final[str] = (
     "JBC v1.2 Statutory Requirements: "
     "(1) Every BaseModel must set model_config = STRICT_FROZEN_CONFIG (from jezz.guards) or "
     "ConfigDict(frozen=True, extra='forbid', strict=True, allow_inf_nan=False), and bound every "
@@ -797,15 +803,23 @@ def build_specify_agent(model: GuardedModel) -> GuardedAgent[ContractSpecificati
         retries=3,
         toolsets=(build_scoped_write_toolset(),),
         instructions=(
-            "Author Phase III data contracts (strict Pydantic BaseModels, StrEnums, and bounded "
-            "Annotated type aliases) in authorized non-test src/... contract file(s). Authorized "
-            "paths and existing file contents are already provided inline in the prompt—do NOT "
-            "call read/list tools on absent or already-inlined files. Never write tests/... files "
-            "and never emit unimplemented pass/.../NotImplementedError function stubs (concrete "
-            "implementation callables belong in Phase IV SYNTHESIZE). Include only symbols "
-            "defined in contract_patches inside declared_symbols. Draft the complete file in one "
-            "pass and call _tool_preview_rough_in once on the full candidate file before "
-            f"returning. {_JBC_STATUTORY_BRIEF}\n{_JBC_CANONICAL_EXEMPLAR}"
+            InstructionPart(content=JBC_STATUTORY_BRIEF, name="jbc_statutory_brief"),
+            InstructionPart(content=JBC_CANONICAL_EXEMPLAR, name="jbc_canonical_exemplar"),
+            InstructionPart(
+                content=(
+                    "Author Phase III data contracts (strict Pydantic BaseModels, StrEnums, and "
+                    "bounded Annotated type aliases) in authorized non-test src/... contract "
+                    "file(s). Authorized paths and existing file contents are already provided "
+                    "inline in the prompt—do NOT call read/list tools on absent or "
+                    "already-inlined files. Never write tests/... files and never emit "
+                    "unimplemented pass/.../NotImplementedError function stubs (concrete "
+                    "implementation callables belong in Phase IV SYNTHESIZE). Include only "
+                    "symbols defined in contract_patches inside declared_symbols. Draft the "
+                    "complete file in one pass and call _tool_preview_rough_in once on the full "
+                    "candidate file before returning."
+                ),
+                name="specialist_role",
+            ),
         ),
     )
     agent.output_validator(_validate_specify_output)
@@ -823,26 +837,33 @@ def build_instrument_agent(model: GuardedModel) -> GuardedAgent[InstrumentationS
         retries=3,
         toolsets=(build_scoped_write_toolset(),),
         instructions=(
-            "Use the inline 'Existing Authorized File Snapshots' directly (do NOT call read/list "
-            "tools on already-inlined or absent files) so imports and field names match Phase III "
-            "contracts exactly; mandated callable contract_symbols not yet present in Phase III "
-            "src/... snapshots will be synthesized in Phase IV—import them directly from their "
-            "target src/... module without searching the workspace. Author pytest and Hypothesis "
-            "(@given) falsification suites under "
-            "authorized tests/... file(s) defining every mandated invariant verification_symbol. "
-            "Every test and helper callable in tests/ must have 100% parameter and '-> None' "
-            "return annotations with zero Any, <= 6 parameters (when @given needs >6 values, use "
-            "'@given(st.data())' with 'data: st.DataObject' instead of >6 args or untyped "
-            "@st.composite), and <= 35 statements; name any delegated assertion helper "
-            "'_assert_*', '_verify_*', '_check_*', or '_expect_*' (JBC-VRF-001). Under mypy "
-            "--strict (strict_equality), assert StrEnum.MEMBER.value == 'literal' rather than "
-            "StrEnum.MEMBER == 'literal' ([comparison-overlap]). When testing "
-            "that invalid inputs or step-budget overruns raise an error, expect "
-            "(ValueError, TypeError, icontract.ViolationError, BudgetExceededError); never "
-            "combine @given with function-scoped fixtures like tmp_path, and guard any helper "
-            "while loop in tests/ with LoopBudget(max_steps=...). Preview each complete test file "
-            f"once via _tool_preview_rough_in before returning. {_JBC_STATUTORY_BRIEF}\n"
-            f"{_JBC_CANONICAL_EXEMPLAR}"
+            InstructionPart(content=JBC_STATUTORY_BRIEF, name="jbc_statutory_brief"),
+            InstructionPart(content=JBC_CANONICAL_EXEMPLAR, name="jbc_canonical_exemplar"),
+            InstructionPart(
+                content=(
+                    "Use the inline 'Existing Authorized File Snapshots' directly (do NOT call "
+                    "read/list tools on already-inlined or absent files) so imports and field "
+                    "names match Phase III contracts exactly; mandated callable contract_symbols "
+                    "not yet present in Phase III src/... snapshots will be synthesized in Phase "
+                    "IV—import them directly from their target src/... module without searching "
+                    "the workspace. Author pytest and Hypothesis (@given) falsification suites "
+                    "under authorized tests/... file(s) defining every mandated invariant "
+                    "verification_symbol. Every test and helper callable in tests/ must have "
+                    "100% parameter and '-> None' return annotations with zero Any, <= 6 "
+                    "parameters (when @given needs >6 values, use '@given(st.data())' with "
+                    "'data: st.DataObject' instead of >6 args or untyped @st.composite), and "
+                    "<= 35 statements; name any delegated assertion helper '_assert_*', "
+                    "'_verify_*', '_check_*', or '_expect_*' (JBC-VRF-001). Under mypy --strict "
+                    "(strict_equality), assert StrEnum.MEMBER.value == 'literal' rather than "
+                    "StrEnum.MEMBER == 'literal' ([comparison-overlap]). When testing that "
+                    "invalid inputs or step-budget overruns raise an error, expect (ValueError, "
+                    "TypeError, icontract.ViolationError, BudgetExceededError); never combine "
+                    "@given with function-scoped fixtures like tmp_path, and guard any helper "
+                    "while loop in tests/ with LoopBudget(max_steps=...). Preview each complete "
+                    "test file once via _tool_preview_rough_in before returning."
+                ),
+                name="specialist_role",
+            ),
         ),
     )
     agent.output_validator(_validate_instrument_output)
@@ -860,15 +881,22 @@ def build_synthesize_agent(model: GuardedModel) -> GuardedAgent[ConstructionPatc
         retries=3,
         toolsets=(build_scoped_write_toolset(),),
         instructions=(
-            "Use the inline 'Existing Authorized File Snapshots' directly (do NOT call read/list "
-            "tools on already-inlined or absent files) so imports, types, and postconditions "
-            "align with locked Phase III contracts and falsification suites. Emit complete "
-            "src/... implementation patches strictly within your authorized ModuleWriteScope "
-            "without modifying locked tests/... files or removing Phase III contract symbols; "
-            "keep helper functions that do not read 'self' at module level rather than as "
-            "stateless instance methods on classes (JBC-COG-005). Preview each complete file once "
-            f"via _tool_preview_rough_in before returning. {_JBC_STATUTORY_BRIEF}\n"
-            f"{_JBC_CANONICAL_EXEMPLAR}"
+            InstructionPart(content=JBC_STATUTORY_BRIEF, name="jbc_statutory_brief"),
+            InstructionPart(content=JBC_CANONICAL_EXEMPLAR, name="jbc_canonical_exemplar"),
+            InstructionPart(
+                content=(
+                    "Use the inline 'Existing Authorized File Snapshots' directly (do NOT call "
+                    "read/list tools on already-inlined or absent files) so imports, types, and "
+                    "postconditions align with locked Phase III contracts and falsification "
+                    "suites. Emit complete src/... implementation patches strictly within your "
+                    "authorized ModuleWriteScope without modifying locked tests/... files or "
+                    "removing Phase III contract symbols; keep helper functions that do not read "
+                    "'self' at module level rather than as stateless instance methods on classes "
+                    "(JBC-COG-005). Preview each complete file once via _tool_preview_rough_in "
+                    "before returning."
+                ),
+                name="specialist_role",
+            ),
         ),
     )
     agent.output_validator(_validate_synthesize_output)
@@ -886,17 +914,24 @@ def build_refactor_agent(model: GuardedModel) -> GuardedAgent[RefactorPatchBundl
         retries=3,
         toolsets=(build_scoped_write_toolset(),),
         instructions=(
-            "Renovate the existing non-test src/... file(s) shown in 'Existing Authorized File "
-            "Snapshots' so every file achieves zero JBC v1.2 violations while preserving public "
-            "symbol names, call signatures compatible with locked tests, and observable domain "
-            "semantics. Do NOT modify tests/... files or call read/list tools on already-inlined "
-            "files. Remediate every cited baseline RED_TAG finding (attach @jezz_callable, "
-            "STRICT_FROZEN_CONFIG, bounded jezz.guards / Annotated[..., Field(...)] types, "
-            "falsifiable @icontract.require/@icontract.ensure, LoopBudget on while loops, "
-            "MappingProxyType dispatch / <=1 elif, LCOM4 == 1 cohesion, narrow chained exceptions, "
-            "and ContainedPath filesystem containment). Preview each complete candidate file once "
-            f"via _tool_preview_rough_in before returning. {_JBC_STATUTORY_BRIEF}\n"
-            f"{_JBC_CANONICAL_EXEMPLAR}"
+            InstructionPart(content=JBC_STATUTORY_BRIEF, name="jbc_statutory_brief"),
+            InstructionPart(content=JBC_CANONICAL_EXEMPLAR, name="jbc_canonical_exemplar"),
+            InstructionPart(
+                content=(
+                    "Renovate the existing non-test src/... file(s) shown in 'Existing "
+                    "Authorized File Snapshots' so every file achieves zero JBC v1.2 violations "
+                    "while preserving public symbol names, call signatures compatible with locked "
+                    "tests, and observable domain semantics. Do NOT modify tests/... files or "
+                    "call read/list tools on already-inlined files. Remediate every cited "
+                    "baseline RED_TAG finding (attach @jezz_callable, STRICT_FROZEN_CONFIG, "
+                    "bounded jezz.guards / Annotated[..., Field(...)] types, falsifiable "
+                    "@icontract.require/@icontract.ensure, LoopBudget on while loops, "
+                    "MappingProxyType dispatch / <=1 elif, LCOM4 == 1 cohesion, narrow chained "
+                    "exceptions, and ContainedPath filesystem containment). Preview each complete "
+                    "candidate file once via _tool_preview_rough_in before returning."
+                ),
+                name="specialist_role",
+            ),
         ),
     )
     agent.output_validator(_validate_refactor_output)
@@ -952,18 +987,27 @@ async def run_bounded_agent[OutputT](
     agent: GuardedAgent[OutputT],
     *,
     behavior_kind: BehaviorKind,
-    prompt: BoundedPrompt,
+    prompt: CachedUserPrompt,
     deps: Annotated[JezzAgentDeps, InstanceGuard(JezzAgentDeps)],
     budget: PceRuntimeBudget,
 ) -> tuple[Annotated[OutputT, InstanceGuard(object)], AgentInvocationTelemetry]:
-    """Execute ``agent`` under wall-clock timeout and UsageLimits token/step breakers."""
+    """Execute ``agent`` under wall-clock timeout, prompt caching, and UsageLimits breakers."""
     limits = UsageLimits(
         request_limit=budget.request_limit_for(behavior_kind),
         tool_calls_limit=budget.tool_calls_limit_per_step,
         total_tokens_limit=budget.total_tokens_limit_per_step,
     )
+    settings = resolve_cache_model_settings(budget.prompt_cache_mode)
+    raw_model = agent.model
+    bound_model = raw_model if isinstance(raw_model, Model) else None
+    wire_prompt = normalize_prompt_for_model(prompt, bound_model)
     async with asyncio.timeout(budget.agent_timeout_sec):
-        result = await agent.run(prompt, deps=deps, usage_limits=limits)
+        result = await agent.run(
+            wire_prompt,
+            deps=deps,
+            usage_limits=limits,
+            model_settings=settings,
+        )
 
     usage = result.usage
     binding = BEHAVIOR_EXECUTION_BOARD[behavior_kind]
@@ -975,5 +1019,7 @@ async def run_bounded_agent[OutputT](
         tool_calls=max(0, usage.tool_calls),
         input_tokens=max(0, usage.input_tokens),
         output_tokens=max(0, usage.output_tokens),
+        cache_read_tokens=max(0, usage.cache_read_tokens),
+        cache_write_tokens=max(0, usage.cache_write_tokens),
     )
     return result.output, telemetry

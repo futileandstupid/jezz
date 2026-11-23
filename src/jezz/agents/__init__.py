@@ -1,5 +1,19 @@
 """Pillar 4 public API: Pydantic AI + Pydantic Graph PCE runtime implementation."""
 
+from jezz.agents.caching import (
+    CACHE_READ_DISCOUNT_MULTIPLIER,
+    CACHE_WRITE_SURCHARGE_MULTIPLIER,
+    CachedUserPrompt,
+    PromptCacheMode,
+    cache_point_for_mode,
+    compute_cache_hit_ratio,
+    compute_effective_billed_input_tokens,
+    compute_input_cost_savings_ratio,
+    model_supports_inline_cache_points,
+    normalize_prompt_for_model,
+    partition_cached_user_prompt,
+    resolve_cache_model_settings,
+)
 from jezz.agents.env_introspect import PackageApiSummary, inspect_installed_package_api
 from jezz.agents.memory import (
     WORKSPACE_MEMORY_REL_PATH,
@@ -43,6 +57,7 @@ from jezz.agents.nodes import (
     validate_runtime_node_coverage,
 )
 from jezz.agents.orchestrator import PceWorkflowOrchestrator, build_pce_workflow_graph
+from jezz.agents.providers import TlsResilientModel, infer_authenticated_model
 from jezz.agents.provision import (
     InProcessProvisionRunner,
     ProvisionPort,
@@ -91,6 +106,8 @@ from jezz.agents.schemas import (
 from jezz.agents.specialists import (
     BEHAVIOR_EXECUTION_BOARD,
     DETERMINISTIC_BEHAVIOR_KINDS,
+    JBC_CANONICAL_EXEMPLAR,
+    JBC_STATUTORY_BRIEF,
     PceModelSuite,
     build_consult_agent,
     build_curate_memory_agent,
@@ -123,13 +140,18 @@ from jezz.agents.workspace import (
 
 __all__ = [
     "BEHAVIOR_EXECUTION_BOARD",
+    "CACHE_READ_DISCOUNT_MULTIPLIER",
+    "CACHE_WRITE_SURCHARGE_MULTIPLIER",
     "DETERMINISTIC_BEHAVIOR_KINDS",
+    "JBC_CANONICAL_EXEMPLAR",
+    "JBC_STATUTORY_BRIEF",
     "PCE_BEHAVIOR_NODE_MAP",
     "ROLE_TIER_MAP",
     "WORKSPACE_MEMORY_REL_PATH",
     "AgentInvocationTelemetry",
     "BehaviorExecutionBinding",
     "BindCodesNode",
+    "CachedUserPrompt",
     "CertifyNode",
     "CheckpointContractNode",
     "CheckpointImplNode",
@@ -172,6 +194,7 @@ __all__ = [
     "PceWorkflowOrchestrator",
     "PceWorkflowResult",
     "ProgressCallback",
+    "PromptCacheMode",
     "ProvisionNode",
     "ProvisionPlan",
     "ProvisionPort",
@@ -188,6 +211,7 @@ __all__ = [
     "SpecialistTier",
     "SpecifyNode",
     "SynthesizeNode",
+    "TlsResilientModel",
     "ToolsetAccessLevel",
     "UvSubprocessGateRunner",
     "UvSubprocessProvisionRunner",
@@ -212,16 +236,25 @@ __all__ = [
     "build_scoped_write_toolset",
     "build_specify_agent",
     "build_synthesize_agent",
+    "cache_point_for_mode",
     "compact_world_model_deterministically",
+    "compute_cache_hit_ratio",
+    "compute_effective_billed_input_tokens",
+    "compute_input_cost_savings_ratio",
     "compute_missing_dependencies",
     "discover_models_config",
     "find_type_alias_misuse",
     "format_memory_prompt_context",
+    "infer_authenticated_model",
     "inspect_installed_package_api",
     "load_pyproject_models_config",
     "load_workspace_memory",
+    "model_supports_inline_cache_points",
+    "normalize_prompt_for_model",
+    "partition_cached_user_prompt",
     "record_certified_mandate_memory",
     "refresh_inspector_after_provision",
+    "resolve_cache_model_settings",
     "resolve_specialist_routing",
     "run_bounded_agent",
     "save_workspace_memory",

@@ -11,15 +11,13 @@ from pathlib import Path
 from types import MappingProxyType
 from typing import Annotated, Final
 
-from pydantic import Field, SecretStr, ValidationError
+from pydantic import Field, ValidationError
 from pydantic_ai.exceptions import AgentRunError, ModelAPIError, UserError
-from pydantic_ai.messages import ModelMessage, ModelResponse
-from pydantic_ai.models import Model, ModelRequestParameters, infer_model
-from pydantic_ai.models.wrapper import WrapperModel
-from pydantic_ai.settings import ModelSettings
 
+from jezz.agents.caching import PromptCacheMode
 from jezz.agents.nodes import ElicitationCallback
 from jezz.agents.orchestrator import PceWorkflowOrchestrator
+from jezz.agents.providers import TlsResilientModel
 from jezz.agents.provision import (
     InProcessProvisionRunner,
     ProvisionPort,
@@ -65,6 +63,13 @@ from jezz.codes.ratchet import (
     GitDiffError,
     inspect_differential_rough_in,
     resolve_git_changed_paths,
+)
+from jezz.evals.cross_provider import (
+    ProviderMatrixComparison,
+    ProviderSuiteSpec,
+    format_provider_matrix_markdown,
+    parse_provider_suite_spec,
+    run_provider_matrix_benchmark,
 )
 from jezz.evals.evaluators import GuardedDataset, build_track4_dataset
 from jezz.evals.runner import (
@@ -136,6 +141,13 @@ def format_workflow_markdown(result: PceWorkflowResult) -> BoundedText:
         exercised = list(dict.fromkeys(t.model_id for t in result.telemetry))
         models_str = ", ".join(f"`{m}`" for m in exercised)
         lines.append(f"- **Models Exercised:** {models_str}")
+    if result.total_input_tokens > 0:
+        lines.append(
+            f"- **Tokens (In / Out / Cache Read):** `{result.total_input_tokens:,}` / "
+            f"`{result.total_output_tokens:,}` / `{result.total_cache_read_tokens:,}` "
+            f"(`{result.cache_hit_ratio:.1%}` hit, "
+            f"`{result.effective_billed_input_tokens:,.0f}` billed-eq)"
+        )
     if result.certificate is not None:
         lines.append(f"- **Occupancy Seal:** `{result.certificate.inspector_seal}`")
     if result.status == PceRunStatus.HALTED_FOR_PLAN_APPROVAL:
@@ -252,227 +264,6 @@ async def _await_with_deadline[ResultT](
         return await coro
 
 
-type _AuthModelBuilder = Callable[[str, SecretStr], Model]
-
-
-def _infer_google_model(full_name: str, api_key: SecretStr) -> Model:
-    from pydantic_ai.providers.google import GoogleProvider
-
-    return infer_model(
-        full_name,
-        provider_factory=lambda _: GoogleProvider(api_key=api_key.get_secret_value()),
-    )
-
-
-def _infer_google_cloud_model(full_name: str, api_key: SecretStr) -> Model:
-    from pydantic_ai.providers.google_cloud import GoogleCloudProvider
-
-    return infer_model(
-        full_name,
-        provider_factory=lambda _: GoogleCloudProvider(api_key=api_key.get_secret_value()),
-    )
-
-
-def _infer_openai_model(full_name: str, api_key: SecretStr) -> Model:
-    from pydantic_ai.providers.openai import OpenAIProvider
-
-    return infer_model(
-        full_name,
-        provider_factory=lambda _: OpenAIProvider(api_key=api_key.get_secret_value()),
-    )
-
-
-def _infer_anthropic_model(full_name: str, api_key: SecretStr) -> Model:
-    from pydantic_ai.providers.anthropic import AnthropicProvider
-
-    return infer_model(
-        full_name,
-        provider_factory=lambda _: AnthropicProvider(api_key=api_key.get_secret_value()),
-    )
-
-
-def _infer_openrouter_model(full_name: str, api_key: SecretStr) -> Model:
-    from pydantic_ai.providers.openrouter import OpenRouterProvider
-
-    return infer_model(
-        full_name,
-        provider_factory=lambda _: OpenRouterProvider(api_key=api_key.get_secret_value()),
-    )
-
-
-def _infer_groq_model(full_name: str, api_key: SecretStr) -> Model:
-    from pydantic_ai.providers.groq import GroqProvider
-
-    return infer_model(
-        full_name,
-        provider_factory=lambda _: GroqProvider(api_key=api_key.get_secret_value()),
-    )
-
-
-def _infer_mistral_model(full_name: str, api_key: SecretStr) -> Model:
-    from pydantic_ai.providers.mistral import MistralProvider
-
-    return infer_model(
-        full_name,
-        provider_factory=lambda _: MistralProvider(api_key=api_key.get_secret_value()),
-    )
-
-
-def _infer_cohere_model(full_name: str, api_key: SecretStr) -> Model:
-    from pydantic_ai.providers.cohere import CohereProvider
-
-    return infer_model(
-        full_name,
-        provider_factory=lambda _: CohereProvider(api_key=api_key.get_secret_value()),
-    )
-
-
-def _infer_deepseek_model(full_name: str, api_key: SecretStr) -> Model:
-    from pydantic_ai.providers.deepseek import DeepSeekProvider
-
-    return infer_model(
-        full_name,
-        provider_factory=lambda _: DeepSeekProvider(api_key=api_key.get_secret_value()),
-    )
-
-
-def _infer_xai_model(full_name: str, api_key: SecretStr) -> Model:
-    from pydantic_ai.providers.xai import XaiProvider
-
-    return infer_model(
-        full_name,
-        provider_factory=lambda _: XaiProvider(api_key=api_key.get_secret_value()),
-    )
-
-
-def _infer_cerebras_model(full_name: str, api_key: SecretStr) -> Model:
-    from pydantic_ai.providers.cerebras import CerebrasProvider
-
-    return infer_model(
-        full_name,
-        provider_factory=lambda _: CerebrasProvider(api_key=api_key.get_secret_value()),
-    )
-
-
-def _infer_fireworks_model(full_name: str, api_key: SecretStr) -> Model:
-    from pydantic_ai.providers.fireworks import FireworksProvider
-
-    return infer_model(
-        full_name,
-        provider_factory=lambda _: FireworksProvider(api_key=api_key.get_secret_value()),
-    )
-
-
-def _infer_together_model(full_name: str, api_key: SecretStr) -> Model:
-    from pydantic_ai.providers.together import TogetherProvider
-
-    return infer_model(
-        full_name,
-        provider_factory=lambda _: TogetherProvider(api_key=api_key.get_secret_value()),
-    )
-
-
-_AUTH_MODEL_BUILDERS: Final[Mapping[str, _AuthModelBuilder]] = MappingProxyType(
-    {
-        "google": _infer_google_model,
-        "google-decisions": _infer_google_model,
-        "google-cloud": _infer_google_cloud_model,
-        "openai": _infer_openai_model,
-        "openai-chat": _infer_openai_model,
-        "openai-responses": _infer_openai_model,
-        "openai-decisions": _infer_openai_model,
-        "anthropic": _infer_anthropic_model,
-        "openrouter": _infer_openrouter_model,
-        "groq": _infer_groq_model,
-        "mistral": _infer_mistral_model,
-        "cohere": _infer_cohere_model,
-        "deepseek": _infer_deepseek_model,
-        "xai": _infer_xai_model,
-        "cerebras": _infer_cerebras_model,
-        "fireworks": _infer_fireworks_model,
-        "together": _infer_together_model,
-    }
-)
-
-
-def _infer_model_with_secret(model_name: str, api_key: SecretStr | None) -> Model:
-    if api_key is None or model_name == "test":
-        return infer_model(model_name)
-    active_key: SecretStr = api_key
-    if ":" not in model_name:
-        msg = (
-            f"Expected 'provider:model' identifier when injecting a vault API key: '{model_name}'."
-        )
-        raise UserError(msg)
-    provider_prefix = model_name.split(":", maxsplit=1)[0]
-    if provider_prefix.startswith("gateway/"):
-        from pydantic_ai.providers.gateway import gateway_provider
-
-        upstream = provider_prefix.removeprefix("gateway/")
-        return infer_model(
-            model_name,
-            provider_factory=lambda _: gateway_provider(
-                upstream, api_key=active_key.get_secret_value()
-            ),
-        )
-    builder = _AUTH_MODEL_BUILDERS.get(provider_prefix)
-    if builder is None:
-        msg = (
-            f"Provider '{provider_prefix}' does not support direct SecretStr API-key "
-            "injection without environment mutation."
-        )
-        raise UserError(msg)
-    return builder(model_name, active_key)
-
-
-class TlsResilientModel(WrapperModel):
-    """Per-request fresh HTTP client wrapper retrying transient SSL/socket drops."""
-
-    @jezz_callable
-    def __init__(
-        self,
-        model_name: IdentifierStr,
-        *,
-        api_key: GuardedSecretStr | None = None,
-        max_attempts: Annotated[int, Field(ge=1, le=8)] = 4,
-    ) -> None:
-        super().__init__(_infer_model_with_secret(model_name, api_key))
-        self._model_name = model_name
-        self._api_key = api_key
-        self._max_attempts = max_attempts
-
-    @property
-    def configured_model_id(self) -> str:
-        """Return the exact ``provider:model`` string supplied at instantiation."""
-        return self._model_name
-
-    @jezz_callable
-    async def request(
-        self,
-        messages: list[ModelMessage],
-        model_settings: ModelSettings | None,
-        model_request_parameters: ModelRequestParameters,
-    ) -> ModelResponse:
-        """Execute one request inside a fresh client context, retrying transient OSErrors."""
-        last_err: OSError | None = None
-        for attempt in range(self._max_attempts):
-            try:
-                async with _infer_model_with_secret(self._model_name, self._api_key) as fresh_model:
-                    return await fresh_model.request(
-                        messages,
-                        model_settings,
-                        model_request_parameters,
-                    )
-            except OSError as exc:
-                last_err = exc
-                if attempt + 1 < self._max_attempts:
-                    await asyncio.sleep(float(attempt + 1))
-        if last_err is not None:
-            raise last_err
-        msg = "Unreachable retry exhaustion without captured OSError."
-        raise RuntimeError(msg)
-
-
 @jezz_callable
 def resolve_cli_model(
     model_name: IdentifierStr,
@@ -530,20 +321,12 @@ def _dispatch_orchestrator_coro(
     return orchestrator.execute_prompt(resolved_repo, str(ns.prompt), permit=permit)
 
 
-def _resolve_cli_routing(
+def _resolve_credentials_for_models(
+    model_names: Sequence[str],
     ns: argparse.Namespace,
     search_roots: Sequence[Path],
-) -> tuple[ResolvedModelRouting, dict[str, GuardedSecretStr | None]]:
-    overrides = CliModelOverrides(
-        model=str(ns.model) if ns.model is not None else None,
-        architect_model=str(ns.architect_model) if ns.architect_model is not None else None,
-        builder_model=str(ns.builder_model) if ns.builder_model is not None else None,
-        inspector_model=str(ns.inspector_model) if ns.inspector_model is not None else None,
-    )
-    project_cfg = discover_models_config(tuple(search_roots))
-    routing = resolve_specialist_routing(overrides, project_config=project_cfg)
-
-    families = routing.unique_provider_families()
+) -> dict[str, GuardedSecretStr | None]:
+    families = {fam for m in model_names if (fam := canonical_provider_family(m))}
     if ns.pass_uri is not None and len(families) > 1:
         msg = (
             f"Single --api-key-uri cannot be shared across multiple model providers "
@@ -554,7 +337,7 @@ def _resolve_cli_routing(
 
     family_cache: dict[str, GuardedSecretStr | None] = {}
     by_model: dict[str, GuardedSecretStr | None] = {}
-    for model_name in routing.unique_model_names():
+    for model_name in model_names:
         cache_slot = canonical_provider_family(model_name) or f"raw:{model_name}"
         if cache_slot not in family_cache:
             family_cache[cache_slot] = resolve_model_api_key(
@@ -564,6 +347,24 @@ def _resolve_cli_routing(
                 reason_override=ns.agent_reason,
             )
         by_model[model_name] = family_cache[cache_slot]
+    return by_model
+
+
+def _resolve_cli_routing(
+    ns: argparse.Namespace,
+    search_roots: Sequence[Path],
+) -> tuple[ResolvedModelRouting, dict[str, GuardedSecretStr | None]]:
+    cache_override = PromptCacheMode(str(ns.prompt_cache)) if ns.prompt_cache is not None else None
+    overrides = CliModelOverrides(
+        model=str(ns.model) if ns.model is not None else None,
+        architect_model=str(ns.architect_model) if ns.architect_model is not None else None,
+        builder_model=str(ns.builder_model) if ns.builder_model is not None else None,
+        inspector_model=str(ns.inspector_model) if ns.inspector_model is not None else None,
+        prompt_cache=cache_override,
+    )
+    project_cfg = discover_models_config(tuple(search_roots))
+    routing = resolve_specialist_routing(overrides, project_config=project_cfg)
+    by_model = _resolve_credentials_for_models(routing.unique_model_names(), ns, search_roots)
     return routing, by_model
 
 
@@ -586,7 +387,10 @@ def _execute_pce_run(
     provisioner: ProvisionPort = (
         UvSubprocessProvisionRunner() if is_uv else InProcessProvisionRunner()
     )
-    budget = PceRuntimeBudget.production_defaults(agent_timeout_sec=min(480.0, timeout_sec))
+    budget = PceRuntimeBudget.production_defaults(
+        agent_timeout_sec=min(480.0, timeout_sec),
+        prompt_cache_mode=routing.prompt_cache,
+    )
     pre_supplied = (
         _one_shot_clarification_callback(ns.clarifications)
         if ns.resume_elicitation is None
@@ -699,16 +503,22 @@ def _select_benchmark_dataset(case_ids: Sequence[str] | None) -> GuardedDataset:
     return build_track4_dataset(filtered)
 
 
-def _execute_cli_benchmark(ns: argparse.Namespace, work_dir: Path) -> AbBenchmarkComparison:
-    timeout_sec = float(ns.timeout_sec)
+def _validate_benchmark_timeout(raw_timeout: float) -> float:
+    timeout_sec = float(raw_timeout)
     if timeout_sec <= 0.0 or timeout_sec > 14_400.0:
         msg = f"Invalid --timeout-sec={timeout_sec}; expected (0, 14400]."
         raise ValueError(msg)
+    return timeout_sec
+
+
+def _execute_cli_benchmark(ns: argparse.Namespace, work_dir: Path) -> AbBenchmarkComparison:
+    timeout_sec = _validate_benchmark_timeout(ns.timeout_sec)
     routing, creds_by_model = _resolve_cli_routing(ns, (work_dir, Path.cwd()))
     ctrl_name = routing.synthesize
     ctrl_model = _instantiate_cli_model(ctrl_name, creds_by_model[ctrl_name])
     cfg = BenchmarkRunConfig(
         max_concurrency=int(ns.max_concurrency),
+        prompt_cache_mode=routing.prompt_cache,
         agent_timeout_sec=min(480.0, timeout_sec),
         sync_workspace_venv=(ns.gate_runner == GateRunnerChoice.SUBPROCESS),
     )
@@ -725,24 +535,82 @@ def _execute_cli_benchmark(ns: argparse.Namespace, work_dir: Path) -> AbBenchmar
     return asyncio.run(_await_with_deadline(coro, timeout_sec))
 
 
+def _execute_cli_matrix_benchmark(
+    ns: argparse.Namespace,
+    work_dir: Path,
+    raw_suites: Sequence[str],
+) -> ProviderMatrixComparison:
+    timeout_sec = _validate_benchmark_timeout(ns.timeout_sec)
+    default_cache = (
+        PromptCacheMode(str(ns.prompt_cache))
+        if ns.prompt_cache is not None
+        else PromptCacheMode.AUTO
+    )
+    suites: tuple[ProviderSuiteSpec, ...] = tuple(
+        parse_provider_suite_spec(str(s), default_cache=default_cache) for s in raw_suites
+    )
+    all_models = list(
+        dict.fromkeys(m for suite in suites for m in suite.routing.unique_model_names())
+    )
+    creds_by_model = _resolve_credentials_for_models(all_models, ns, (work_dir, Path.cwd()))
+    cfg = BenchmarkRunConfig(
+        max_concurrency=int(ns.max_concurrency),
+        prompt_cache_mode=default_cache,
+        agent_timeout_sec=min(480.0, timeout_sec),
+        sync_workspace_venv=(ns.gate_runner == GateRunnerChoice.SUBPROCESS),
+    )
+    ds = _select_benchmark_dataset(ns.case_ids)
+    coro = run_provider_matrix_benchmark(
+        suites,
+        work_dir,
+        lambda m: _instantiate_cli_model(m, creds_by_model[m]),
+        base_config=cfg,
+        dataset=ds,
+    )
+    return asyncio.run(_await_with_deadline(coro, timeout_sec))
+
+
+def _persist_benchmark_json(work_dir: Path, rel_json: str, payload: str) -> None:
+    out_target = ContainedPath.from_parts(work_dir, rel_json)
+    out_target.resolved_path.parent.mkdir(parents=True, exist_ok=True)
+    with out_target.resolved_path.open("w", encoding="utf-8") as fh:
+        fh.write(payload + "\n")
+
+
+def _comparison_passed(comparison: AbBenchmarkComparison) -> bool:
+    t = comparison.treatment_summary
+    return t.cases_jbc_occupiable == t.cases_total and t.cases_oracle_passed == t.cases_total
+
+
 def _handle_benchmark(ns: argparse.Namespace, streams: CliIoStreams) -> CliExitCode:
     resolved_work = ns.work_dir.resolve()
     resolved_work.mkdir(parents=True, exist_ok=True)
+    if ns.suites:
+        matrix = _execute_cli_matrix_benchmark(ns, resolved_work, tuple(ns.suites))
+        if ns.write_json is not None:
+            _persist_benchmark_json(
+                resolved_work, str(ns.write_json), matrix.model_dump_json(indent=2)
+            )
+        rendered_mat = (
+            matrix.model_dump_json(indent=2)
+            if ns.output_format == OutputFormat.JSON
+            else format_provider_matrix_markdown(matrix)
+        )
+        _write_line(streams.stdout, rendered_mat)
+        return 0 if all(_comparison_passed(c) for c in matrix.comparisons) else 1
+
     comparison = _execute_cli_benchmark(ns, resolved_work)
     if ns.write_json is not None:
-        out_target = ContainedPath.from_parts(resolved_work, str(ns.write_json))
-        out_target.resolved_path.parent.mkdir(parents=True, exist_ok=True)
-        with out_target.resolved_path.open("w", encoding="utf-8") as fh:
-            fh.write(comparison.model_dump_json(indent=2) + "\n")
+        _persist_benchmark_json(
+            resolved_work, str(ns.write_json), comparison.model_dump_json(indent=2)
+        )
     rendered = (
         comparison.model_dump_json(indent=2)
         if ns.output_format == OutputFormat.JSON
         else format_ab_benchmark_markdown(comparison)
     )
     _write_line(streams.stdout, rendered)
-    t = comparison.treatment_summary
-    passed = t.cases_jbc_occupiable == t.cases_total and t.cases_oracle_passed == t.cases_total
-    return 0 if passed else 1
+    return 0 if _comparison_passed(comparison) else 1
 
 
 def _handle_mcp(ns: argparse.Namespace, streams: CliIoStreams) -> CliExitCode:
@@ -782,13 +650,20 @@ def _register_model_routing_flags(parser: argparse.ArgumentParser) -> None:
         "--builder-model",
         dest="builder_model",
         default=None,
-        help="Model override for INSTRUMENT, SYNTHESIZE, and REFACTOR specialists.",
+        help="Model override for PROVISION, INSTRUMENT, SYNTHESIZE, and REFACTOR specialists.",
     )
     parser.add_argument(
         "--inspector-model",
         dest="inspector_model",
         default=None,
-        help="Model override for read-only INSPECT_CODE specialist.",
+        help="Model override for INSPECT_CODE, INSPECT_ENV, CONSULT, and CURATE_MEMORY.",
+    )
+    parser.add_argument(
+        "--prompt-cache",
+        dest="prompt_cache",
+        choices=tuple(m.value for m in PromptCacheMode),
+        default=None,
+        help="Prompt-caching policy across specialist turns (default: auto).",
     )
 
 
@@ -854,10 +729,17 @@ def _register_benchmark_subparser(
 ) -> None:
     p_bmk = sub.add_parser(
         "benchmark",
-        help="Run Track 4 pydantic-evals A/B benchmark (Prose SDD vs. Jezz PCE).",
+        help="Run Track 4/7 pydantic-evals A/B benchmark (Prose SDD vs. Jezz PCE).",
     )
     p_bmk.add_argument("work_dir", type=Path, help="Scratch directory for isolated workspaces.")
     _register_model_routing_flags(p_bmk)
+    p_bmk.add_argument(
+        "--suite",
+        dest="suites",
+        action="append",
+        default=None,
+        help="Repeatable matrix suite (<label>=<provider:model>[@<cache>] or arch:...,build:...).",
+    )
     p_bmk.add_argument("--max-concurrency", type=int, default=2)
     p_bmk.add_argument("--case-id", dest="case_ids", action="append", default=None)
     p_bmk.add_argument("--gate-runner", choices=("subprocess", "in-process"), default="subprocess")

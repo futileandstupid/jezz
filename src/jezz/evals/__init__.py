@@ -1,5 +1,16 @@
-"""Track 4: Controlled pydantic-evals A/B benchmark suite (Marketed Prose SDD vs. Jezz PCE)."""
+"""Track 4 & 7: Controlled pydantic-evals A/B & cross-provider benchmark suite."""
 
+from jezz.evals.cross_provider import (
+    DEFAULT_WIRE_PROBE_MODELS,
+    CrossProviderCompatibilityReport,
+    ProviderMatrixComparison,
+    ProviderSuiteSpec,
+    ProviderWireCheck,
+    format_provider_matrix_markdown,
+    parse_provider_suite_spec,
+    run_provider_matrix_benchmark,
+    verify_cross_provider_agent_compatibility,
+)
 from jezz.evals.evaluators import (
     BenchmarkDataset,
     build_track4_dataset,
@@ -34,7 +45,12 @@ from jezz.evals.schemas import (
 )
 from jezz.evals.sdd_baseline import (
     SDD_CONSTITUTION_MD,
+    GuardedSddAgent,
     SddPipelineTelemetry,
+    build_sdd_design_agent,
+    build_sdd_implement_agent,
+    build_sdd_specify_agent,
+    build_sdd_tasks_agent,
     execute_sdd_prose_pipeline,
     validate_sdd_markdown_compliance,
 )
@@ -50,6 +66,7 @@ from jezz.evals.verifier import (
 )
 
 __all__ = (
+    "DEFAULT_WIRE_PROBE_MODELS",
     "SDD_CONSTITUTION_MD",
     "AbBenchmarkComparison",
     "ArmAggregateSummary",
@@ -61,8 +78,13 @@ __all__ = (
     "BenchmarkHarnessDeps",
     "BenchmarkRunConfig",
     "BenchmarkTaskSpec",
+    "CrossProviderCompatibilityReport",
+    "GuardedSddAgent",
     "InProcessWorkspaceVerifier",
     "OracleSuiteVerdict",
+    "ProviderMatrixComparison",
+    "ProviderSuiteSpec",
+    "ProviderWireCheck",
     "SddDesignArtifact",
     "SddImplementationBundle",
     "SddPipelineTelemetry",
@@ -71,6 +93,10 @@ __all__ = (
     "StructuralHealthSnapshot",
     "UvWorkspaceVerifier",
     "WorkspaceVerifierPort",
+    "build_sdd_design_agent",
+    "build_sdd_implement_agent",
+    "build_sdd_specify_agent",
+    "build_sdd_tasks_agent",
     "build_track4_benchmark_cases",
     "build_track4_dataset",
     "compute_structural_health",
@@ -81,11 +107,15 @@ __all__ = (
     "evaluate_structural_maintainability",
     "execute_sdd_prose_pipeline",
     "format_ab_benchmark_markdown",
+    "format_provider_matrix_markdown",
     "grade_workspace_artifacts",
+    "parse_provider_suite_spec",
     "provision_scratch_workspace",
     "run_ab_benchmark",
     "run_pce_treatment_case",
+    "run_provider_matrix_benchmark",
     "run_sdd_control_case",
     "summarize_arm_outcomes",
     "validate_sdd_markdown_compliance",
+    "verify_cross_provider_agent_compatibility",
 )

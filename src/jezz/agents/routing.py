@@ -10,6 +10,7 @@ from typing import Annotated, Final, Self
 import icontract
 from pydantic import BaseModel, BeforeValidator, Field, model_validator
 
+from jezz.agents.caching import CoercedPromptCacheMode, PromptCacheMode
 from jezz.agents.specialists import GuardedModel, PceModelSuite
 from jezz.guards import (
     STRICT_FROZEN_CONFIG,
@@ -123,6 +124,7 @@ class JezzModelsConfig(BaseModel):
     architect: IdentifierStr | None = None
     builder: IdentifierStr | None = None
     inspector: IdentifierStr | None = None
+    prompt_cache: CoercedPromptCacheMode | None = None
     roles: Annotated[
         dict[SpecialistRoleSlot, IdentifierStr],
         _ROLE_KEY_VALIDATOR,
@@ -170,6 +172,7 @@ class CliModelOverrides(BaseModel):
     architect_model: IdentifierStr | None = None
     builder_model: IdentifierStr | None = None
     inspector_model: IdentifierStr | None = None
+    prompt_cache: CoercedPromptCacheMode | None = None
 
     @model_validator(mode="after")
     def _validate_cli_specs(self) -> Self:
@@ -212,6 +215,7 @@ class ResolvedModelRouting(BaseModel):
     synthesize: IdentifierStr
     refactor: IdentifierStr
     hypothesize: IdentifierStr
+    prompt_cache: CoercedPromptCacheMode = PromptCacheMode.AUTO
 
     @model_validator(mode="after")
     def _validate_all_slots(self) -> Self:
@@ -349,6 +353,17 @@ def _resolve_single_slot(
     return None
 
 
+def _resolve_prompt_cache(
+    cli_overrides: CliModelOverrides,
+    project_config: JezzModelsConfig | None,
+) -> PromptCacheMode:
+    if cli_overrides.prompt_cache is not None:
+        return cli_overrides.prompt_cache
+    if project_config is not None and project_config.prompt_cache is not None:
+        return project_config.prompt_cache
+    return PromptCacheMode.AUTO
+
+
 @jezz_callable
 def resolve_specialist_routing(
     cli_overrides: CliModelOverrides,
@@ -383,4 +398,5 @@ def resolve_specialist_routing(
         synthesize=resolved_by_slot[SpecialistRoleSlot.SYNTHESIZE],
         refactor=resolved_by_slot[SpecialistRoleSlot.REFACTOR],
         hypothesize=resolved_by_slot[SpecialistRoleSlot.HYPOTHESIZE],
+        prompt_cache=_resolve_prompt_cache(cli_overrides, project_config),
     )

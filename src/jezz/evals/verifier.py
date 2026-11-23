@@ -56,6 +56,8 @@ class ArmExecutionMetrics(BaseModel):
     tool_calls: NonNegativeInt
     input_tokens: NonNegativeInt
     output_tokens: NonNegativeInt
+    cache_read_tokens: NonNegativeInt = 0
+    cache_write_tokens: NonNegativeInt = 0
     wall_clock_sec: Annotated[float, Field(ge=0.0, le=86_400.0, allow_inf_nan=False)]
     pce_remediation_rollbacks: NonNegativeInt = 0
     failure_note: BoundedText = ""
@@ -524,6 +526,8 @@ def grade_workspace_artifacts(
             tool_calls=metrics.tool_calls,
             input_tokens=metrics.input_tokens,
             output_tokens=metrics.output_tokens,
+            cache_read_tokens=metrics.cache_read_tokens,
+            cache_write_tokens=metrics.cache_write_tokens,
             wall_clock_sec=metrics.wall_clock_sec,
             pce_remediation_rollbacks=metrics.pce_remediation_rollbacks,
             failure_note=metrics.failure_note or "Zero Python units emitted.",
@@ -555,6 +559,8 @@ def grade_workspace_artifacts(
         tool_calls=metrics.tool_calls,
         input_tokens=metrics.input_tokens,
         output_tokens=metrics.output_tokens,
+        cache_read_tokens=metrics.cache_read_tokens,
+        cache_write_tokens=metrics.cache_write_tokens,
         wall_clock_sec=metrics.wall_clock_sec,
         pce_remediation_rollbacks=metrics.pce_remediation_rollbacks,
         failure_note=metrics.failure_note,

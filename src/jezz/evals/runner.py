@@ -118,6 +118,8 @@ def _record_outcome_telemetry(outcome: ArmRunOutcome) -> None:
     set_eval_attribute("violated_codes", list(outcome.violated_code_ids))
     increment_eval_metric("input_tokens", outcome.input_tokens)
     increment_eval_metric("output_tokens", outcome.output_tokens)
+    increment_eval_metric("cache_read_tokens", outcome.cache_read_tokens)
+    increment_eval_metric("cache_write_tokens", outcome.cache_write_tokens)
     increment_eval_metric("total_tokens", outcome.input_tokens + outcome.output_tokens)
     increment_eval_metric("llm_requests", outcome.requests)
 
@@ -167,6 +169,8 @@ async def run_sdd_control_case(
             tool_calls=tel.tool_calls,
             input_tokens=tel.input_tokens,
             output_tokens=tel.output_tokens,
+            cache_read_tokens=tel.cache_read_tokens,
+            cache_write_tokens=tel.cache_write_tokens,
             wall_clock_sec=elapsed,
         )
     except _RECOVERABLE_ARM_ERRORS as exc:
@@ -243,6 +247,7 @@ async def run_pce_treatment_case(
         else deps.config.request_limit_per_step
     )
     budget = PceRuntimeBudget(
+        prompt_cache_mode=deps.config.prompt_cache_mode,
         agent_timeout_sec=deps.config.agent_timeout_sec,
         request_limit_per_step=deps.config.request_limit_per_step,
         tool_calls_limit_per_step=deps.config.tool_calls_limit_per_step,
@@ -274,6 +279,8 @@ async def run_pce_treatment_case(
             tool_calls=sum(t.tool_calls for t in res.telemetry),
             input_tokens=sum(t.input_tokens for t in res.telemetry),
             output_tokens=sum(t.output_tokens for t in res.telemetry),
+            cache_read_tokens=sum(t.cache_read_tokens for t in res.telemetry),
+            cache_write_tokens=sum(t.cache_write_tokens for t in res.telemetry),
             wall_clock_sec=elapsed,
             pce_remediation_rollbacks=len(res.falsified_paths),
             failure_note="" if certified else f"PCE status={res.status}",
@@ -330,6 +337,8 @@ def summarize_arm_outcomes(
         mean_spec_review_lines=round(sum(o.spec_review_lines for o in outcomes) / n, 1),
         total_input_tokens=sum(o.input_tokens for o in outcomes),
         total_output_tokens=sum(o.output_tokens for o in outcomes),
+        total_cache_read_tokens=sum(o.cache_read_tokens for o in outcomes),
+        total_cache_write_tokens=sum(o.cache_write_tokens for o in outcomes),
         mean_wall_clock_sec=round(sum(o.wall_clock_sec for o in outcomes) / n, 2),
     )
 
@@ -372,6 +381,7 @@ async def run_ab_benchmark(
     return AbBenchmarkComparison(
         dataset_name=active_ds.name,
         model_label=model_label,
+        prompt_cache_mode=deps.config.prompt_cache_mode,
         control_summary=summarize_arm_outcomes(BenchmarkArm.SDD_PROSE, ctrl_outcomes),
         treatment_summary=summarize_arm_outcomes(BenchmarkArm.JEZZ_PCE, treat_outcomes),
         control_outcomes=ctrl_outcomes,
@@ -406,6 +416,14 @@ def format_ab_benchmark_markdown(comparison: AbBenchmarkComparison) -> BoundedTe
     t_orc = f"`{t.cases_oracle_passed}/{t.cases_total}` (`{t.mean_oracle_survival_rate:.1%}`)"
     c_tok = f"`{c.total_input_tokens:,}` / `{c.total_output_tokens:,}`"
     t_tok = f"`{t.total_input_tokens:,}` / `{t.total_output_tokens:,}`"
+    c_cache = (
+        f"`{c.total_cache_read_tokens:,}` (`{c.cache_hit_ratio:.1%}`) "
+        f"/ `{c.effective_billed_input_tokens:,.0f}`"
+    )
+    t_cache = (
+        f"`{t.total_cache_read_tokens:,}` (`{t.cache_hit_ratio:.1%}`) "
+        f"/ `{t.effective_billed_input_tokens:,.0f}`"
+    )
     lines = [
         f"# Track 4 Controlled A/B Benchmark — `{comparison.model_label}`",
         "",
@@ -450,6 +468,7 @@ def format_ab_benchmark_markdown(comparison: AbBenchmarkComparison) -> BoundedTe
             f"`{t.mean_spec_review_lines}`",
         ),
         _metric_row("Total Tokens (`In` / `Out`)", c_tok, t_tok),
+        _metric_row("Cache Read (`Hit%`) / Effective Billed In", c_cache, t_cache),
         _metric_row(
             "Mean Wall-Clock Latency per Case",
             f"`{c.mean_wall_clock_sec}s`",

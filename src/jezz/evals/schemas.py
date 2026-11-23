@@ -1,4 +1,4 @@
-"""Track 4: Strict frozen schemas for controlled SDD vs. PCE A/B evaluation via pydantic-evals."""
+"""Track 4 & 7: Strict frozen schemas for controlled SDD vs. PCE evaluation via pydantic-evals."""
 
 import ast
 from enum import StrEnum
@@ -6,6 +6,13 @@ from typing import Annotated, Self
 
 from pydantic import BaseModel, Field, model_validator
 
+from jezz.agents.caching import (
+    CoercedPromptCacheMode,
+    PromptCacheMode,
+    compute_cache_hit_ratio,
+    compute_effective_billed_input_tokens,
+    compute_input_cost_savings_ratio,
+)
 from jezz.agents.schemas import FilePatchArtifact
 from jezz.guards import (
     STRICT_FROZEN_CONFIG,
@@ -165,17 +172,43 @@ class ArmRunOutcome(BaseModel):
     tool_calls: NonNegativeInt
     input_tokens: NonNegativeInt
     output_tokens: NonNegativeInt
+    cache_read_tokens: NonNegativeInt = 0
+    cache_write_tokens: NonNegativeInt = 0
     wall_clock_sec: Annotated[float, Field(ge=0.0, le=86_400.0, allow_inf_nan=False)]
     pce_remediation_rollbacks: NonNegativeInt = 0
     failure_note: BoundedText = ""
 
+    @property
+    def cache_hit_ratio(self) -> float:
+        """Return normalized fraction of ``input_tokens`` served from prompt cache."""
+        return compute_cache_hit_ratio(self.input_tokens, self.cache_read_tokens)
+
+    @property
+    def effective_billed_input_tokens(self) -> float:
+        """Return uncached-equivalent billed input tokens accounting for read/write weights."""
+        return compute_effective_billed_input_tokens(
+            self.input_tokens,
+            self.cache_read_tokens,
+            self.cache_write_tokens,
+        )
+
+    @property
+    def input_cost_savings_ratio(self) -> float:
+        """Return fractional billed-input cost reduction relative to uncached input tokens."""
+        return compute_input_cost_savings_ratio(
+            self.input_tokens,
+            self.cache_read_tokens,
+            self.cache_write_tokens,
+        )
+
 
 class BenchmarkRunConfig(BaseModel):
-    """Runtime concurrency, step budgets, and workspace-sync configuration for Track 4."""
+    """Runtime concurrency, cache policy, step budgets, and workspace-sync configuration."""
 
     model_config = STRICT_FROZEN_CONFIG
 
     max_concurrency: Annotated[int, Field(ge=1, le=16)] = 2
+    prompt_cache_mode: CoercedPromptCacheMode = PromptCacheMode.AUTO
     agent_timeout_sec: Annotated[float, Field(gt=0.0, le=600.0, allow_inf_nan=False)] = 480.0
     request_limit_per_step: Annotated[int, Field(ge=1, le=32)] = 28
     tool_calls_limit_per_step: Annotated[int, Field(ge=0, le=64)] = 56
@@ -207,7 +240,32 @@ class ArmAggregateSummary(BaseModel):
     mean_spec_review_lines: Annotated[float, Field(ge=0.0, le=1_000_000.0, allow_inf_nan=False)]
     total_input_tokens: NonNegativeInt
     total_output_tokens: NonNegativeInt
+    total_cache_read_tokens: NonNegativeInt = 0
+    total_cache_write_tokens: NonNegativeInt = 0
     mean_wall_clock_sec: Annotated[float, Field(ge=0.0, le=86_400.0, allow_inf_nan=False)]
+
+    @property
+    def cache_hit_ratio(self) -> float:
+        """Return aggregate ``total_cache_read_tokens / total_input_tokens``."""
+        return compute_cache_hit_ratio(self.total_input_tokens, self.total_cache_read_tokens)
+
+    @property
+    def effective_billed_input_tokens(self) -> float:
+        """Return aggregate uncached-equivalent billed input tokens across all cases."""
+        return compute_effective_billed_input_tokens(
+            self.total_input_tokens,
+            self.total_cache_read_tokens,
+            self.total_cache_write_tokens,
+        )
+
+    @property
+    def input_cost_savings_ratio(self) -> float:
+        """Return aggregate fractional billed-input reduction across all cases."""
+        return compute_input_cost_savings_ratio(
+            self.total_input_tokens,
+            self.total_cache_read_tokens,
+            self.total_cache_write_tokens,
+        )
 
 
 class AbBenchmarkComparison(BaseModel):
@@ -217,6 +275,7 @@ class AbBenchmarkComparison(BaseModel):
 
     dataset_name: IdentifierStr
     model_label: IdentifierStr
+    prompt_cache_mode: CoercedPromptCacheMode = PromptCacheMode.AUTO
     control_summary: ArmAggregateSummary
     treatment_summary: ArmAggregateSummary
     control_outcomes: Annotated[

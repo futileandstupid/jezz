@@ -6,6 +6,13 @@ from typing import Annotated, Self
 
 from pydantic import BaseModel, BeforeValidator, Field, model_validator
 
+from jezz.agents.caching import (
+    CoercedPromptCacheMode,
+    PromptCacheMode,
+    compute_cache_hit_ratio,
+    compute_effective_billed_input_tokens,
+    compute_input_cost_savings_ratio,
+)
 from jezz.behaviors.graph import BehaviorGraph, GraphVerificationReport
 from jezz.behaviors.runtime import ExecutionStep
 from jezz.behaviors.taxonomy import BehaviorKind
@@ -377,7 +384,7 @@ class RefactorPatchBundle(BaseModel):
 
 
 class AgentInvocationTelemetry(BaseModel):
-    """Bounded token, tool-call, and request telemetry for a single Pydantic AI step."""
+    """Bounded token, cache, tool-call, and request telemetry for a single Pydantic AI step."""
 
     model_config = STRICT_FROZEN_CONFIG
 
@@ -388,6 +395,31 @@ class AgentInvocationTelemetry(BaseModel):
     tool_calls: NonNegativeInt
     input_tokens: NonNegativeInt
     output_tokens: NonNegativeInt
+    cache_read_tokens: NonNegativeInt = 0
+    cache_write_tokens: NonNegativeInt = 0
+
+    @property
+    def cache_hit_ratio(self) -> float:
+        """Return normalized fraction of ``input_tokens`` served from prompt cache."""
+        return compute_cache_hit_ratio(self.input_tokens, self.cache_read_tokens)
+
+    @property
+    def effective_billed_input_tokens(self) -> float:
+        """Return uncached-equivalent billed input tokens accounting for read/write weights."""
+        return compute_effective_billed_input_tokens(
+            self.input_tokens,
+            self.cache_read_tokens,
+            self.cache_write_tokens,
+        )
+
+    @property
+    def input_cost_savings_ratio(self) -> float:
+        """Return fractional billed-input cost reduction relative to uncached input tokens."""
+        return compute_input_cost_savings_ratio(
+            self.input_tokens,
+            self.cache_read_tokens,
+            self.cache_write_tokens,
+        )
 
 
 class ElicitationTicket(BaseModel):
@@ -440,7 +472,7 @@ _BEHAVIOR_BUDGET_KEY_VALIDATOR = BeforeValidator(_coerce_behavior_budget_keys)
 
 
 class PceRuntimeBudget(BaseModel):
-    """Deterministic step, token, and wall-clock ceilings for PCE agent execution."""
+    """Deterministic step, token, cache, and wall-clock ceilings for PCE agent execution."""
 
     model_config = STRICT_FROZEN_CONFIG
 
@@ -448,6 +480,7 @@ class PceRuntimeBudget(BaseModel):
     max_elicitation_rounds: Annotated[int, Field(ge=1, le=8)] = 3
     memory_compaction_threshold: Annotated[int, Field(ge=1, le=256)] = 6
     persist_workspace_memory: bool = True
+    prompt_cache_mode: CoercedPromptCacheMode = PromptCacheMode.AUTO
     agent_timeout_sec: Annotated[float, Field(gt=0.0, le=600.0, allow_inf_nan=False)] = 30.0
     request_limit_per_step: Annotated[int, Field(ge=1, le=64)] = 6
     tool_calls_limit_per_step: Annotated[int, Field(ge=0, le=128)] = 12
@@ -472,9 +505,11 @@ class PceRuntimeBudget(BaseModel):
         cls,
         *,
         agent_timeout_sec: Annotated[float, Field(gt=0.0, le=600.0, allow_inf_nan=False)] = 240.0,
+        prompt_cache_mode: PromptCacheMode = PromptCacheMode.AUTO,
     ) -> PceRuntimeBudget:
         """Construct phase-scoped production ceilings separating epistemic and synthesis phases."""
         return cls(
+            prompt_cache_mode=prompt_cache_mode,
             agent_timeout_sec=agent_timeout_sec,
             request_limit_per_step=18,
             tool_calls_limit_per_step=64,
@@ -507,3 +542,37 @@ class PceWorkflowResult(BaseModel):
     memory_ledger: WorkspaceMemoryLedger | None = None
     telemetry: Annotated[tuple[AgentInvocationTelemetry, ...], Field(max_length=256)] = ()
     falsified_paths: Annotated[tuple[ShortText, ...], Field(max_length=128)] = ()
+
+    @property
+    def total_input_tokens(self) -> int:
+        """Return summed ``input_tokens`` across all recorded specialist invocations."""
+        return sum(t.input_tokens for t in self.telemetry)
+
+    @property
+    def total_output_tokens(self) -> int:
+        """Return summed ``output_tokens`` across all recorded specialist invocations."""
+        return sum(t.output_tokens for t in self.telemetry)
+
+    @property
+    def total_cache_read_tokens(self) -> int:
+        """Return summed ``cache_read_tokens`` across all recorded specialist invocations."""
+        return sum(t.cache_read_tokens for t in self.telemetry)
+
+    @property
+    def total_cache_write_tokens(self) -> int:
+        """Return summed ``cache_write_tokens`` across all recorded specialist invocations."""
+        return sum(t.cache_write_tokens for t in self.telemetry)
+
+    @property
+    def cache_hit_ratio(self) -> float:
+        """Return aggregate ``cache_read_tokens / input_tokens`` across the workflow run."""
+        return compute_cache_hit_ratio(self.total_input_tokens, self.total_cache_read_tokens)
+
+    @property
+    def effective_billed_input_tokens(self) -> float:
+        """Return aggregate uncached-equivalent billed input tokens across the workflow run."""
+        return compute_effective_billed_input_tokens(
+            self.total_input_tokens,
+            self.total_cache_read_tokens,
+            self.total_cache_write_tokens,
+        )

@@ -1,6 +1,6 @@
 # Empirical Validation & Longitudinal Testing Roadmap
 
-With Pillars 1–4 implemented, self-audited, and passing (`jezz.behaviors`, `jezz.codes`, `jezz.methodology`, `jezz.agents`), this roadmap tracks five progressive empirical validation stages evaluating `jezz` against brownfield Python repositories, live single- and multi-mandate LLM workflows, and industry "Spec-Driven Development" ("SDD") baselines.
+With Pillars 1–4 implemented, self-audited, and passing (`jezz.behaviors`, `jezz.codes`, `jezz.methodology`, `jezz.agents`), this roadmap tracks seven progressive empirical validation and architectural hardening stages evaluating `jezz` against brownfield Python repositories, live single- and multi-mandate LLM workflows, industry "Spec-Driven Development" ("SDD") baselines, full $F_8 = 21$ runtime closure, and cross-provider prompt-caching compression.
 
 ---
 
@@ -65,3 +65,11 @@ With Pillars 1–4 implemented, self-audited, and passing (`jezz.behaviors`, `je
 **Goal:** Close the remaining 4 `BehaviorKind`s (`BHV-05 INSPECT_ENV`, `BHV-06 CONSULT`, `BHV-07 CURATE_MEMORY`, `BHV-13 PROVISION`) as first-class `AtomicBehaviorGraphNode` subclasses in `PceWorkflowOrchestrator`, achieving **`21 / 21` (`100%`) runtime basis coverage**, rollback-safe dependency provisioning (`uv add` + `BuildingInspector` manifest reload), symmetric `12`-slot specialist routing, and cross-mandate `.jezz/memory.json` persistence.
 
 - **Report & Verification:** [track-6-full-basis-runtime.md](track-6-full-basis-runtime.md) — Verified `21/21` node bijection (`validate_runtime_node_coverage`), composite 21-behavior Kildall validity, PEP 508 flag/URL/path injection blocks, atomic `pyproject.toml`/`uv.lock` rollback, cross-`.venv` smoke-import discovery, and non-lossy `falsified_paths` preservation across sequential mandates (`tests/test_track6_full_basis_runtime.py`).
+
+---
+
+## Track 7 — Token Cost Compression & Cross-Provider Generalizability — *Completed (`Waves 7A & 7B`)*
+
+**Goal:** Compress `PCE`'s statutory prompt overhead via unified cross-provider prompt caching (`PromptCacheMode.AUTO` enabled by default) and establish continuous multi-provider wire/schema compatibility and matrix benchmarking across Google Gemini, Anthropic Claude, OpenAI (Chat & Responses), and OpenRouter.
+
+- **Report & Verification:** [track-7-prompt-caching-and-providers.md](track-7-prompt-caching-and-providers.md) — Canonicalized static `InstructionPart` prefixes (`JBC_STATUTORY_BRIEF`, `JBC_CANONICAL_EXEMPLAR`) across all `4` `JBC` construction specialists (and symmetric `SDD_CONSTITUTION_MD` across all `4` Control SDD stages), partitioned shared `Mandate + Snapshots` prefixes via `CachePoint` with provider-aware `normalize_prompt_for_model` coalescing on implicit-prefix models, verified **`448 / 448` offline cross-provider wire probes** (`16` agents $\times$ `7` provider models $\times$ `4` cache modes), and executed **`10` live Gemini workspace builds (`Waves 7A & 7B`)** proving **`68.7%–72.5%` `PCE` cache hit ratios** (`-61.8%` to `-65.2%` effective billed-input compression, vs. **`0.0%`** cache hits on open-loop Control SDD) with `100%` post-calibration `JBC` v1.2 occupancy and oracle survival.

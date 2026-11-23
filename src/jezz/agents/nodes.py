@@ -12,6 +12,7 @@ from typing import Annotated, ClassVar, Final
 import icontract
 from pydantic_graph import End, GraphRunContext
 
+from jezz.agents.caching import CachedUserPrompt, partition_cached_user_prompt
 from jezz.agents.memory import (
     apply_curated_digest_to_state,
     build_consultation_reference_pack,
@@ -295,6 +296,27 @@ def _format_deps_prompt(
         deps.sandbox,
         deps.remediation_guidance if include_guidance else "",
         extra_context=f"{deps.memory_context}{deps.consultation_context}",
+    )
+
+
+def _partition_deps_prompt(
+    deps: PceGraphDeps,
+    mandate: EngineeringMandate,
+    *,
+    suffix: str = "",
+    include_guidance: bool = False,
+) -> CachedUserPrompt:
+    shared_prefix = _format_deps_prompt(deps, mandate, include_guidance=False)[:57_344]
+    tail_parts: list[str] = []
+    if include_guidance and deps.remediation_guidance:
+        tail_parts.append(f"\nRemediation Guidance: {deps.remediation_guidance}")
+    if suffix:
+        tail_parts.append(suffix)
+    combined_tail = "".join(tail_parts)[:8192]
+    return partition_cached_user_prompt(
+        shared_prefix,
+        combined_tail,
+        mode=deps.budget.prompt_cache_mode,
     )
 
 
@@ -900,10 +922,15 @@ async def _run_scoped_instrument_slice(
         f"Emit ONLY {test_files} defining those exact verification_symbol functions; other "
         "scopes' invariants are instrumented concurrently by sibling workers."
     )
+    scoped_prompt = partition_cached_user_prompt(
+        base_prompt[:57_344],
+        footer[:8192],
+        mode=deps.budget.prompt_cache_mode,
+    )
     return await run_bounded_agent(
         build_instrument_agent(deps.models.instrument_model),
         behavior_kind=BehaviorKind.INSTRUMENT,
-        prompt=f"{base_prompt}{footer}"[:60_000],
+        prompt=scoped_prompt,
         deps=_make_agent_deps(deps, scope=scope, scoped_invariants=invariants),
         budget=deps.budget,
     )
@@ -941,13 +968,13 @@ class InstrumentNode(AtomicBehaviorGraphNode[PceGraphDeps, PceWorkflowResult]):
         ctx: GraphRunContext[AgentExecutionState, PceGraphDeps],
     ) -> CheckpointImplNode:
         mandate = _require_mandate(ctx.deps)
-        prompt = _format_deps_prompt(ctx.deps, mandate, include_guidance=True)
-        if ctx.deps.workflow_mode == PceWorkflowMode.RENOVATE:
-            prompt = (
-                f"{prompt}\nBrownfield Renovation Mode: Preserve/lock existing observable "
-                "public behavior from src/... snapshots while defining every mandated "
-                "verification_symbol under full JBC v1.2 test compliance."
-            )[:60_000]
+        renovate_suffix = (
+            "\nBrownfield Renovation Mode: Preserve/lock existing observable "
+            "public behavior from src/... snapshots while defining every mandated "
+            "verification_symbol under full JBC v1.2 test compliance."
+            if ctx.deps.workflow_mode == PceWorkflowMode.RENOVATE
+            else ""
+        )
         test_scopes = _test_owning_scopes(mandate)
         assignments = (
             _partition_invariants_by_test_scope(mandate, test_scopes)
@@ -955,14 +982,21 @@ class InstrumentNode(AtomicBehaviorGraphNode[PceGraphDeps, PceWorkflowResult]):
             else ()
         )
         if len(assignments) >= 2:
+            raw_base = _format_deps_prompt(ctx.deps, mandate, include_guidance=True)
+            base_prompt = f"{raw_base}{renovate_suffix}"[:57_344]
             test_patches, summary = await _run_parallel_instrument_scopes(
-                ctx.deps, prompt, assignments
+                ctx.deps, base_prompt, assignments
             )
         else:
             bundle, tel = await run_bounded_agent(
                 build_instrument_agent(ctx.deps.models.instrument_model),
                 behavior_kind=BehaviorKind.INSTRUMENT,
-                prompt=prompt,
+                prompt=_partition_deps_prompt(
+                    ctx.deps,
+                    mandate,
+                    suffix=renovate_suffix,
+                    include_guidance=True,
+                ),
                 deps=_make_agent_deps(ctx.deps),
                 budget=ctx.deps.budget,
             )
@@ -1009,7 +1043,7 @@ class SynthesizeNode(AtomicBehaviorGraphNode[PceGraphDeps, PceWorkflowResult]):
         bundle, tel = await run_bounded_agent(
             build_synthesize_agent(ctx.deps.models.synthesize_model),
             behavior_kind=BehaviorKind.SYNTHESIZE,
-            prompt=_format_deps_prompt(ctx.deps, mandate, include_guidance=True),
+            prompt=_partition_deps_prompt(ctx.deps, mandate, include_guidance=True),
             deps=_make_agent_deps(ctx.deps),
             budget=ctx.deps.budget,
         )
@@ -1019,11 +1053,10 @@ class SynthesizeNode(AtomicBehaviorGraphNode[PceGraphDeps, PceWorkflowResult]):
         return VerifyStaticNode()
 
 
-def _format_refactor_prompt(deps: PceGraphDeps, mandate: EngineeringMandate) -> str:
-    base = _format_deps_prompt(deps, mandate, include_guidance=True)
-    if deps.baseline_red_tag_summary:
-        return f"{base}\nBaseline JBC RED_TAG Findings:\n{deps.baseline_red_tag_summary}"[:60_000]
-    return base[:60_000]
+def _refactor_baseline_suffix(deps: PceGraphDeps) -> str:
+    if not deps.baseline_red_tag_summary:
+        return ""
+    return f"\nBaseline JBC RED_TAG Findings:\n{deps.baseline_red_tag_summary}"
 
 
 @dataclass
@@ -1041,7 +1074,12 @@ class RefactorNode(AtomicBehaviorGraphNode[PceGraphDeps, PceWorkflowResult]):
         bundle, tel = await run_bounded_agent(
             build_refactor_agent(active_model),
             behavior_kind=BehaviorKind.REFACTOR,
-            prompt=_format_refactor_prompt(ctx.deps, mandate),
+            prompt=_partition_deps_prompt(
+                ctx.deps,
+                mandate,
+                suffix=_refactor_baseline_suffix(ctx.deps),
+                include_guidance=True,
+            ),
             deps=_make_agent_deps(ctx.deps),
             budget=ctx.deps.budget,
         )
@@ -1057,16 +1095,21 @@ async def _run_scoped_slice(
     scope: ModuleWriteScope,
 ) -> tuple[ModuleWriteScope, ConstructionPatchBundle, AgentInvocationTelemetry]:
     slice_footer = (
-        f"Active Slice Scope: {scope.scope_id} owning {sorted(scope.owned_files)} "
+        f"\nActive Slice Scope: {scope.scope_id} owning {sorted(scope.owned_files)} "
         f"for symbols {list(scope.contract_symbols)}."
     )
     if deps.workflow_mode == PceWorkflowMode.RENOVATE:
-        ref_prompt = f"{_format_refactor_prompt(deps, mandate)}\n{slice_footer}"[:60_000]
+        ref_suffix = f"{_refactor_baseline_suffix(deps)}{slice_footer}"
         ref_model = deps.models.refactor_model or deps.models.synthesize_model
         ref_bundle, ref_tel = await run_bounded_agent(
             build_refactor_agent(ref_model),
             behavior_kind=BehaviorKind.DELEGATE,
-            prompt=ref_prompt,
+            prompt=_partition_deps_prompt(
+                deps,
+                mandate,
+                suffix=ref_suffix,
+                include_guidance=True,
+            ),
             deps=_make_agent_deps(deps, scope=scope),
             budget=deps.budget,
         )
@@ -1075,11 +1118,15 @@ async def _run_scoped_slice(
             summary=ref_bundle.summary,
         )
         return scope, adapted, ref_tel
-    prompt = f"{_format_deps_prompt(deps, mandate, include_guidance=True)}\n{slice_footer}"
     bundle, tel = await run_bounded_agent(
         build_synthesize_agent(deps.models.synthesize_model),
         behavior_kind=BehaviorKind.DELEGATE,
-        prompt=prompt,
+        prompt=_partition_deps_prompt(
+            deps,
+            mandate,
+            suffix=slice_footer,
+            include_guidance=True,
+        ),
         deps=_make_agent_deps(deps, scope=scope),
         budget=deps.budget,
     )

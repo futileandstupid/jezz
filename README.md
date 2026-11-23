@@ -21,6 +21,7 @@
 - **[Track 4 — Controlled `pydantic-evals` A/B Benchmark Report](docs/track-4-sdd-vs-pce-benchmark.md):** 46-workspace live A/B evaluation across Waves 4A–4E (`Control: Prose SDD` vs. `Treatment: Jezz PCE` on uniform `google:gemini-3.8-flash` and symmetric tiered `google:gemini-4-hydrogen` + `google:gemini-3.8-flash`) achieving `6/6` (`100%`) task occupancy closure on both uniform and tiered routing, `0.0%` silent defect escape (`36/36` held-out `Hypothesis` checks across Waves 4B–4E), and `-48.5%` tiered latency against `375` unwaived `JBC` violations (`36` `LIFE_SAFETY`, `0/23` occupiable) in `23/23` checked-off `- [x]` SDD builds.
 - **[Track 5 — Multi-Mandate Longitudinal Crucible & `JBC` Edition `1.2` Report](docs/track-5-multi-mandate-crucible.md):** 4-mandate longitudinal build of `jezz-crucible-ledger` (`11` units / `2,693` LOC across domain algebra, parameterized savepoint SQLite store, 2-wave topological DAG escrow + SHA-256 reconciliation, and brownfield CLI renovation under live `jezz hook stop` gates), 8 runtime/introspection calibrations, and `JBC-SEC-006` dynamic path anchoring.
 - **[Track 6 — Full $F_8 = 21$ Behavior Runtime Closure & Persistent Memory](docs/track-6-full-basis-runtime.md):** Complete `21 / 21` (`100%`) `AtomicBehaviorGraphNode` runtime coverage (`InspectEnvNode`, `ConsultNode`, `CurateMemoryNode`, `ProvisionNode`), rollback-safe `ProvisionPort` (`uv add`) + `BuildingInspector` manifest reload, symmetric `12`-slot specialist routing, and cross-mandate `.jezz/memory.json` continuity.
+- **[Track 7 — Token Cost Compression & Cross-Provider Generalizability](docs/track-7-prompt-caching-and-providers.md):** Enabled-by-default cross-provider prompt caching (`PromptCacheMode`, static `InstructionPart` canonicalization, provider-aware `CachePoint` slice partitioning), `448`-probe offline wire compatibility across Google/Anthropic/OpenAI/OpenRouter, repeatable `jezz benchmark --suite` matrix evaluation, and live Gemini Waves 7A–7B (`10` workspace builds) achieving `68.7%–72.5%` `PCE` cache hit ratios (`-61.8%` to `-65.2%` effective billed-input compression vs. `0.0%` on open-loop SDD).
 
 ## CLI Usage
 
@@ -38,13 +39,13 @@ uv run jezz audit <dossier.json> [--repo <repo_path>] [--format markdown|json]
 uv run jezz init [repo_path] [--plugin-scope workspace|global|none] [--pre-commit] [--overwrite]
 
 # Execute a greenfield PCE prompt or mandate (interactive TTY ELICIT + live progress + optional --plan-only review)
-uv run jezz run <repo_path> [--model <provider:model>] [--architect-model <provider:model>] (--prompt "..." | --mandate mandate.json | --resume-elicitation elicit.json --clarification "...") [--plan-only --write-mandate mandate.json] [--interactive] [--progress]
+uv run jezz run <repo_path> [--model <provider:model>] [--architect-model <provider:model>] [--prompt-cache auto|off|5m|1h] (--prompt "..." | --mandate mandate.json | --resume-elicitation elicit.json --clarification "...") [--plan-only --write-mandate mandate.json] [--interactive] [--progress]
 
 # Renovate an existing brownfield repository to zero-variance JBC v1.2 occupancy via BHV-17 REFACTOR
-uv run jezz renovate <repo_path> [--model <provider:model>] [--builder-model <provider:model>] (--prompt "..." | --mandate mandate.json) [--plan-only --write-mandate mandate.json] [--write-dossier dossier.json]
+uv run jezz renovate <repo_path> [--model <provider:model>] [--builder-model <provider:model>] [--prompt-cache auto|off|5m|1h] (--prompt "..." | --mandate mandate.json) [--plan-only --write-mandate mandate.json] [--write-dossier dossier.json]
 
-# Execute Track 4 controlled pydantic-evals A/B benchmark (Prose SDD vs. Jezz PCE)
-uv run jezz benchmark <work_dir> [--model <provider:model>] [--architect-model <provider:model>] [--max-concurrency 2] [--write-json ab.json]
+# Execute controlled pydantic-evals A/B benchmark (single suite or multi-provider / cache-ablation --suite matrix)
+uv run jezz benchmark <work_dir> [--model <provider:model> | --suite <label>=<model>[@<cache>]] [--prompt-cache auto|off|5m|1h] [--max-concurrency 2] [--write-json ab.json]
 
 # Launch the read-only JBC v1.2 & PCE statutory MCP server or Antigravity Stop lifecycle gate over stdio
 uv run jezz mcp [--root <repo_path>]
@@ -71,6 +72,7 @@ External interactive coding agents (Antigravity, Claude Code, Cursor, Codex, Jet
 # Project-level specialist routing and Proton Pass vault mapping in pyproject.toml:
 [tool.jezz.models]
 default = "google:gemini-3.8-flash"
+prompt_cache = "auto" # auto | off | prefix-only | 5m | 30m | 1h | 12h
 # architect = "google:gemini-4-hydrogen" # FRAME, DECOMPOSE, SPECIFY, HYPOTHESIZE
 # builder = "google:gemini-3.8-flash"    # PROVISION, INSTRUMENT, SYNTHESIZE, REFACTOR
 # inspector = "google:gemini-3.8-flash"  # INSPECT_CODE, INSPECT_ENV, CONSULT, CURATE_MEMORY

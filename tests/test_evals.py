@@ -480,8 +480,8 @@ async def test_tls_resilient_model_retries_transient_os_error(
 
         return FunctionModel(_handler)
 
-    monkeypatch.setattr("jezz.cli.infer_model", _flaky_infer)
-    monkeypatch.setattr("jezz.cli.asyncio.sleep", lambda _s: _noop_sleep())
+    monkeypatch.setattr("jezz.agents.providers.infer_model", _flaky_infer)
+    monkeypatch.setattr("jezz.agents.providers.asyncio.sleep", lambda _s: _noop_sleep())
     resilient = TlsResilientModel("test", max_attempts=3)
     agent = Agent(resilient)
     res = await agent.run("ping")
