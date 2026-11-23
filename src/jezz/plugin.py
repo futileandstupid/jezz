@@ -33,49 +33,54 @@ _RULES_AGENTS_MD: Final[str] = """# Jezz Statutory Engineering Rules (JBC v1.2 &
   `tmp_path` / `tempfile`, or `ContainedPath.from_parts(anchor, rel)`).
 
 ## Statutory Verification Workflow
-- Before writing or editing non-trivial Python modules under `src/` or `tests/`, dry-run candidate
-  source buffers in memory via MCP tool `jbc_preview_source` (`0` unwaived `RED_TAG` violations,
-  including whole-workspace `JBC-COG-003` cycle and private-import checks).
-- Use `jbc_get_code` or `jbc_list_codes` to inspect normative **Jezz Software Building Code
-  (`JBC` Edition 1.2)** requirements and remediations whenever a provision is cited.
-- Before ending any turn that modifies Python files, verify clean occupancy via
-  `jbc_inspect_differential` and run workspace dynamic gates (`uv run pytest`, `uv run mypy .`,
-  `uv run ruff check .`).
+- Before writing or editing non-trivial source modules (`.py`, `.ts`, `.tsx`, `.rs`, `.go`),
+  dry-run candidate source buffers in memory via MCP tool `jbc_preview_source` (`0` unwaived
+  `RED_TAG` violations, including whole-workspace `JBC-COG-003` cycle and encapsulation checks).
+- Use `jbc_get_code`, `jbc_list_codes`, or `jbc_query_ast_graph` to inspect normative **Jezz
+  Software Building Code (`JBC` Edition 1.2)** requirements, remediations, and AST/CST symbol maps.
+- Before ending any turn that modifies governed source files, verify clean occupancy via
+  `jbc_inspect_differential` and run workspace dynamic gates (e.g., `uv run pytest`,
+  `uv run mypy .`, `uv run ruff check .` for Python; `tsc`/`vitest`, `cargo test`, or `go test`
+  for polyglot modules).
 """
 
 _PCE_SKILL_MD: Final[str] = """---
 name: pce
 description: >-
   Executes the 5-phase Permit-and-Contract Engineering (PCE) workflow and enforces Jezz Software
-  Building Code (JBC Edition 1.2) occupancy gates. Activate when planning features, writing or
-  renovating Python code under JBC governance, or auditing PCE engineering dossiers.
+  Building Code (JBC Edition 1.2) occupancy gates across Python, TypeScript, Rust, and Go.
+  Activate when planning features, writing or renovating code under JBC governance, or auditing
+  PCE engineering dossiers.
 ---
 
 # Permit-and-Contract Engineering (`PCE`) Runbook
 
-Execute Python engineering tasks through the five statutory `PCE` phases rather than unverified
-prose specifications.
+Execute engineering tasks through the five statutory `PCE` phases rather than unverified prose
+specifications.
 
 ## Mode 1: Interactive Co-Engineering via `jezz` MCP Tools
 
 1. **Phase I — Mandate (`BHV-01 FRAME` / `BHV-02 ELICIT`):**
    - Enumerate open domain ambiguities and ask the user to resolve them before mutating code.
-   - Establish falsifiable invariants (`INV-001`, ...) mapped to concrete Python verification
+   - Establish falsifiable invariants (`INV-001`, ...) mapped to concrete AST/CST verification
      symbols and pairwise-disjoint `ModuleWriteScope`s.
 2. **Phase II — Permit (`BHV-03 BIND_CODES` / `BHV-04 INSPECT_CODE`):**
-   - Inspect baseline compliance with `jbc_inspect_workspace` or `jbc_inspect_differential`.
+   - Inspect baseline compliance with `jbc_inspect_workspace`, `jbc_inspect_differential`, or
+     `jbc_query_ast_graph`.
    - Verify any multi-step behavior topology with `jbc_verify_behavior_graph`.
 3. **Phase III — Contract & Instrumentation (`BHV-14 SPECIFY` / `BHV-15 INSTRUMENT`):**
-   - Author strict Pydantic models (`extra="forbid"`, `strict=True`, `allow_inf_nan=False`),
-     `@jezz_callable` / `@icontract` preconditions & postconditions, and `pytest` + `Hypothesis`
+   - Author strict closed schemas (`extra="forbid"` / `.strict()` / `deny_unknown_fields`),
+     runtime signature guards (`@jezz_callable` / `@icontract` / `.Validate()`), and property or
      falsification suites before implementation bodies.
-   - Validate candidate files in memory with `jbc_preview_source` prior to writing to disk.
+   - Validate candidate `.py`, `.ts`, `.tsx`, `.rs`, and `.go` buffers in memory with
+     `jbc_preview_source` prior to writing to disk.
 4. **Phase IV — Scoped Construction (`BHV-16 SYNTHESIZE` / `BHV-17 REFACTOR`):**
    - Implement or refactor strictly within authorized `ModuleWriteScope`s; preview each module
      via `jbc_preview_source`.
 5. **Phase V — Occupancy Verification (`BHV-18` / `BHV-19` / `BHV-21`):**
    - Confirm zero unwaived `JBC` violations via `jbc_inspect_differential`.
-   - Execute dynamic gates: `uv run pytest`, `uv run mypy .`, and `uv run ruff check .`.
+   - Execute dynamic gates (`uv run pytest`, `uv run mypy .`, `uv run ruff check .` for Python, or
+     the target ecosystem's typecheck/test suite).
    - When an `EngineeringDossier` JSON is produced, verify seal integrity via `jbc_audit_dossier`.
 
 ## Mode 2: Autonomous `jezz` CLI Delegation
@@ -86,7 +91,7 @@ prose specifications.
   `uv run jezz run <repo_path> --mandate mandate.json --write-dossier dossier.json`
 - **Brownfield JBC Renovation:**
   `uv run jezz renovate <repo_path> --prompt "<renovation objective>"`
-- **Differential Occupancy Ratchet:**
+- **Polyglot Differential Occupancy Ratchet:**
   `uv run jezz inspect <repo_path> --changed-since HEAD` (or `--staged`)
 """
 

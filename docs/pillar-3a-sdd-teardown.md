@@ -148,7 +148,7 @@ Consider a routine task: *"Implement an account transfer function."*
   4. **Silent Partial-Failure Corruption (`CWE-390`):** If query 2 fails after query 1 succeeds, `except Exception: pass` swallows the fault and vanishes money.
   5. **QA Theatre:** `test_transfer_funds` asserts `True`.
 
-**2. `jezz` (`PCE` + `JBC` v1.1) Outcome on the Exact Same Code:**
+**2. `jezz` (`PCE` + `JBC` v1.2) Outcome on the Exact Same Code:**
 `BuildingInspector` and `audit_pce_dossier` immediately issue a **`RED_TAG`** across **seven deterministic citations**—with zero LLM judgment involved:
 - `JBC-DBC-002` (unannotated `db`, `sender_id`, `recipient_id`, and return type)
 - `JBC-DBC-004` (missing `@jezz_callable` runtime signature/return breaker)
@@ -172,7 +172,7 @@ No system can formally prove equivalence between unstated human thoughts and a m
 ### Objection 2: *"Is all prose useless? What about Architecture Decision Records (ADRs)?"*
 `PCE` distinguishes **Design Rationale (*Why*)** from **Normative Specification (*What*)**:
 - **Rationale (*Why*):** Explaining *why* an architectural trade-off or `CodeVariance` was approved by human authority belongs in concise rationale fields (`BehaviorNode.rationale`, `CodeVariance.justification`).
-- **Specification (*What*):** Behavioral invariants, schemas, module boundaries, and safety rules must **never** live exclusively in prose—every `DomainInvariant` in `PCE` must bind to a compiled `verification_symbol` verified in the workspace AST (`UNBOUND_INVARIANT_SYMBOL`).
+- **Specification (*What*):** Behavioral invariants, schemas, module boundaries, and safety rules must **never** live exclusively in prose—every `DomainInvariant` in `PCE` must bind to a compiled `verification_symbol` verified in the workspace AST/CST (`UNBOUND_INVARIANT_SYMBOL`).
 
 ---
 
@@ -183,7 +183,7 @@ No system can formally prove equivalence between unstated human thoughts and a m
 | **Primary Unit of Intent** | Persona User Story (`As a..., I want...`) | LLM-inflated Markdown (`spec.md`, `requirements.md`) | Typed `EngineeringMandate` (~20 lines) + symbol-linked `DomainInvariant`s |
 | **Information Trajectory** | Unrecorded verbal drift | 4-hop stochastic prose amplification ($0.9^4$ drift) | Single `ELICIT` disambiguation $\to$ deterministic zero-entropy compiler/AST gates |
 | **Ambiguity Handling** | Deferred to "sprint conversation" | Optional LLM prose review (`/speckit.clarify`); guesses buried in text | Hard state-machine halt at `BHV-02 ELICIT` when `open_ambiguities` is non-empty |
-| **Universal Safety Standards** | Ad-hoc PR review comments | `constitution.md` / steering / LLM hooks (prompt begging) | 30-provision `JBC` v1.1 `CODE_BOOK` enforced deterministically on AST, graph, & runtime |
-| **Domain Specification Medium** | Sticky notes / Jira prose | Dead Markdown (`#### Scenario:` severed from test runner) | Compiled Python: `STRICT_FROZEN_CONFIG`, `@jezz_callable`, `@icontract`, `hypothesis` |
+| **Universal Safety Standards** | Ad-hoc PR review comments | `constitution.md` / steering / LLM hooks (prompt begging) | 31-provision `JBC` v1.2 `CODE_BOOK` enforced deterministically across Python, TS, Rust, & Go AST/CST, graph, & runtime |
+| **Domain Specification Medium** | Sticky notes / Jira prose | Dead Markdown (`#### Scenario:` severed from test runner) | Compiled schemas, contracts, & property suites (`STRICT_FROZEN_CONFIG`/`zod`/`serde`, `@jezz_callable`, `@icontract`, `hypothesis`/`vitest`/`cargo test`/`go test`) |
 | **Task / Workflow Topology** | Kanban columns & velocity points | Flat `- [ ]` checkboxes in `tasks.md` | Verified 21-behavior `BehaviorGraph` with Kildall fixed-point dataflow proofs |
 | **Completion Criterion** | Demo passes happy path | LLM edits `[ ]` $\to$ `[x]` (`openspec validate` exits `0`) | Cryptographically sealed `CertificateOfOccupancy` (`RED_TAG` forces `BHV-20 REVERT`) |
