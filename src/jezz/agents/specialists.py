@@ -11,17 +11,22 @@ from pydantic import Field
 from pydantic_ai import Agent, ModelRetry, RunContext, UsageLimits
 from pydantic_ai.models import Model
 
+from jezz.agents.memory import validate_curated_digest_invariants
 from jezz.agents.schemas import (
     AgentInvocationTelemetry,
     BehaviorExecutionBinding,
     ConstructionPatchBundle,
+    ConsultationBrief,
     ContractSpecificationBundle,
+    CuratedMemoryDigest,
+    EnvironmentObservation,
     EpistemicObservation,
     ExecutionEngineKind,
     FilePatchArtifact,
     FramedMandateProposal,
     InstrumentationSuiteBundle,
     PceRuntimeBudget,
+    ProvisionPlan,
     RefactorPatchBundle,
     RemediationHypothesis,
     ScopeDecompositionPlan,
@@ -39,7 +44,7 @@ from jezz.behaviors.taxonomy import BEHAVIOR_BASIS, BehaviorKind, WorkspaceEffec
 from jezz.codes.ast_utils import SourceUnit, parse_source_unit
 from jezz.guards import InstanceGuard, jezz_callable
 from jezz.methodology.dossier import extract_compiled_symbols
-from jezz.methodology.mandate import compute_scope_execution_waves
+from jezz.methodology.mandate import DependencyScope, compute_scope_execution_waves
 
 DETERMINISTIC_BEHAVIOR_KINDS: Final[frozenset[BehaviorKind]] = frozenset(
     {
@@ -250,6 +255,10 @@ class PceModelSuite:
     hypothesize_model: Model
     refactor_model: Model | None = None
     decompose_model: Model | None = None
+    inspect_env_model: Model | None = None
+    consult_model: Model | None = None
+    curate_memory_model: Model | None = None
+    provision_model: Model | None = None
 
 
 type GuardedModel = Annotated[Model, InstanceGuard(Model)]
@@ -271,6 +280,10 @@ def uniform_model_suite(
         hypothesize_model=model,
         refactor_model=model,
         decompose_model=model,
+        inspect_env_model=model,
+        consult_model=model,
+        curate_memory_model=model,
+        provision_model=model,
     )
 
 
@@ -456,6 +469,46 @@ def _validate_refactor_output(
     return bundle
 
 
+def _validate_curate_memory_output(
+    ctx: RunContext[JezzAgentDeps],
+    digest: CuratedMemoryDigest,
+) -> CuratedMemoryDigest:
+    if ctx.deps.mandate is None:
+        return digest
+    err = validate_curated_digest_invariants(
+        ctx.deps.mandate,
+        ctx.deps.prior_falsified_paths,
+        digest,
+    )
+    if err is not None:
+        raise ModelRetry(err)
+    return digest
+
+
+def _validate_provision_output(
+    ctx: RunContext[JezzAgentDeps],
+    plan: ProvisionPlan,
+) -> ProvisionPlan:
+    if ctx.deps.mandate is None:
+        return plan
+    expected_run = {
+        r.pep508_spec()
+        for r in ctx.deps.mandate.required_dependencies
+        if r.scope == DependencyScope.RUNTIME
+    }
+    expected_dev = {
+        r.pep508_spec()
+        for r in ctx.deps.mandate.required_dependencies
+        if r.scope == DependencyScope.DEV
+    }
+    if set(plan.approved_specs) != expected_run or set(plan.dev_specs) != expected_dev:
+        raise ModelRetry(
+            f"ProvisionPlan must match declared required_dependencies exactly: "
+            f"approved_specs={sorted(expected_run)}, dev_specs={sorted(expected_dev)}."
+        )
+    return plan
+
+
 _JBC_CANONICAL_EXEMPLAR: Final[str] = (
     "Canonical JBC v1.2 Idioms (copy exact jezz.guards signatures):\n"
     "```python\n"
@@ -562,7 +615,9 @@ def build_frame_agent(model: GuardedModel) -> GuardedAgent[FramedMandateProposal
             "cohesive DomainInvariants per module rather than fragmenting trivial field/enum "
             "checks into separate invariants); never emit Agile user stories ('As a ..., I want "
             "...'), Markdown checkboxes ('- [ ]'), ceremony jargon, or weasel modals "
-            "('should'/'might'/'ideally'/'maybe'/'try to'). "
+            "('should'/'might'/'ideally'/'maybe'/'try to'). Leave required_dependencies=() and "
+            "consultation_targets=() unless the prompt explicitly requests adding a third-party "
+            "package or consulting specific standards/docs. "
             "Populate open_ambiguities whenever material domain constraints, bounds, failure "
             "policies, or edge-case semantics are under-determined rather than guessing (note: "
             "JBC v1.2 conventions are already fixed and never ambiguous — all BaseModels use "
@@ -651,6 +706,84 @@ def build_inspect_agent(model: GuardedModel) -> GuardedAgent[EpistemicObservatio
             "snapshots directly, calling read tools only for existing files omitted inline."
         ),
     )
+
+
+@jezz_callable
+def build_inspect_env_agent(model: GuardedModel) -> GuardedAgent[EnvironmentObservation]:
+    """Build BHV-05 INSPECT_ENV specialist sensing runtime toolchain and manifest state."""
+    return Agent[JezzAgentDeps, EnvironmentObservation](
+        model,
+        output_type=EnvironmentObservation,
+        deps_type=JezzAgentDeps,
+        name="jezz_env_inspector",
+        retries=2,
+        toolsets=(build_readonly_toolset(),),
+        instructions=(
+            "Summarize the workspace Python version, declared runtime/dev dependency roots, "
+            "unprovisioned required_dependencies, and prior sealed mandates provided in the "
+            "substrate snapshot. Call _tool_inspect_package_api only if verifying an installed "
+            "package signature."
+        ),
+    )
+
+
+@jezz_callable
+def build_consult_agent(model: GuardedModel) -> GuardedAgent[ConsultationBrief]:
+    """Build BHV-06 CONSULT specialist anchoring normative standards and API citations."""
+    return Agent[JezzAgentDeps, ConsultationBrief](
+        model,
+        output_type=ConsultationBrief,
+        deps_type=JezzAgentDeps,
+        name="jezz_standards_consultant",
+        retries=2,
+        toolsets=(build_readonly_toolset(),),
+        instructions=(
+            "Synthesize normative citations and concrete implementation constraints from the "
+            "resolved JBC provisions, installed package APIs, and workspace reference documents "
+            "in the prompt. Use _tool_consult_building_code or _tool_inspect_package_api only "
+            "for unresolved targets."
+        ),
+    )
+
+
+@jezz_callable
+def build_curate_memory_agent(model: GuardedModel) -> GuardedAgent[CuratedMemoryDigest]:
+    """Build BHV-07 CURATE_MEMORY specialist compacting observations without losing negations."""
+    agent = Agent[JezzAgentDeps, CuratedMemoryDigest](
+        model,
+        output_type=CuratedMemoryDigest,
+        deps_type=JezzAgentDeps,
+        name="jezz_memory_curator",
+        retries=3,
+        toolsets=(build_readonly_toolset(),),
+        instructions=(
+            "Compact working memory observations into concise architectural facts while "
+            "preserving 100% of active mandate invariant_ids in retained_invariants and 100% of "
+            "prior falsified_paths in retained_falsified_paths verbatim."
+        ),
+    )
+    agent.output_validator(_validate_curate_memory_output)
+    return agent
+
+
+@jezz_callable
+def build_provision_agent(model: GuardedModel) -> GuardedAgent[ProvisionPlan]:
+    """Build BHV-13 PROVISION specialist validating declared manifest dependency specs."""
+    agent = Agent[JezzAgentDeps, ProvisionPlan](
+        model,
+        output_type=ProvisionPlan,
+        deps_type=JezzAgentDeps,
+        name="jezz_dependency_provisioner",
+        retries=3,
+        toolsets=(build_scoped_write_toolset(),),
+        instructions=(
+            "Validate and emit the exact PEP 508 dependency specifiers declared in the mandate's "
+            "required_dependencies (partitioned into approved_specs for runtime and dev_specs for "
+            "dev). Never add undeclared packages or omit declared requirements."
+        ),
+    )
+    agent.output_validator(_validate_provision_output)
+    return agent
 
 
 @jezz_callable

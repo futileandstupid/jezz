@@ -1,38 +1,64 @@
-"""Pillar 4: Typed pydantic-graph AtomicBehaviorGraphNodes enacting the 5-phase PCE lifecycle."""
+"""Pillar 4: Typed pydantic-graph AtomicBehaviorGraphNodes enacting all 21 PCE behaviors."""
 
 import asyncio
 import re
-from collections.abc import Callable, Sequence
+import sys
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import ClassVar, Final
+from types import MappingProxyType
+from typing import Annotated, ClassVar, Final
 
+import icontract
 from pydantic_graph import End, GraphRunContext
 
+from jezz.agents.memory import (
+    apply_curated_digest_to_state,
+    build_consultation_reference_pack,
+    compact_world_model_deterministically,
+    format_memory_prompt_context,
+    load_workspace_memory,
+    record_certified_mandate_memory,
+    save_workspace_memory,
+)
+from jezz.agents.provision import (
+    InProcessProvisionRunner,
+    ProvisionPort,
+    compute_missing_dependencies,
+    refresh_inspector_after_provision,
+)
 from jezz.agents.schemas import (
     AgentInvocationTelemetry,
     ConstructionPatchBundle,
+    CuratedMemoryDigest,
     ElicitationTicket,
+    EnvironmentObservation,
     FilePatchArtifact,
     InstrumentationSuiteBundle,
     PceRunStatus,
     PceRuntimeBudget,
     PceWorkflowMode,
     PceWorkflowResult,
+    WorkspaceMemoryLedger,
 )
 from jezz.agents.specialists import (
     PceModelSuite,
+    build_consult_agent,
+    build_curate_memory_agent,
     build_decompose_agent,
     build_frame_agent,
     build_hypothesize_agent,
     build_inspect_agent,
+    build_inspect_env_agent,
     build_instrument_agent,
+    build_provision_agent,
     build_refactor_agent,
     build_specify_agent,
     build_synthesize_agent,
     run_bounded_agent,
 )
 from jezz.agents.workspace import DynamicGatePort, JezzAgentDeps, WorkspaceSandbox
+from jezz.behaviors.fibonacci import FIBONACCI_BASIS_CARDINALITY, is_fibonacci
 from jezz.behaviors.graph import verify_behavior_graph
 from jezz.behaviors.runtime import (
     AgentExecutionState,
@@ -50,13 +76,14 @@ from jezz.codes.inspector import (
     record_inspection_to_state,
 )
 from jezz.codes.permits import CodePermit, GateAttestation, InspectionReport
-from jezz.guards import BudgetExceededError, ContainedPath, LoopBudget
+from jezz.guards import BudgetExceededError, ContainedPath, InstanceGuard, LoopBudget, jezz_callable
 from jezz.methodology.dossier import (
     EngineeringDossier,
     audit_pce_dossier,
     extract_compiled_symbols,
 )
 from jezz.methodology.mandate import (
+    DependencyRequirement,
     DomainInvariant,
     EngineeringMandate,
     ModuleWriteScope,
@@ -91,6 +118,8 @@ class PceGraphDeps:
     budget: PceRuntimeBudget
     remediation_loop: LoopBudget
     workflow_mode: PceWorkflowMode = PceWorkflowMode.GREENFIELD
+    provision_runner: ProvisionPort = field(default_factory=InProcessProvisionRunner)
+    initial_inspector: BuildingInspector | None = None
     elicitation_loop: LoopBudget = field(default_factory=lambda: LoopBudget(max_steps=3))
     task_prompt: str = ""
     mandate: EngineeringMandate | None = None
@@ -102,6 +131,10 @@ class PceGraphDeps:
     mandate_was_framed: bool = False
     ast_graph_brief: str = ""
     baseline_red_tag_summary: str = ""
+    memory_ledger: WorkspaceMemoryLedger = field(default_factory=WorkspaceMemoryLedger)
+    memory_context: str = ""
+    consultation_context: str = ""
+    curated_notes: list[str] = field(default_factory=list)
     latest_report: InspectionReport | None = None
     attestations: tuple[GateAttestation, ...] = ()
     telemetry: list[AgentInvocationTelemetry] = field(default_factory=list)
@@ -109,6 +142,12 @@ class PceGraphDeps:
     delegated_bundles: list[tuple[ModuleWriteScope, ConstructionPatchBundle]] = field(
         default_factory=list
     )
+
+
+type RuntimeNodeClass = Annotated[
+    type[AtomicBehaviorGraphNode[PceGraphDeps, PceWorkflowResult]],
+    InstanceGuard(type),
+]
 
 
 def _require_mandate(deps: PceGraphDeps) -> EngineeringMandate:
@@ -123,6 +162,7 @@ def _make_agent_deps(
     *,
     scope: ModuleWriteScope | None = None,
     scoped_invariants: tuple[DomainInvariant, ...] | None = None,
+    prior_falsified_paths: tuple[str, ...] = (),
 ) -> JezzAgentDeps:
     active_sandbox = deps.sandbox.scoped_view(scope) if scope is not None else deps.sandbox
     return JezzAgentDeps(
@@ -132,6 +172,7 @@ def _make_agent_deps(
         mandate=deps.mandate,
         active_scope=scope,
         scoped_invariants=scoped_invariants,
+        prior_falsified_paths=prior_falsified_paths,
     )
 
 
@@ -207,6 +248,8 @@ def _format_mandate_prompt(
     mandate: EngineeringMandate,
     sandbox: WorkspaceSandbox,
     guidance: str = "",
+    *,
+    extra_context: str = "",
 ) -> str:
     inv_lines = "; ".join(
         f"{inv.invariant_id} ({inv.verification_symbol}): {inv.statement}"
@@ -217,6 +260,11 @@ def _format_mandate_prompt(
         f"files={sorted(s.owned_files)}, symbols={list(s.contract_symbols)}"
         for s in mandate.write_scopes
     )
+    dep_line = (
+        f"\nDeclared Dependencies: {[d.pep508_spec() for d in mandate.required_dependencies]}"
+        if mandate.required_dependencies
+        else ""
+    )
     existing = _existing_authorized_files(sandbox)
     snapshots = _render_inline_authorized_snapshots(sandbox, existing)
     upstream = _render_upstream_src_context(sandbox)
@@ -224,14 +272,30 @@ def _format_mandate_prompt(
         f"Mandate {mandate.mandate_id}: {mandate.title}\n"
         f"Objective: {mandate.objective}\n"
         f"Invariants: {inv_lines}\n"
-        f"Write Scopes: {scope_lines}\n"
+        f"Write Scopes: {scope_lines}"
+        f"{dep_line}\n"
         f"Existing Authorized Files On Disk: {existing}"
+        f"{extra_context}"
         f"{upstream}"
         f"{snapshots}"
     )
     if guidance:
         return f"{base}\nRemediation Guidance: {guidance}"
     return base
+
+
+def _format_deps_prompt(
+    deps: PceGraphDeps,
+    mandate: EngineeringMandate,
+    *,
+    include_guidance: bool = False,
+) -> str:
+    return _format_mandate_prompt(
+        mandate,
+        deps.sandbox,
+        deps.remediation_guidance if include_guidance else "",
+        extra_context=f"{deps.memory_context}{deps.consultation_context}",
+    )
 
 
 def _format_baseline_red_tags(report: InspectionReport) -> str:
@@ -247,21 +311,25 @@ def _format_baseline_red_tags(report: InspectionReport) -> str:
 
 
 def _render_workspace_frame_context(deps: PceGraphDeps) -> str:
+    mem_ctx = format_memory_prompt_context(load_workspace_memory(deps.repo_root))
     units = deps.sandbox.load_units()
     if not units:
-        return ""
+        return mem_ctx
     ast_graph = build_workspace_ast_graph(units)
     if deps.workflow_mode != PceWorkflowMode.RENOVATE:
         if not ast_graph.symbols:
-            return ""
-        return f"\nExisting Workspace AST Graph:\n{ast_graph.to_compact_brief(max_modules=24)}"
+            return mem_ctx
+        return (
+            f"{mem_ctx}\nExisting Workspace AST Graph:\n"
+            f"{ast_graph.to_compact_brief(max_modules=24)}"
+        )
     files = [u.file_path for u in units]
     pub_syms = sorted(
         sym for sym in extract_compiled_symbols(units) if "." not in sym and not sym.startswith("_")
     )[:48]
     rough = deps.inspector.inspect_rough_in(units, permit=deps.permit)
     return (
-        f"\nBrownfield Workspace Files: {files}\n"
+        f"{mem_ctx}\nBrownfield Workspace Files: {files}\n"
         f"Existing Public Symbols: {pub_syms}\n"
         f"{ast_graph.to_compact_brief(max_modules=24)}\n"
         f"Baseline Inspection:\n{_format_baseline_red_tags(rough)}"
@@ -343,6 +411,7 @@ def _assemble_halted_result(
         graph_verification=verdict,
         inspection_report=deps.latest_report,
         elicitation_ticket=ticket,
+        memory_ledger=deps.memory_ledger,
         telemetry=tuple(deps.telemetry),
         falsified_paths=tuple(state.world_model.falsified_paths),
     )
@@ -384,7 +453,11 @@ class FrameNode(AtomicBehaviorGraphNode[PceGraphDeps, PceWorkflowResult]):
             ctx.deps.clarifications = ()
 
         mandate = _require_mandate(ctx.deps)
-        ctx.deps.sandbox = WorkspaceSandbox(ctx.deps.repo_root, mandate.authorized_files())
+        ctx.deps.sandbox = WorkspaceSandbox(
+            ctx.deps.repo_root,
+            mandate.authorized_files(),
+            authorized_manifests=mandate.authorized_manifest_files(),
+        )
         ctx.state.problem.objective = mandate.objective
         ctx.state.problem.ambiguities = list(mandate.open_ambiguities)
         step_id = _frame_step_id(ctx.state.trace)
@@ -451,7 +524,7 @@ class BindCodesNode(AtomicBehaviorGraphNode[PceGraphDeps, PceWorkflowResult]):
     async def run(
         self,
         ctx: GraphRunContext[AgentExecutionState, PceGraphDeps],
-    ) -> InspectCodeNode:
+    ) -> InspectEnvNode:
         bind_permit_to_state(ctx.state, ctx.deps.permit)
         _record_pce_step(
             self,
@@ -459,6 +532,69 @@ class BindCodesNode(AtomicBehaviorGraphNode[PceGraphDeps, PceWorkflowResult]):
             "bind_codes",
             f"Bound {len(ctx.deps.permit.bound_code_ids)} JBC code provisions",
         )
+        return InspectEnvNode()
+
+
+def _build_deterministic_env_observation(
+    deps: PceGraphDeps,
+    missing: Sequence[DependencyRequirement],
+) -> EnvironmentObservation:
+    py_ver = f"{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}"
+    run_roots = tuple(sorted(str(r) for r in deps.inspector.manifest.runtime_roots))[:256]
+    dev_roots = tuple(sorted(str(r) for r in deps.inspector.manifest.dev_roots))[:256]
+    missing_specs = tuple(d.pep508_spec() for d in missing)[:64]
+    prior_ids = tuple(m.mandate_id for m in deps.memory_ledger.sealed_mandates)[:128]
+    summary = (
+        f"Python {py_ver}; runtime_roots={len(run_roots)}, dev_roots={len(dev_roots)}, "
+        f"missing_deps={list(missing_specs)}, prior_mandates={len(prior_ids)}"
+    )[:240]
+    return EnvironmentObservation(
+        python_version=py_ver,
+        declared_runtime_roots=run_roots,
+        declared_dev_roots=dev_roots,
+        missing_dependencies=missing_specs,
+        prior_sealed_mandates=prior_ids,
+        summary=summary,
+    )
+
+
+@dataclass
+class InspectEnvNode(AtomicBehaviorGraphNode[PceGraphDeps, PceWorkflowResult]):
+    """Substrate Grounding (BHV-05 INSPECT_ENV): Sense toolchain, manifests, and memory ledger."""
+
+    behavior_kind: ClassVar[BehaviorKind] = BehaviorKind.INSPECT_ENV
+
+    async def run(
+        self,
+        ctx: GraphRunContext[AgentExecutionState, PceGraphDeps],
+    ) -> InspectCodeNode:
+        mandate = _require_mandate(ctx.deps)
+        ctx.deps.memory_ledger = load_workspace_memory(ctx.deps.repo_root)
+        ctx.deps.memory_context = format_memory_prompt_context(ctx.deps.memory_ledger)
+        missing = compute_missing_dependencies(
+            ctx.deps.inspector.manifest,
+            mandate.required_dependencies,
+        )
+        baseline = _build_deterministic_env_observation(ctx.deps, missing)
+        if mandate.required_dependencies:
+            active_model = ctx.deps.models.inspect_env_model or ctx.deps.models.inspect_model
+            env_prompt = (
+                f"Mandate {mandate.mandate_id} Required Dependencies: "
+                f"{[d.pep508_spec() for d in mandate.required_dependencies]}\n"
+                f"Substrate Snapshot: {baseline.model_dump_json()}"
+            )[:60_000]
+            env_obs, tel = await run_bounded_agent(
+                build_inspect_env_agent(active_model),
+                behavior_kind=BehaviorKind.INSPECT_ENV,
+                prompt=env_prompt,
+                deps=_make_agent_deps(ctx.deps),
+                budget=ctx.deps.budget,
+            )
+            ctx.deps.telemetry.append(tel)
+        else:
+            env_obs = baseline
+        ctx.state.world_model.observations.append(env_obs.summary)
+        _record_pce_step(self, ctx, "inspect_env", env_obs.summary[:240])
         return InspectCodeNode()
 
 
@@ -471,7 +607,7 @@ class InspectCodeNode(AtomicBehaviorGraphNode[PceGraphDeps, PceWorkflowResult]):
     async def run(
         self,
         ctx: GraphRunContext[AgentExecutionState, PceGraphDeps],
-    ) -> DecomposeNode:
+    ) -> ConsultNode | DecomposeNode:
         mandate = _require_mandate(ctx.deps)
         units = ctx.deps.sandbox.load_units()
         ast_graph = build_workspace_ast_graph(units)
@@ -480,9 +616,8 @@ class InspectCodeNode(AtomicBehaviorGraphNode[PceGraphDeps, PceWorkflowResult]):
             rough = ctx.deps.inspector.inspect_rough_in(units, permit=ctx.deps.permit)
             ctx.deps.baseline_red_tag_summary = _format_baseline_red_tags(rough)
             ctx.state.world_model.observations.append(ctx.deps.baseline_red_tag_summary[:1000])
-        inspect_prompt = (
-            f"{_format_mandate_prompt(mandate, ctx.deps.sandbox)}\n{ctx.deps.ast_graph_brief}"
-        )[:60_000]
+        raw_inspect_prompt = f"{_format_deps_prompt(ctx.deps, mandate)}\n{ctx.deps.ast_graph_brief}"
+        inspect_prompt = raw_inspect_prompt[:60_000]
         obs, tel = await run_bounded_agent(
             build_inspect_agent(ctx.deps.models.inspect_model),
             behavior_kind=BehaviorKind.INSPECT_CODE,
@@ -493,6 +628,45 @@ class InspectCodeNode(AtomicBehaviorGraphNode[PceGraphDeps, PceWorkflowResult]):
         ctx.deps.telemetry.append(tel)
         ctx.state.world_model.observations.append(obs.summary)
         _record_pce_step(self, ctx, "inspect_code", obs.summary[:240])
+        if mandate.consultation_targets:
+            return ConsultNode()
+        return DecomposeNode()
+
+
+@dataclass
+class ConsultNode(AtomicBehaviorGraphNode[PceGraphDeps, PceWorkflowResult]):
+    """Normative Grounding (BHV-06 CONSULT): Anchor standards, JBC clauses, and external APIs."""
+
+    behavior_kind: ClassVar[BehaviorKind] = BehaviorKind.CONSULT
+
+    async def run(
+        self,
+        ctx: GraphRunContext[AgentExecutionState, PceGraphDeps],
+    ) -> DecomposeNode:
+        mandate = _require_mandate(ctx.deps)
+        ref_pack = build_consultation_reference_pack(
+            ctx.deps.repo_root,
+            mandate.consultation_targets,
+        )
+        prompt = (
+            f"Mandate {mandate.mandate_id}: {mandate.objective}\n"
+            f"Consultation Targets: {list(mandate.consultation_targets)}\n\n"
+            f"Resolved Reference Pack:\n{ref_pack}"
+        )[:60_000]
+        active_model = ctx.deps.models.consult_model or ctx.deps.models.inspect_model
+        brief, tel = await run_bounded_agent(
+            build_consult_agent(active_model),
+            behavior_kind=BehaviorKind.CONSULT,
+            prompt=prompt,
+            deps=_make_agent_deps(ctx.deps),
+            budget=ctx.deps.budget,
+        )
+        ctx.deps.telemetry.append(tel)
+        ctx.state.world_model.external_citations.extend(brief.citations)
+        ctx.state.world_model.observations.append(brief.summary)
+        constraints = "\n".join(f"- {item}" for item in brief.normative_constraints)
+        ctx.deps.consultation_context = f"\nNormative Consultation Constraints:\n{constraints}"
+        _record_pce_step(self, ctx, "consult", brief.summary[:240])
         return DecomposeNode()
 
 
@@ -535,7 +709,11 @@ async def _maybe_refine_scopes_via_decompose(
         {**mandate.model_dump(), "write_scopes": plan.write_scopes}
     )
     ctx.deps.mandate = refined
-    ctx.deps.sandbox = WorkspaceSandbox(ctx.deps.repo_root, refined.authorized_files())
+    ctx.deps.sandbox = WorkspaceSandbox(
+        ctx.deps.repo_root,
+        refined.authorized_files(),
+        authorized_manifests=refined.authorized_manifest_files(),
+    )
     return refined
 
 
@@ -567,8 +745,10 @@ class DecomposeNode(AtomicBehaviorGraphNode[PceGraphDeps, PceWorkflowResult]):
                 reason="EngineeringMandate and write-scope plan ready for human sign-off.",
                 awaiting_plan_approval=True,
             )
-        if ctx.deps.workflow_mode == PceWorkflowMode.RENOVATE and not _has_authorized_tests(
-            mandate
+        if (
+            ctx.deps.workflow_mode == PceWorkflowMode.RENOVATE
+            and not _has_authorized_tests(mandate)
+            and not mandate.required_dependencies
         ):
             return CheckpointImplNode()
         return CheckpointContractNode()
@@ -583,13 +763,59 @@ class CheckpointContractNode(AtomicBehaviorGraphNode[PceGraphDeps, PceWorkflowRe
     async def run(
         self,
         ctx: GraphRunContext[AgentExecutionState, PceGraphDeps],
-    ) -> SpecifyNode | InstrumentNode:
+    ) -> ProvisionNode | SpecifyNode | InstrumentNode:
+        mandate = _require_mandate(ctx.deps)
         ckpt = ctx.deps.sandbox.create_checkpoint("checkpoint_contract")
         ctx.state.workspace.checkpoints.append(ckpt)
         _record_pce_step(self, ctx, "checkpoint_contract", "Captured pre-contract snapshot")
+        if mandate.required_dependencies:
+            return ProvisionNode()
         if ctx.deps.workflow_mode == PceWorkflowMode.RENOVATE:
             return InstrumentNode()
         return SpecifyNode()
+
+
+@dataclass
+class ProvisionNode(AtomicBehaviorGraphNode[PceGraphDeps, PceWorkflowResult]):
+    """Substrate Mutation (BHV-13 PROVISION): Provision declared dependencies and reload JBC."""
+
+    behavior_kind: ClassVar[BehaviorKind] = BehaviorKind.PROVISION
+
+    async def run(
+        self,
+        ctx: GraphRunContext[AgentExecutionState, PceGraphDeps],
+    ) -> SpecifyNode | InstrumentNode | CheckpointImplNode:
+        mandate = _require_mandate(ctx.deps)
+        active_model = ctx.deps.models.provision_model or ctx.deps.models.synthesize_model
+        prov_prompt = (
+            f"Mandate {mandate.mandate_id}: {mandate.objective}\n"
+            f"Declared required_dependencies: "
+            f"{[d.model_dump(mode='json') for d in mandate.required_dependencies]}"
+        )[:60_000]
+        _, tel = await run_bounded_agent(
+            build_provision_agent(active_model),
+            behavior_kind=BehaviorKind.PROVISION,
+            prompt=prov_prompt,
+            deps=_make_agent_deps(ctx.deps),
+            budget=ctx.deps.budget,
+        )
+        ctx.deps.telemetry.append(tel)
+        receipt = ctx.deps.provision_runner.provision_dependencies(
+            ctx.deps.sandbox,
+            mandate.required_dependencies,
+        )
+        ctx.state.workspace.modified_artifacts.update(receipt.updated_files)
+        ctx.deps.inspector = refresh_inspector_after_provision(
+            ctx.deps.repo_root,
+            ctx.deps.inspector,
+            mandate.required_dependencies,
+        )
+        _record_pce_step(self, ctx, "provision", receipt.summary[:240])
+        if ctx.deps.workflow_mode == PceWorkflowMode.GREENFIELD:
+            return SpecifyNode()
+        if _has_authorized_tests(mandate):
+            return InstrumentNode()
+        return CheckpointImplNode()
 
 
 @dataclass
@@ -606,7 +832,7 @@ class SpecifyNode(AtomicBehaviorGraphNode[PceGraphDeps, PceWorkflowResult]):
         bundle, tel = await run_bounded_agent(
             build_specify_agent(ctx.deps.models.specify_model),
             behavior_kind=BehaviorKind.SPECIFY,
-            prompt=_format_mandate_prompt(mandate, ctx.deps.sandbox),
+            prompt=_format_deps_prompt(ctx.deps, mandate),
             deps=_make_agent_deps(ctx.deps),
             budget=ctx.deps.budget,
         )
@@ -715,11 +941,7 @@ class InstrumentNode(AtomicBehaviorGraphNode[PceGraphDeps, PceWorkflowResult]):
         ctx: GraphRunContext[AgentExecutionState, PceGraphDeps],
     ) -> CheckpointImplNode:
         mandate = _require_mandate(ctx.deps)
-        prompt = _format_mandate_prompt(
-            mandate,
-            ctx.deps.sandbox,
-            ctx.deps.remediation_guidance,
-        )
+        prompt = _format_deps_prompt(ctx.deps, mandate, include_guidance=True)
         if ctx.deps.workflow_mode == PceWorkflowMode.RENOVATE:
             prompt = (
                 f"{prompt}\nBrownfield Renovation Mode: Preserve/lock existing observable "
@@ -787,7 +1009,7 @@ class SynthesizeNode(AtomicBehaviorGraphNode[PceGraphDeps, PceWorkflowResult]):
         bundle, tel = await run_bounded_agent(
             build_synthesize_agent(ctx.deps.models.synthesize_model),
             behavior_kind=BehaviorKind.SYNTHESIZE,
-            prompt=_format_mandate_prompt(mandate, ctx.deps.sandbox, ctx.deps.remediation_guidance),
+            prompt=_format_deps_prompt(ctx.deps, mandate, include_guidance=True),
             deps=_make_agent_deps(ctx.deps),
             budget=ctx.deps.budget,
         )
@@ -798,7 +1020,7 @@ class SynthesizeNode(AtomicBehaviorGraphNode[PceGraphDeps, PceWorkflowResult]):
 
 
 def _format_refactor_prompt(deps: PceGraphDeps, mandate: EngineeringMandate) -> str:
-    base = _format_mandate_prompt(mandate, deps.sandbox, deps.remediation_guidance)
+    base = _format_deps_prompt(deps, mandate, include_guidance=True)
     if deps.baseline_red_tag_summary:
         return f"{base}\nBaseline JBC RED_TAG Findings:\n{deps.baseline_red_tag_summary}"[:60_000]
     return base[:60_000]
@@ -853,10 +1075,7 @@ async def _run_scoped_slice(
             summary=ref_bundle.summary,
         )
         return scope, adapted, ref_tel
-    prompt = (
-        f"{_format_mandate_prompt(mandate, deps.sandbox, deps.remediation_guidance)}\n"
-        f"{slice_footer}"
-    )
+    prompt = f"{_format_deps_prompt(deps, mandate, include_guidance=True)}\n{slice_footer}"
     bundle, tel = await run_bounded_agent(
         build_synthesize_agent(deps.models.synthesize_model),
         behavior_kind=BehaviorKind.DELEGATE,
@@ -1055,7 +1274,7 @@ def _summarize_red_tag_findings(report: InspectionReport | None, stage: str) -> 
 def _capture_failed_src_snapshot(sandbox: WorkspaceSandbox) -> str:
     blocks: list[str] = []
     for rel in sorted(sandbox.modified_files):
-        if rel.startswith(("tests/", "test/")):
+        if rel.startswith(("tests/", "test/")) or rel in {"pyproject.toml", "uv.lock"}:
             continue
         try:
             content = sandbox.read_file(rel)
@@ -1114,6 +1333,8 @@ class RevertNode(AtomicBehaviorGraphNode[PceGraphDeps, PceWorkflowResult]):
             if ctx.deps.sandbox.has_checkpoint("checkpoint_contract"):
                 clean_files = ctx.deps.sandbox.restore_checkpoint("checkpoint_contract")
                 ctx.state.workspace.modified_artifacts = set(clean_files)
+                if ctx.deps.initial_inspector is not None:
+                    ctx.deps.inspector = ctx.deps.initial_inspector
             return ElicitNode(
                 reason=f"Remediation budget exhausted after {self.stage} RED_TAG.",
                 escalated_red_tag=True,
@@ -1135,9 +1356,9 @@ class HypothesizeNode(AtomicBehaviorGraphNode[PceGraphDeps, PceWorkflowResult]):
     async def run(
         self,
         ctx: GraphRunContext[AgentExecutionState, PceGraphDeps],
-    ) -> InstrumentNode | CheckpointImplNode:
+    ) -> CurateMemoryNode:
         mandate = _require_mandate(ctx.deps)
-        base_prompt = _format_mandate_prompt(mandate, ctx.deps.sandbox)
+        base_prompt = _format_deps_prompt(ctx.deps, mandate)
         cand_sec = (
             f"\nFailed Candidate Snapshot (prior to REVERT):\n{self.failed_candidate_excerpt}"
             if self.failed_candidate_excerpt
@@ -1155,6 +1376,53 @@ class HypothesizeNode(AtomicBehaviorGraphNode[PceGraphDeps, PceWorkflowResult]):
         ctx.deps.remediation_guidance = hypothesis.remediation_plan
         ctx.state.world_model.active_hypotheses.append(hypothesis.remediation_plan)
         _record_pce_step(self, ctx, "hypothesize", hypothesis.remediation_plan[:240])
+        return CurateMemoryNode()
+
+
+async def _run_memory_compaction(
+    ctx: GraphRunContext[AgentExecutionState, PceGraphDeps],
+    mandate: EngineeringMandate,
+) -> CuratedMemoryDigest:
+    if len(ctx.state.world_model.observations) < ctx.deps.budget.memory_compaction_threshold:
+        return compact_world_model_deterministically(ctx.state, mandate)
+    active_model = ctx.deps.models.curate_memory_model or ctx.deps.models.inspect_model
+    inv_ids = [inv.invariant_id for inv in mandate.invariants]
+    prompt = (
+        f"Mandate {mandate.mandate_id} Active Invariant IDs (MUST retain all): {inv_ids}\n"
+        f"Prior Falsified Paths (MUST retain verbatim): {ctx.state.world_model.falsified_paths}\n"
+        f"Active Hypotheses: {ctx.state.world_model.active_hypotheses}\n"
+        f"Raw Observations ({len(ctx.state.world_model.observations)}): "
+        f"{ctx.state.world_model.observations}"
+    )[:60_000]
+    digest, tel = await run_bounded_agent(
+        build_curate_memory_agent(active_model),
+        behavior_kind=BehaviorKind.CURATE_MEMORY,
+        prompt=prompt,
+        deps=_make_agent_deps(
+            ctx.deps,
+            prior_falsified_paths=tuple(ctx.state.world_model.falsified_paths),
+        ),
+        budget=ctx.deps.budget,
+    )
+    ctx.deps.telemetry.append(tel)
+    return digest
+
+
+@dataclass
+class CurateMemoryNode(AtomicBehaviorGraphNode[PceGraphDeps, PceWorkflowResult]):
+    """Working-Memory Compaction (BHV-07 CURATE_MEMORY): Evict stale noise, keep negations."""
+
+    behavior_kind: ClassVar[BehaviorKind] = BehaviorKind.CURATE_MEMORY
+
+    async def run(
+        self,
+        ctx: GraphRunContext[AgentExecutionState, PceGraphDeps],
+    ) -> InstrumentNode | CheckpointImplNode:
+        mandate = _require_mandate(ctx.deps)
+        digest = await _run_memory_compaction(ctx, mandate)
+        apply_curated_digest_to_state(ctx.state, mandate, digest)
+        ctx.deps.curated_notes.extend(digest.architectural_notes)
+        _record_pce_step(self, ctx, "curate_memory", digest.summary[:240])
         if _is_test_only_static_red_tag(ctx.deps.latest_report, mandate):
             return InstrumentNode()
         return CheckpointImplNode()
@@ -1199,6 +1467,16 @@ class CertifyNode(AtomicBehaviorGraphNode[PceGraphDeps, PceWorkflowResult]):
             msg = f"PCE Dossier failed Phase V audit: {audit.violations[0].message}"
             raise ValueError(msg)
 
+        updated_ledger = record_certified_mandate_memory(
+            ctx.deps.memory_ledger,
+            mandate,
+            artifact_digest=cert.artifact_digest,
+            architectural_notes=tuple(ctx.deps.curated_notes),
+            falsified_paths=tuple(ctx.state.world_model.falsified_paths),
+        )
+        if ctx.deps.budget.persist_workspace_memory:
+            save_workspace_memory(ctx.deps.repo_root, updated_ledger)
+
         return End(
             PceWorkflowResult(
                 status=PceRunStatus.OCCUPANCY_CERTIFIED,
@@ -1210,7 +1488,61 @@ class CertifyNode(AtomicBehaviorGraphNode[PceGraphDeps, PceWorkflowResult]):
                 inspection_report=final_report,
                 certificate=cert,
                 dossier_audit=audit,
+                memory_ledger=updated_ledger,
                 telemetry=tuple(ctx.deps.telemetry),
                 falsified_paths=tuple(ctx.state.world_model.falsified_paths),
             )
         )
+
+
+def _build_behavior_node_map() -> Mapping[BehaviorKind, tuple[RuntimeNodeClass, ...]]:
+    mapping: dict[BehaviorKind, tuple[RuntimeNodeClass, ...]] = {
+        BehaviorKind.FRAME: (FrameNode,),
+        BehaviorKind.ELICIT: (ElicitNode,),
+        BehaviorKind.BIND_CODES: (BindCodesNode,),
+        BehaviorKind.INSPECT_CODE: (InspectCodeNode,),
+        BehaviorKind.INSPECT_ENV: (InspectEnvNode,),
+        BehaviorKind.CONSULT: (ConsultNode,),
+        BehaviorKind.CURATE_MEMORY: (CurateMemoryNode,),
+        BehaviorKind.HYPOTHESIZE: (HypothesizeNode,),
+        BehaviorKind.DECOMPOSE: (DecomposeNode,),
+        BehaviorKind.DELEGATE: (DelegateNode,),
+        BehaviorKind.RECONCILE: (ReconcileNode,),
+        BehaviorKind.CHECKPOINT: (CheckpointContractNode, CheckpointImplNode),
+        BehaviorKind.PROVISION: (ProvisionNode,),
+        BehaviorKind.SPECIFY: (SpecifyNode,),
+        BehaviorKind.INSTRUMENT: (InstrumentNode,),
+        BehaviorKind.SYNTHESIZE: (SynthesizeNode,),
+        BehaviorKind.REFACTOR: (RefactorNode,),
+        BehaviorKind.VERIFY_STATIC: (VerifyStaticNode,),
+        BehaviorKind.VERIFY_DYNAMIC: (VerifyDynamicNode,),
+        BehaviorKind.REVERT: (RevertNode,),
+        BehaviorKind.CERTIFY: (CertifyNode,),
+    }
+    return MappingProxyType(mapping)
+
+
+PCE_BEHAVIOR_NODE_MAP: Final[Mapping[BehaviorKind, tuple[RuntimeNodeClass, ...]]] = (
+    _build_behavior_node_map()
+)
+
+
+@icontract.ensure(
+    lambda result: is_fibonacci(len(result)) and len(result) == FIBONACCI_BASIS_CARDINALITY
+)
+@jezz_callable
+def validate_runtime_node_coverage() -> Mapping[BehaviorKind, tuple[RuntimeNodeClass, ...]]:
+    """Verify that all 21 (F_8) BehaviorKinds have concrete AtomicBehaviorGraphNode classes."""
+    if set(PCE_BEHAVIOR_NODE_MAP) != set(BehaviorKind):
+        missing = sorted(set(BehaviorKind) - set(PCE_BEHAVIOR_NODE_MAP))
+        msg = f"PCE_BEHAVIOR_NODE_MAP omits BehaviorKind(s): {missing}."
+        raise ValueError(msg)
+    for kind, node_classes in PCE_BEHAVIOR_NODE_MAP.items():
+        if not node_classes:
+            msg = f"BehaviorKind '{kind}' maps to zero AtomicBehaviorGraphNode classes."
+            raise ValueError(msg)
+        for cls in node_classes:
+            if not issubclass(cls, AtomicBehaviorGraphNode) or cls.behavior_kind != kind:
+                msg = f"Node class '{cls.__name__}' mismatches expected BehaviorKind '{kind}'."
+                raise ValueError(msg)
+    return PCE_BEHAVIOR_NODE_MAP

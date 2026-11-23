@@ -57,3 +57,11 @@ With Pillars 1–4 implemented, self-audited, and passing (`jezz.behaviors`, `je
 **Goal:** Stress-test `jezz` longitudinally across 4 sequential, interdependent mandates in a single repository (**`jezz-crucible-ledger`** — Double-Entry Integer-Cent Ledger & Escrow Engine, `11` Python units / `2,693` LOC) spanning greenfield `--mandate`, raw `--prompt` with AST-grounded `DECOMPOSE`, 2-scope / 2-wave topological DAG `DELEGATE -> RECONCILE`, interactive co-engineering + brownfield `jezz renovate` (`BHV-17 REFACTOR`), and live `jezz hook stop` enforcement.
 
 - **Report & Calibrations:** [track-5-multi-mandate-crucible.md](track-5-multi-mandate-crucible.md) — Sealed all 4 sequential `EngineeringDossier`s with `0` unwaived `JBC` violations and `0` reverts (`21/21` `pytest` + `Hypothesis`, `mypy --strict` clean); landed 8 runtime/introspection calibrations (including parallel `InstrumentNode`, read-only upstream AST signature injection, test-only `mypy` remediation routing, and class-method / `TypeAliasType` package introspection closing `Wave 4E`); and codified **`JBC-SEC-006` (Edition `1.2` — `31` provisions)** banning hardcoded paths across code and generated plugins.
+
+---
+
+## Track 6 — Full $F_8 = 21$ Behavior Runtime Closure & Persistent Workspace Memory — *Completed*
+
+**Goal:** Close the remaining 4 `BehaviorKind`s (`BHV-05 INSPECT_ENV`, `BHV-06 CONSULT`, `BHV-07 CURATE_MEMORY`, `BHV-13 PROVISION`) as first-class `AtomicBehaviorGraphNode` subclasses in `PceWorkflowOrchestrator`, achieving **`21 / 21` (`100%`) runtime basis coverage**, rollback-safe dependency provisioning (`uv add` + `BuildingInspector` manifest reload), symmetric `12`-slot specialist routing, and cross-mandate `.jezz/memory.json` persistence.
+
+- **Report & Verification:** [track-6-full-basis-runtime.md](track-6-full-basis-runtime.md) — Verified `21/21` node bijection (`validate_runtime_node_coverage`), composite 21-behavior Kildall validity, PEP 508 flag/URL/path injection blocks, atomic `pyproject.toml`/`uv.lock` rollback, cross-`.venv` smoke-import discovery, and non-lossy `falsified_paths` preservation across sequential mandates (`tests/test_track6_full_basis_runtime.py`).

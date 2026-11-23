@@ -40,6 +40,13 @@ _WEASEL_MODAL_RE: Final[re.Pattern[str]] = re.compile(
 _PYTHON_SYMBOL_RE: Final[re.Pattern[str]] = re.compile(
     r"^[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*$"
 )
+_PEP508_PACKAGE_RE: Final[re.Pattern[str]] = re.compile(
+    r"^[A-Za-z0-9](?:[A-Za-z0-9._-]{0,126}[A-Za-z0-9])?$"
+)
+_PEP440_CONSTRAINT_RE: Final[re.Pattern[str]] = re.compile(
+    r"^(?:\s*(?:===|==|~=|!=|<=|>=|<|>)\s*[A-Za-z0-9._*+-]+"
+    r"(?:\s*,\s*(?:===|==|~=|!=|<=|>=|<|>)\s*[A-Za-z0-9._*+-]+)*\s*)?$"
+)
 
 
 def _validate_python_symbol_ref(symbol: str, *, field_label: str) -> None:
@@ -59,6 +66,56 @@ class PcePhase(StrEnum):
     CONTRACT = "contract"
     CONSTRUCTION = "construction"
     OCCUPANCY = "occupancy"
+
+
+class DependencyScope(StrEnum):
+    """Manifest dependency group targeted by ``BHV-13 PROVISION``."""
+
+    RUNTIME = "runtime"
+    DEV = "dev"
+
+
+class DependencyRequirement(BaseModel):
+    """Permit-checked PEP 508 dependency declaration authorized for ``BHV-13 PROVISION``."""
+
+    model_config = STRICT_FROZEN_CONFIG
+
+    package: Annotated[str, Field(min_length=1, max_length=128)]
+    version_constraint: Annotated[str, Field(max_length=128)] = ""
+    scope: DependencyScope = DependencyScope.RUNTIME
+    import_root: Annotated[str, Field(max_length=128)] = ""
+
+    @model_validator(mode="after")
+    def _validate_requirement_spec(self) -> Self:
+        if _PEP508_PACKAGE_RE.fullmatch(self.package) is None:
+            msg = (
+                f"Invalid package name '{self.package}'; must be a pure PEP 508 distribution "
+                "identifier without flags, paths, URLs, or shell metacharacters."
+            )
+            raise ValueError(msg)
+        if _PEP440_CONSTRAINT_RE.fullmatch(self.version_constraint) is None:
+            msg = (
+                f"Invalid version_constraint '{self.version_constraint}' for '{self.package}'; "
+                "use safe PEP 440 comparators (e.g. '>=2.0,<3.0')."
+            )
+            raise ValueError(msg)
+        if self.import_root and not self.import_root.isidentifier():
+            msg = f"import_root '{self.import_root}' must be a valid Python identifier."
+            raise ValueError(msg)
+        return self
+
+    @jezz_callable
+    def pep508_spec(self) -> IdentifierStr:
+        """Render the normalized PEP 508 specifier string passed to ``uv add``."""
+        compact_ver = "".join(self.version_constraint.split())
+        return f"{self.package}{compact_ver}"
+
+    @jezz_callable
+    def effective_import_root(self) -> IdentifierStr:
+        """Return explicit ``import_root`` or normalized PEP 508 root module name."""
+        if self.import_root:
+            return self.import_root
+        return re.sub(r"[-.]+", "_", self.package).lower()
 
 
 @jezz_callable
@@ -201,6 +258,18 @@ def compute_scope_execution_waves(
     return tuple(waves)
 
 
+def _verify_unique_dependencies(deps: Sequence[DependencyRequirement], mandate_id: str) -> None:
+    seen: set[tuple[str, DependencyScope]] = set()
+    for dep in deps:
+        key = (dep.package.lower(), dep.scope)
+        if key in seen:
+            msg = (
+                f"Duplicate DependencyRequirement '{dep.package}' ({dep.scope}) in '{mandate_id}'."
+            )
+            raise ValueError(msg)
+        seen.add(key)
+
+
 class EngineeringMandate(BaseModel):
     """Phase I PCE artifact replacing prose PRDs, user stories, and tasks.md checklists."""
 
@@ -222,6 +291,16 @@ class EngineeringMandate(BaseModel):
         WIRE_TUPLE_VALIDATOR,
         Field(min_length=1, max_length=64),
     ]
+    required_dependencies: Annotated[
+        tuple[DependencyRequirement, ...],
+        WIRE_TUPLE_VALIDATOR,
+        Field(max_length=32),
+    ] = ()
+    consultation_targets: Annotated[
+        tuple[IdentifierStr, ...],
+        WIRE_TUPLE_VALIDATOR,
+        Field(max_length=32),
+    ] = ()
     out_of_scope: Annotated[
         tuple[ShortText, ...],
         WIRE_TUPLE_VALIDATOR,
@@ -245,6 +324,7 @@ class EngineeringMandate(BaseModel):
                 raise ValueError(msg)
             seen_invariants.add(inv.invariant_id)
 
+        _verify_unique_dependencies(self.required_dependencies, self.mandate_id)
         compute_scope_execution_waves(self.write_scopes)
         return self
 
@@ -260,6 +340,13 @@ class EngineeringMandate(BaseModel):
         for scope in self.write_scopes:
             combined |= set(scope.owned_files)
         return frozenset(combined)
+
+    @jezz_callable
+    def authorized_manifest_files(self) -> frozenset[IdentifierStr]:
+        """Return manifest/lockfile paths authorized when ``required_dependencies`` is non-empty."""
+        if not self.required_dependencies:
+            return frozenset()
+        return frozenset({"pyproject.toml", "uv.lock"})
 
     @jezz_callable
     def execution_waves(

@@ -215,6 +215,10 @@ def _build_isolated_model_suite(
         hypothesize_model=deps.model_factory(),
         refactor_model=deps.model_factory(),
         decompose_model=deps.model_factory(),
+        inspect_env_model=deps.model_factory(),
+        consult_model=deps.model_factory(),
+        curate_memory_model=deps.model_factory(),
+        provision_model=deps.model_factory(),
     )
 
 

@@ -1,6 +1,7 @@
 """Pillar 4: Contained workspace sandbox, checkpoint rollback, toolsets, and dynamic gates."""
 
 import ast
+import contextlib
 import hashlib
 import importlib
 import shutil
@@ -8,7 +9,7 @@ import subprocess
 import sys
 import time
 import tracemalloc
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Iterator, Sequence
 from collections.abc import Set as AbstractSet
 from dataclasses import dataclass
 from pathlib import Path
@@ -22,6 +23,7 @@ from jezz.agents.env_introspect import inspect_installed_package_api
 from jezz.agents.schemas import FilePatchArtifact
 from jezz.codes.ast_graph import build_workspace_ast_graph, extract_symbol_source_slice
 from jezz.codes.ast_utils import SourceUnit, dotted_expr_name, parse_source_unit
+from jezz.codes.codebook import CODE_BOOK
 from jezz.codes.inspector import BuildingInspector, load_workspace_units
 from jezz.codes.permits import CodePermit, GateAttestation, GateKind
 from jezz.guards import (
@@ -86,9 +88,12 @@ class WorkspaceSandbox:
         self,
         repo_root: Path,
         authorized_files: AbstractSet[IdentifierStr],
+        *,
+        authorized_manifests: AbstractSet[IdentifierStr] = frozenset(),
     ) -> None:
         self._repo_root: Path = repo_root.resolve()
         self._authorized_files: frozenset[str] = frozenset(authorized_files)
+        self._authorized_manifests: frozenset[str] = frozenset(authorized_manifests)
         self._snapshots: dict[str, tuple[dict[str, str | None], set[str]]] = {}
         self._modified_files: set[str] = set()
 
@@ -99,8 +104,13 @@ class WorkspaceSandbox:
 
     @property
     def authorized_files(self) -> frozenset[str]:
-        """Return immutable set of files authorized for write mutations."""
+        """Return immutable set of Python files authorized for write mutations."""
         return self._authorized_files
+
+    @property
+    def authorized_manifests(self) -> frozenset[str]:
+        """Return immutable set of manifest/lockfile paths authorized for ``BHV-13 PROVISION``."""
+        return self._authorized_manifests
 
     @property
     def modified_files(self) -> frozenset[str]:
@@ -125,12 +135,13 @@ class WorkspaceSandbox:
         rel_path: IdentifierStr,
         content: SourceCodeText,
     ) -> ContainedPath:
-        """Write ``content`` to ``rel_path`` iff ``rel_path`` is inside ``authorized_files``."""
+        """Write ``content`` iff ``rel_path`` is inside authorized scope or manifest set."""
         target = ContainedPath.from_parts(self._repo_root, rel_path)
-        if target.relative_posix not in self._authorized_files:
+        allowed = self._authorized_files | self._authorized_manifests
+        if target.relative_posix not in allowed:
             msg = (
                 f"Write-scope violation: '{target.relative_posix}' is outside authorized "
-                f"ModuleWriteScopes {sorted(self._authorized_files)}."
+                f"ModuleWriteScopes {sorted(allowed)}."
             )
             raise PermissionError(msg)
         _write_contained_utf8(target, content)
@@ -145,7 +156,7 @@ class WorkspaceSandbox:
     @jezz_callable
     def create_checkpoint(self, checkpoint_id: IdentifierStr) -> IdentifierStr:
         """Record an immutable rollback snapshot (BHV-12 CHECKPOINT)."""
-        tracked = self._authorized_files | self._modified_files
+        tracked = self._authorized_files | self._authorized_manifests | self._modified_files
         file_map = _capture_files_snapshot(self._repo_root, tracked)
         self._snapshots[checkpoint_id] = (file_map, set(self._modified_files))
         return checkpoint_id
@@ -340,6 +351,7 @@ class JezzAgentDeps:
     mandate: EngineeringMandate | None = None
     active_scope: ModuleWriteScope | None = None
     scoped_invariants: tuple[DomainInvariant, ...] | None = None
+    prior_falsified_paths: tuple[str, ...] = ()
 
 
 def _tool_list_authorized_files(ctx: RunContext[JezzAgentDeps]) -> tuple[str, ...]:
@@ -466,6 +478,39 @@ def _is_ignorable_missing_sibling(
     return missing_root in roots
 
 
+def _discover_workspace_site_packages(repo_root: Path) -> list[str]:
+    venv_dir = ContainedPath.from_parts(repo_root, ".venv").resolved_path
+    if not venv_dir.is_dir():
+        return []
+    found: list[str] = []
+    for sp in sorted(venv_dir.glob("**/site-packages")):
+        sp_str = str(sp.resolve())
+        if sp.is_dir() and sp_str not in sys.path and sp_str not in found:
+            found.append(sp_str)
+    return found
+
+
+@contextlib.contextmanager
+def _with_workspace_sys_path(
+    repo_root: Path,
+    *,
+    stage_src: str | None = None,
+) -> Iterator[None]:
+    added = _discover_workspace_site_packages(repo_root)
+    if stage_src is not None:
+        added = [stage_src, *added]
+    for item in reversed(added):
+        sys.path.insert(0, item)
+    if added:
+        importlib.invalidate_caches()
+    try:
+        yield
+    finally:
+        for item in added:
+            if item in sys.path:
+                sys.path.remove(item)
+
+
 @jezz_callable
 def verify_runtime_importable_patches(
     sandbox: Annotated[WorkspaceSandbox, InstanceGuard(WorkspaceSandbox)],
@@ -482,22 +527,21 @@ def verify_runtime_importable_patches(
     stage, roots, mod_pairs = _stage_candidate_src_tree(sandbox.repo_root, src_patches)
     stage_src_str = str(ContainedPath.from_parts(stage.resolved_path, "src").resolved_path)
     _evict_staged_modules(roots)
-    sys.path.insert(0, stage_src_str)
     try:
-        for rel_path, mod_name in mod_pairs:
-            try:
-                loaded = importlib.import_module(mod_name)
-                _rebuild_module_models(loaded)
-            except _RUNTIME_IMPORT_ERRORS as exc:
-                if _is_ignorable_missing_sibling(exc, roots, ignore_missing_local_imports):
-                    continue
-                detail = str(exc).splitlines()[0][:260] if str(exc) else type(exc).__name__
-                return (
-                    f"Runtime import/schema error in '{rel_path}': {type(exc).__name__}: {detail}"
-                )
+        with _with_workspace_sys_path(sandbox.repo_root, stage_src=stage_src_str):
+            for rel_path, mod_name in mod_pairs:
+                try:
+                    loaded = importlib.import_module(mod_name)
+                    _rebuild_module_models(loaded)
+                except _RUNTIME_IMPORT_ERRORS as exc:
+                    if _is_ignorable_missing_sibling(exc, roots, ignore_missing_local_imports):
+                        continue
+                    detail = str(exc).splitlines()[0][:260] if str(exc) else type(exc).__name__
+                    return (
+                        f"Runtime import/schema error in '{rel_path}': "
+                        f"{type(exc).__name__}: {detail}"
+                    )
     finally:
-        if stage_src_str in sys.path:
-            sys.path.remove(stage_src_str)
         _evict_staged_modules(roots)
         if stage.resolved_path.exists():
             shutil.rmtree(stage.resolved_path)
@@ -632,9 +676,9 @@ def _tool_inspect_package_api(
     symbol_filter: IdentifierStr | None = None,
 ) -> BoundedText:
     """Introspect installed stdlib or .venv package classes, callables, and signatures."""
-    _ = ctx
     try:
-        summary = inspect_installed_package_api(module_path, symbol_filter=symbol_filter)
+        with _with_workspace_sys_path(ctx.deps.sandbox.repo_root):
+            summary = inspect_installed_package_api(module_path, symbol_filter=symbol_filter)
     except ImportError, ValueError:
         return (
             f"# NOT_FOUND: '{module_path}' is not an importable installed dotted module "
@@ -642,6 +686,24 @@ def _tool_inspect_package_api(
             "tools for local src/... modules)."
         )
     return summary.to_compact_text()
+
+
+def _tool_consult_building_code(
+    ctx: RunContext[JezzAgentDeps],
+    code_id: IdentifierStr,
+) -> BoundedText:
+    """Retrieve the normative Jezz Software Building Code (JBC v1.2) clause for ``code_id``."""
+    _ = ctx
+    code = CODE_BOOK.get(code_id.strip().upper())
+    if code is None:
+        return f"# NOT_FOUND: '{code_id}' is not a registered JBC v1.2 code identifier."
+    refs = ", ".join(f"{r.body.value} {r.clause}" for r in code.standard_refs)
+    return (
+        f"{code.code_id} ({code.severity.value}) — {code.title}\n"
+        f"- Normative Rule: {code.normative_rule}\n"
+        f"- Pass Criteria: {code.pass_criteria}\n"
+        f"- Standards Lineage: {refs}"
+    )[:4_096]
 
 
 def _missing_test_verification_symbols(
@@ -722,6 +784,7 @@ def build_readonly_toolset() -> Annotated[
             _tool_find_symbol_callers,
             _tool_read_symbol_slice,
             _tool_inspect_package_api,
+            _tool_consult_building_code,
         ),
         max_retries=4,
         timeout=10.0,
@@ -744,6 +807,7 @@ def build_scoped_write_toolset() -> Annotated[
             _tool_find_symbol_callers,
             _tool_read_symbol_slice,
             _tool_inspect_package_api,
+            _tool_consult_building_code,
             _tool_preview_rough_in,
         ),
         max_retries=4,

@@ -20,6 +20,11 @@ from pydantic_ai.settings import ModelSettings
 
 from jezz.agents.nodes import ElicitationCallback
 from jezz.agents.orchestrator import PceWorkflowOrchestrator
+from jezz.agents.provision import (
+    InProcessProvisionRunner,
+    ProvisionPort,
+    UvSubprocessProvisionRunner,
+)
 from jezz.agents.routing import (
     CliModelOverrides,
     ResolvedModelRouting,
@@ -576,10 +581,10 @@ def _execute_pce_run(
         raise ValueError(msg)
     routing, creds_by_model = _resolve_cli_routing(ns, (resolved_repo, Path.cwd()))
     suite = routing.build_suite(lambda m: _instantiate_cli_model(m, creds_by_model[m]))
-    runner: DynamicGatePort = (
-        UvSubprocessGateRunner()
-        if ns.gate_runner == GateRunnerChoice.SUBPROCESS
-        else InProcessGateRunner()
+    is_uv = ns.gate_runner == GateRunnerChoice.SUBPROCESS
+    runner: DynamicGatePort = UvSubprocessGateRunner() if is_uv else InProcessGateRunner()
+    provisioner: ProvisionPort = (
+        UvSubprocessProvisionRunner() if is_uv else InProcessProvisionRunner()
     )
     budget = PceRuntimeBudget.production_defaults(agent_timeout_sec=min(480.0, timeout_sec))
     pre_supplied = (
@@ -591,6 +596,7 @@ def _execute_pce_run(
     orchestrator = PceWorkflowOrchestrator(
         suite,
         gate_runner=runner,
+        provision_runner=provisioner,
         budget=budget,
         elicitation_callback=hooks,
     )
@@ -607,9 +613,10 @@ def _persist_run_dossier(
         msg = "Cannot persist EngineeringDossier: workflow halted prior to inspection."
         raise ValueError(msg)
     target = ContainedPath.from_parts(resolved_repo, rel_target)
+    allowed = result.mandate.authorized_files() | result.mandate.authorized_manifest_files()
     present_mutated = frozenset(
         rel_file
-        for rel_file in result.mandate.authorized_files()
+        for rel_file in allowed
         if ContainedPath.from_parts(resolved_repo, rel_file).resolved_path.is_file()
     )
     dossier = EngineeringDossier(

@@ -25,7 +25,7 @@ flowchart BT
 ```
 
 Within `src/jezz/agents/`, internal imports also obey a strict DAG:
-`schemas.py` $\to$ `env_introspect.py` $\to$ `workspace.py` $\to$ `specialists.py` $\to$ `routing.py` $\to$ `nodes.py` $\to$ `orchestrator.py` $\to$ `__init__.py`.
+`schemas.py` $\to$ `env_introspect.py` $\to$ `memory.py` $\to$ `workspace.py` $\to$ `provision.py` $\to$ `specialists.py` $\to$ `routing.py` $\to$ `nodes.py` $\to$ `orchestrator.py` $\to$ `__init__.py`.
 
 ---
 
@@ -62,19 +62,26 @@ Every `BehaviorKind` in the $F_8 = 21$ basis is mapped bijectively inside `BEHAV
   - `build_specify_agent`, `build_instrument_agent`, and `build_synthesize_agent` enforce `ModuleWriteScope` file boundaries and verify all mandated `contract_symbols` and `verification_symbol`s exist in the combined AST.
 - **Phase-Scoped Resource Breakers & Crash-Safe Rollback (`run_bounded_agent`, `orchestrator.py`):** Every `agent.run(...)` call is wrapped in `async with asyncio.timeout(budget.agent_timeout_sec):` (`JBC-FLT-005`) and `pydantic_ai.UsageLimits` (`PceRuntimeBudget.request_limit_for(kind)`, defaulting to `28` on `FRAME`/`SPECIFY` and `36` on `INSTRUMENT`/`SYNTHESIZE`/`REFACTOR`/`DELEGATE`), while `_rollback_aborted_sandbox` restores the earliest workspace checkpoint if an uncaught timeout or transport exception aborts mid-run.
 
-### Tier 2 — Inter-Step `pydantic-graph` State Machine (`nodes.py`, `orchestrator.py`)
+### Tier 2 — Inter-Step `pydantic-graph` State Machine (`nodes.py`, `orchestrator.py` — `21 / 21` Behaviors)
 
 ```mermaid
 flowchart TD
     Frame["BHV-01 FRAME\nFrameNode"] -->|"open_ambiguities > 0"| Elicit["BHV-02 ELICIT\nElicitNode"]
     Elicit -->|"clarifications supplied"| Frame
     Frame -->|"unambiguous"| Bind["BHV-03 BIND_CODES\nBindCodesNode"]
-    Bind --> Inspect["BHV-04 INSPECT_CODE\nInspectCodeNode"]
-    Inspect --> Decompose["BHV-09 DECOMPOSE\nDecomposeNode (AST-Grounded DAG)"]
-    Decompose -->|"greenfield or brownfield+tests"| CkptC["BHV-12 CHECKPOINT\nCheckpointContractNode"]
-    Decompose -->|"brownfield (locked tests)"| CkptI["BHV-12 CHECKPOINT\nCheckpointImplNode"]
-    CkptC -->|"greenfield (existing)"| Specify["BHV-14 SPECIFY\nSpecifyNode"]
-    CkptC -->|"renovate or test-only remediation"| Instrument["BHV-15 INSTRUMENT\nInstrumentNode (DAG-Wave TaskGroup)"]
+    Bind --> IEnv["BHV-05 INSPECT_ENV\nInspectEnvNode (.jezz/memory.json + Manifest)"]
+    IEnv --> Inspect["BHV-04 INSPECT_CODE\nInspectCodeNode"]
+    Inspect -->|"consultation_targets > 0"| Consult["BHV-06 CONSULT\nConsultNode"]
+    Inspect -->|"self-contained"| Decompose["BHV-09 DECOMPOSE\nDecomposeNode (AST-Grounded DAG)"]
+    Consult --> Decompose
+    Decompose -->|"greenfield or brownfield+tests or deps"| CkptC["BHV-12 CHECKPOINT\nCheckpointContractNode"]
+    Decompose -->|"brownfield (locked tests, no deps)"| CkptI["BHV-12 CHECKPOINT\nCheckpointImplNode"]
+    CkptC -->|"required_dependencies > 0"| Prov["BHV-13 PROVISION\nProvisionNode (ProvisionPort + Inspector Reload)"]
+    CkptC -->|"greenfield (no deps)"| Specify["BHV-14 SPECIFY\nSpecifyNode"]
+    CkptC -->|"renovate (no deps)"| Instrument["BHV-15 INSTRUMENT\nInstrumentNode (DAG-Wave TaskGroup)"]
+    Prov -->|"greenfield"| Specify
+    Prov -->|"renovate + tests"| Instrument
+    Prov -->|"renovate (locked tests)"| CkptI
     Specify --> Instrument
     Instrument --> CkptI
     CkptI -->|"1 scope (greenfield)"| Synth["BHV-16 SYNTHESIZE\nSynthesizeNode"]
@@ -86,12 +93,13 @@ flowchart TD
     Reconcile --> VStatic
     VStatic -->|"APPROVED"| VDyn["BHV-19 VERIFY_DYNAMIC\nVerifyDynamicNode (inspect_final)"]
     VStatic -->|"RED_TAG"| Revert["BHV-20 REVERT\nRevertNode (restore checkpoint_impl)"]
-    VDyn -->|"APPROVED"| Certify["BHV-21 CERTIFY\nCertifyNode (Seal + Dossier Audit)"]
+    VDyn -->|"APPROVED"| Certify["BHV-21 CERTIFY\nCertifyNode (Seal + .jezz/memory.json + Dossier Audit)"]
     VDyn -->|"RED_TAG"| Revert
     Revert -->|"budget remaining"| Hyp["BHV-08 HYPOTHESIZE\nHypothesizeNode"]
     Revert -->|"LoopBudget exhausted"| Elicit
-    Hyp -->|"impl fault"| CkptI
-    Hyp -->|"test-only static/mypy fault"| CkptC
+    Hyp --> Curate["BHV-07 CURATE_MEMORY\nCurateMemoryNode (Preserve Invariants + Negations)"]
+    Curate -->|"impl fault"| CkptI
+    Curate -->|"test-only static/mypy fault"| Instrument
 ```
 
 ### Key Runtime Guarantees
@@ -100,6 +108,7 @@ flowchart TD
 3. **AST-Grounded Topological DAG Planning & Multi-Wave Parallel Execution (`DECOMPOSE`, `INSTRUMENT`, `DELEGATE -> RECONCILE`):** Post-inspection `DecomposeNode` (`build_decompose_agent`) refines multi-scope mandates against `WorkspaceAstGraph` and validates acyclic `ModuleWriteScope.depends_on` waves via `compute_scope_execution_waves`. `InstrumentNode` fans out concurrent `asyncio.TaskGroup` workers across independent test-owning scopes, and `DelegateNode` executes topological waves sequentially (parallelizing independent scopes within each wave while exposing completed upstream module snapshots to downstream waves). `ReconcileNode` proves pairwise file-set disjointness before committing to the workspace.
 4. **Anti-Blind-Retry Remediation (`RED_TAG -> REVERT -> HYPOTHESIZE -> CHECKPOINT`):** If Rough-In or Final inspection issues a `RED_TAG` (with `GateAttestation.summary` capturing exact `mypy` / `pytest` stderr diagnostics in `JBC-VRF-005`/`006`), `RevertNode` forwards pre-revert candidate snapshots to `HypothesizeNode`, restores `checkpoint_impl`, records citations in `WorldModelState.falsified_paths`, ticks a deterministic `LoopBudget`, and forces causal diagnosis (`BHV-08`). Implementation faults route back to `CheckpointImplNode`, whereas test-only static/`mypy` faults (strictly excluding `pytest` failures so tests can never be weakened to pass broken code) route via `CheckpointContractNode -> InstrumentNode`. If `LoopBudget` is exhausted, `RevertNode` restores the clean baseline (`checkpoint_contract` when test edits faulted) and escalates via `ElicitNode` (`PceRunStatus.ESCALATED_AFTER_RED_TAG`).
 5. **Trace & Dossier Soundness:** Every terminating execution path—whether `HALTED_FOR_ELICITATION`, `HALTED_FOR_PLAN_APPROVAL`, `ESCALATED_AFTER_RED_TAG`, 1-pass `OCCUPANCY_CERTIFIED`, `ELICIT -> FRAME` resumed `OCCUPANCY_CERTIFIED`, brownfield `RENOVATE` `OCCUPANCY_CERTIFIED`, or multi-cycle self-healed `OCCUPANCY_CERTIFIED`—induces a mathematically valid Pillar 1 `BehaviorGraph` (`verify_behavior_graph(result.induced_graph).is_valid == True`), and every certified run passes `audit_pce_dossier` across all five `PCE` phases.
-6. **Multi-Model Specialist Routing & Per-Provider Vault Isolation (`routing.py`, `secrets.py`):** `[tool.jezz.models]` (plus `[tool.jezz.models.roles]`) and CLI tier flags (`--architect-model` for `FRAME`/`DECOMPOSE`/`SPECIFY`/`HYPOTHESIZE`, `--builder-model` for `INSTRUMENT`/`SYNTHESIZE`/`REFACTOR`, `--inspector-model` for `INSPECT_CODE`, and `--model`) resolve all 8 `SpecialistRoleSlot` / `PceModelSuite` slots deterministically. Distinct model instances and Proton Pass `SecretStr` credentials are deduplicated per provider family, cross-provider `--api-key-uri` leakage is blocked (`JBC-SEC-002`), and every `AgentInvocationTelemetry` record stamps the exact `model_id` invoked.
+6. **Multi-Model Specialist Routing & Per-Provider Vault Isolation (`routing.py`, `secrets.py`):** `[tool.jezz.models]` (plus `[tool.jezz.models.roles]`) and CLI tier flags (`--architect-model` for `FRAME`/`DECOMPOSE`/`SPECIFY`/`HYPOTHESIZE`, `--builder-model` for `PROVISION`/`INSTRUMENT`/`SYNTHESIZE`/`REFACTOR`, `--inspector-model` for `INSPECT_CODE`/`INSPECT_ENV`/`CONSULT`/`CURATE_MEMORY`, and `--model`) resolve all 12 `SpecialistRoleSlot` / `PceModelSuite` slots deterministically. Distinct model instances and Proton Pass `SecretStr` credentials are deduplicated per provider family, cross-provider `--api-key-uri` leakage is blocked (`JBC-SEC-002`), and every `AgentInvocationTelemetry` record stamps the exact `model_id` invoked.
+9. **Full $F_8 = 21$ Runtime Node Closure, Permit-Gated Provisioning, & Persistent Memory (`memory.py`, `provision.py`, `nodes.py`):** `PCE_BEHAVIOR_NODE_MAP` and `validate_runtime_node_coverage()` bind all `21 / 21` `BehaviorKind`s to `22` reachable `AtomicBehaviorGraphNode` subclasses. `InspectEnvNode` (`BHV-05`) hydrates `<repo>/.jezz/memory.json` (`WorkspaceMemoryLedger`) and checks manifest dependencies; `ConsultNode` (`BHV-06`) resolves `JBC` clauses (`_tool_consult_building_code`), confined reference docs, and installed package APIs; `ProvisionNode` (`BHV-13`) executes PEP 508-validated `EngineeringMandate.required_dependencies` after `CheckpointContractNode` via `ProvisionPort` (`InProcessProvisionRunner` / `UvSubprocessProvisionRunner`), reloads `BuildingInspector` (`JBC-VRF-003`), and rolls back `pyproject.toml` + `uv.lock` on `RED_TAG` exhaustion; and `CurateMemoryNode` (`BHV-07`) compacts remediation observations without dropping active invariants or `falsified_paths` negations before `CertifyNode` seals `.jezz/memory.json`.
 7. **Read-Only Statutory MCP Gate Server (`mcp_server.py`, `jezz mcp`):** Decouples Pillars 1–3 verification from the autonomous `PceWorkflowOrchestrator` so external host agents can invoke `jezz` over `stdio` MCP with zero shell, mutation, network, or secret access. `JezzWorkspaceGate` jails all filesystem paths inside `anchor_root` (`--root`) via `ContainedPath` (`JBC-SEC-005`) and exposes 8 structured tools: `jbc_list_codes`, `jbc_get_code`, `jbc_verify_behavior_graph`, `jbc_inspect_workspace`, `jbc_inspect_differential`, `jbc_preview_source` (in-memory candidate buffer overlay preserving whole-workspace `JBC-COG-003` cycle and encapsulation checks before disk write), `jbc_query_ast_graph` (deterministic workspace AST import/topological-layer map, cross-module `caller_of` lookup, and `symbol_query` line-slice extraction), and `jbc_audit_dossier`.
 8. **Portable Antigravity Plugin & `Stop` Lifecycle Gate (`plugin.py`, `hooks.py`, `jezz init`, `jezz hook stop`):** `jezz init` generates a zero-hardcoded-path `.agents/plugins/jezz/` bundle (`plugin.json`, `mcp_config.json`, `hooks.json`, `rules/AGENTS.md`, `skills/pce/SKILL.md`) and optional `.git/hooks/pre-commit` ratchet, resolving `REPO_ROOT` dynamically at runtime from `${PLUGIN_ROOT}` and `dirname -- "$0"` (`JBC-SEC-006`). At agent turn boundaries, `jezz hook stop` evaluates `inspect_differential_rough_in` against `HEAD`, returning `{"decision": "continue", "reason": "..."}` on unwaived `JBC` v1.2 `RED_TAG` or `SYNTAX_ERROR` findings (bounded by `--max-continuations`) and `{"decision": "allow"}` once clean occupancy is restored.

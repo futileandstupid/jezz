@@ -31,7 +31,11 @@ class SpecialistRoleSlot(StrEnum):
     FRAME = "frame"
     DECOMPOSE = "decompose"
     INSPECT = "inspect"
+    INSPECT_ENV = "inspect_env"
+    CONSULT = "consult"
+    CURATE_MEMORY = "curate_memory"
     SPECIFY = "specify"
+    PROVISION = "provision"
     INSTRUMENT = "instrument"
     SYNTHESIZE = "synthesize"
     REFACTOR = "refactor"
@@ -52,10 +56,14 @@ ROLE_TIER_MAP: Final[Mapping[SpecialistRoleSlot, SpecialistTier]] = MappingProxy
         SpecialistRoleSlot.DECOMPOSE: SpecialistTier.ARCHITECT,
         SpecialistRoleSlot.SPECIFY: SpecialistTier.ARCHITECT,
         SpecialistRoleSlot.HYPOTHESIZE: SpecialistTier.ARCHITECT,
+        SpecialistRoleSlot.PROVISION: SpecialistTier.BUILDER,
         SpecialistRoleSlot.INSTRUMENT: SpecialistTier.BUILDER,
         SpecialistRoleSlot.SYNTHESIZE: SpecialistTier.BUILDER,
         SpecialistRoleSlot.REFACTOR: SpecialistTier.BUILDER,
         SpecialistRoleSlot.INSPECT: SpecialistTier.INSPECTOR,
+        SpecialistRoleSlot.INSPECT_ENV: SpecialistTier.INSPECTOR,
+        SpecialistRoleSlot.CONSULT: SpecialistTier.INSPECTOR,
+        SpecialistRoleSlot.CURATE_MEMORY: SpecialistTier.INSPECTOR,
     }
 )
 
@@ -188,14 +196,18 @@ class CliModelOverrides(BaseModel):
 
 
 class ResolvedModelRouting(BaseModel):
-    """Concrete ``provider:model`` assignment across all 8 generative PCE specialist slots."""
+    """Concrete ``provider:model`` assignment across all 12 generative PCE specialist slots."""
 
     model_config = STRICT_FROZEN_CONFIG
 
     frame: IdentifierStr
     decompose: IdentifierStr
     inspect: IdentifierStr
+    inspect_env: IdentifierStr
+    consult: IdentifierStr
+    curate_memory: IdentifierStr
     specify: IdentifierStr
+    provision: IdentifierStr
     instrument: IdentifierStr
     synthesize: IdentifierStr
     refactor: IdentifierStr
@@ -203,17 +215,8 @@ class ResolvedModelRouting(BaseModel):
 
     @model_validator(mode="after")
     def _validate_all_slots(self) -> Self:
-        for slot_name, spec in (
-            ("frame", self.frame),
-            ("decompose", self.decompose),
-            ("inspect", self.inspect),
-            ("specify", self.specify),
-            ("instrument", self.instrument),
-            ("synthesize", self.synthesize),
-            ("refactor", self.refactor),
-            ("hypothesize", self.hypothesize),
-        ):
-            _validate_model_spec_text(spec, slot_name)
+        for slot_name, spec in self.slot_mapping().items():
+            _validate_model_spec_text(spec, slot_name.value)
         return self
 
     @property
@@ -224,24 +227,15 @@ class ResolvedModelRouting(BaseModel):
     @jezz_callable
     def slot_mapping(
         self,
-    ) -> Annotated[dict[SpecialistRoleSlot, IdentifierStr], Field(min_length=8, max_length=8)]:
+    ) -> Annotated[dict[SpecialistRoleSlot, IdentifierStr], Field(min_length=12, max_length=12)]:
         """Return the bijective mapping from ``SpecialistRoleSlot`` to model identifier."""
-        return {
-            SpecialistRoleSlot.FRAME: self.frame,
-            SpecialistRoleSlot.DECOMPOSE: self.decompose,
-            SpecialistRoleSlot.INSPECT: self.inspect,
-            SpecialistRoleSlot.SPECIFY: self.specify,
-            SpecialistRoleSlot.INSTRUMENT: self.instrument,
-            SpecialistRoleSlot.SYNTHESIZE: self.synthesize,
-            SpecialistRoleSlot.REFACTOR: self.refactor,
-            SpecialistRoleSlot.HYPOTHESIZE: self.hypothesize,
-        }
+        return {slot: str(getattr(self, slot.value)) for slot in SpecialistRoleSlot}
 
-    @icontract.ensure(lambda result: 1 <= len(result) <= 8)
+    @icontract.ensure(lambda result: 1 <= len(result) <= 12)
     @jezz_callable
     def unique_model_names(
         self,
-    ) -> Annotated[tuple[IdentifierStr, ...], Field(min_length=1, max_length=8)]:
+    ) -> Annotated[tuple[IdentifierStr, ...], Field(min_length=1, max_length=12)]:
         """Return deduplicated model identifiers in canonical specialist-slot order."""
         seen: set[str] = set()
         ordered: list[str] = []
@@ -249,7 +243,11 @@ class ResolvedModelRouting(BaseModel):
             self.frame,
             self.decompose,
             self.inspect,
+            self.inspect_env,
+            self.consult,
+            self.curate_memory,
             self.specify,
+            self.provision,
             self.instrument,
             self.synthesize,
             self.refactor,
@@ -263,7 +261,7 @@ class ResolvedModelRouting(BaseModel):
     @jezz_callable
     def unique_provider_families(
         self,
-    ) -> Annotated[frozenset[IdentifierStr], Field(max_length=8)]:
+    ) -> Annotated[frozenset[IdentifierStr], Field(max_length=12)]:
         """Return distinct canonical provider families requiring API credentials."""
         families: set[str] = set()
         for model_name in self.unique_model_names():
@@ -278,8 +276,9 @@ class ResolvedModelRouting(BaseModel):
         if self.is_uniform:
             return self.synthesize
         arch_uniform = self.frame == self.decompose == self.specify == self.hypothesize
-        build_uniform = self.instrument == self.synthesize == self.refactor
-        if arch_uniform and build_uniform:
+        build_uniform = self.provision == self.instrument == self.synthesize == self.refactor
+        inspect_uniform = self.inspect == self.inspect_env == self.consult == self.curate_memory
+        if arch_uniform and build_uniform and inspect_uniform:
             raw = f"tiered(arch={self.frame}, build={self.synthesize}, inspect={self.inspect})"
             return raw[:256]
         joined = ",".join(self.unique_model_names())
@@ -301,6 +300,10 @@ class ResolvedModelRouting(BaseModel):
             hypothesize_model=instances[self.hypothesize],
             refactor_model=instances[self.refactor],
             decompose_model=instances[self.decompose],
+            inspect_env_model=instances[self.inspect_env],
+            consult_model=instances[self.consult],
+            curate_memory_model=instances[self.curate_memory],
+            provision_model=instances[self.provision],
         )
 
 
@@ -352,7 +355,7 @@ def resolve_specialist_routing(
     *,
     project_config: JezzModelsConfig | None = None,
 ) -> ResolvedModelRouting:
-    """Resolve all 8 specialist slots across CLI flags and ``[tool.jezz.models]``."""
+    """Resolve all 12 specialist slots across CLI flags and ``[tool.jezz.models]``."""
     resolved_by_slot: dict[SpecialistRoleSlot, str] = {}
     missing_slots: list[str] = []
     for slot in SpecialistRoleSlot:
@@ -371,7 +374,11 @@ def resolve_specialist_routing(
         frame=resolved_by_slot[SpecialistRoleSlot.FRAME],
         decompose=resolved_by_slot[SpecialistRoleSlot.DECOMPOSE],
         inspect=resolved_by_slot[SpecialistRoleSlot.INSPECT],
+        inspect_env=resolved_by_slot[SpecialistRoleSlot.INSPECT_ENV],
+        consult=resolved_by_slot[SpecialistRoleSlot.CONSULT],
+        curate_memory=resolved_by_slot[SpecialistRoleSlot.CURATE_MEMORY],
         specify=resolved_by_slot[SpecialistRoleSlot.SPECIFY],
+        provision=resolved_by_slot[SpecialistRoleSlot.PROVISION],
         instrument=resolved_by_slot[SpecialistRoleSlot.INSTRUMENT],
         synthesize=resolved_by_slot[SpecialistRoleSlot.SYNTHESIZE],
         refactor=resolved_by_slot[SpecialistRoleSlot.REFACTOR],

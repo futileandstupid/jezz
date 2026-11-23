@@ -204,7 +204,10 @@ def _check_symbol_and_scope_grounding(
             )
         )
 
-    unauthorized = sorted(dossier.mutated_files - set(dossier.mandate.authorized_files()))
+    allowed_mutations = set(dossier.mandate.authorized_files()) | set(
+        dossier.mandate.authorized_manifest_files()
+    )
+    unauthorized = sorted(dossier.mutated_files - allowed_mutations)
     if unauthorized:
         violations.append(
             DossierViolation(

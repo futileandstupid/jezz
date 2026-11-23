@@ -9,6 +9,7 @@ from pydantic import Field
 from pydantic_graph import Graph, GraphBuilder
 
 from jezz.agents.nodes import ElicitationCallback, FrameNode, PceGraphDeps, PceInteractionHooks
+from jezz.agents.provision import InProcessProvisionRunner, ProvisionPort
 from jezz.agents.schemas import (
     ElicitationTicket,
     PceRuntimeBudget,
@@ -35,6 +36,15 @@ from jezz.methodology.mandate import EngineeringMandate
 
 
 @dataclass(frozen=True)
+class _SubstratePorts:
+    """Bundled workspace inspection, dynamic gate, and dependency provisioning ports."""
+
+    inspector: BuildingInspector | None
+    gate_runner: DynamicGatePort
+    provision_runner: ProvisionPort
+
+
+@dataclass(frozen=True)
 class _WorkflowLaunchSpec:
     """Internal launch configuration passed into ``PceWorkflowOrchestrator._run_workflow``."""
 
@@ -49,7 +59,7 @@ class _WorkflowLaunchSpec:
 
 @jezz_callable
 def build_pce_workflow_graph() -> Annotated[Graph, InstanceGuard(Graph)]:
-    """Construct the compiled pydantic-graph state machine for the 5-phase PCE lifecycle."""
+    """Construct the compiled pydantic-graph state machine for the 21-behavior PCE lifecycle."""
     builder = GraphBuilder(
         state_type=AgentExecutionState,
         deps_type=PceGraphDeps,
@@ -86,29 +96,42 @@ class PceWorkflowOrchestrator:
         *,
         inspector: BuildingInspector | None = None,
         gate_runner: Annotated[DynamicGatePort, InstanceGuard(DynamicGatePort)] | None = None,
+        provision_runner: Annotated[ProvisionPort, InstanceGuard(ProvisionPort)] | None = None,
         budget: PceRuntimeBudget | None = None,
         elicitation_callback: ElicitationCallback | PceInteractionHooks | None = None,
     ) -> None:
         self._models = models
-        self._inspector = inspector
-        self._gate_runner: DynamicGatePort = gate_runner or InProcessGateRunner()
+        self._ports = _SubstratePorts(
+            inspector=inspector,
+            gate_runner=gate_runner or InProcessGateRunner(),
+            provision_runner=provision_runner or InProcessProvisionRunner(),
+        )
         self._budget = budget or PceRuntimeBudget()
         self._interaction: PceInteractionHooks = _coerce_interaction_hooks(elicitation_callback)
 
     async def _run_workflow(self, spec: _WorkflowLaunchSpec) -> PceWorkflowResult:
         resolved_root = spec.repo_root.resolve()
-        active_inspector = self._inspector or BuildingInspector.from_workspace(resolved_root)
+        active_inspector = self._ports.inspector or BuildingInspector.from_workspace(resolved_root)
         active_permit = spec.permit or CodePermit.full_book(permit_id="PERMIT-PCE-RUNTIME")
         initial_authorized = (
             spec.mandate.authorized_files() if spec.mandate is not None else frozenset()
+        )
+        initial_manifests = (
+            spec.mandate.authorized_manifest_files() if spec.mandate is not None else frozenset()
         )
         prior_draft = spec.ticket.mandate if spec.ticket is not None else None
         prior_telemetry = list(spec.ticket.prior_telemetry) if spec.ticket is not None else []
         deps = PceGraphDeps(
             repo_root=resolved_root,
-            sandbox=WorkspaceSandbox(resolved_root, initial_authorized),
+            sandbox=WorkspaceSandbox(
+                resolved_root,
+                initial_authorized,
+                authorized_manifests=initial_manifests,
+            ),
             inspector=active_inspector,
-            gate_runner=self._gate_runner,
+            initial_inspector=active_inspector,
+            gate_runner=self._ports.gate_runner,
+            provision_runner=self._ports.provision_runner,
             models=self._models,
             permit=active_permit,
             budget=self._budget,

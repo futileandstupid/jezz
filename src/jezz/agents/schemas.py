@@ -130,6 +130,167 @@ class EpistemicObservation(BaseModel):
     summary: ShortText
 
 
+class EnvironmentObservation(BaseModel):
+    """Structured output of substrate and manifest sensing (BHV-05 INSPECT_ENV)."""
+
+    model_config = STRICT_FROZEN_CONFIG
+
+    python_version: IdentifierStr
+    declared_runtime_roots: Annotated[
+        tuple[IdentifierStr, ...],
+        WIRE_TUPLE_VALIDATOR,
+        Field(max_length=256),
+    ] = ()
+    declared_dev_roots: Annotated[
+        tuple[IdentifierStr, ...],
+        WIRE_TUPLE_VALIDATOR,
+        Field(max_length=256),
+    ] = ()
+    missing_dependencies: Annotated[
+        tuple[IdentifierStr, ...],
+        WIRE_TUPLE_VALIDATOR,
+        Field(max_length=64),
+    ] = ()
+    prior_sealed_mandates: Annotated[
+        tuple[IdentifierStr, ...],
+        WIRE_TUPLE_VALIDATOR,
+        Field(max_length=128),
+    ] = ()
+    summary: ShortText
+
+
+class ConsultationBrief(BaseModel):
+    """Structured output of normative reference retrieval (BHV-06 CONSULT)."""
+
+    model_config = STRICT_FROZEN_CONFIG
+
+    citations: Annotated[
+        tuple[ShortText, ...],
+        WIRE_TUPLE_VALIDATOR,
+        Field(min_length=1, max_length=64),
+    ]
+    normative_constraints: Annotated[
+        tuple[ShortText, ...],
+        WIRE_TUPLE_VALIDATOR,
+        Field(min_length=1, max_length=64),
+    ]
+    summary: ShortText
+
+
+class CuratedMemoryDigest(BaseModel):
+    """Structured output of working-memory compaction (BHV-07 CURATE_MEMORY)."""
+
+    model_config = STRICT_FROZEN_CONFIG
+
+    compacted_observations: Annotated[
+        tuple[ShortText, ...],
+        WIRE_TUPLE_VALIDATOR,
+        Field(max_length=32),
+    ] = ()
+    retained_invariants: Annotated[
+        tuple[IdentifierStr, ...],
+        WIRE_TUPLE_VALIDATOR,
+        Field(min_length=1, max_length=128),
+    ]
+    retained_falsified_paths: Annotated[
+        tuple[ShortText, ...],
+        WIRE_TUPLE_VALIDATOR,
+        Field(max_length=512),
+    ] = ()
+    architectural_notes: Annotated[
+        tuple[ShortText, ...],
+        WIRE_TUPLE_VALIDATOR,
+        Field(max_length=32),
+    ] = ()
+    summary: ShortText
+
+
+class SealedMandateMemoryEntry(BaseModel):
+    """Longitudinal workspace ledger entry for a single certified PCE mandate."""
+
+    model_config = STRICT_FROZEN_CONFIG
+
+    mandate_id: IdentifierStr
+    title: ShortText
+    artifact_digest: IdentifierStr
+    invariants: Annotated[
+        tuple[ShortText, ...],
+        WIRE_TUPLE_VALIDATOR,
+        Field(max_length=128),
+    ] = ()
+    contract_symbols: Annotated[
+        tuple[IdentifierStr, ...],
+        WIRE_TUPLE_VALIDATOR,
+        Field(max_length=256),
+    ] = ()
+
+
+class WorkspaceMemoryLedger(BaseModel):
+    """Persistent cross-mandate architectural and negation ledger at ``.jezz/memory.json``."""
+
+    model_config = STRICT_FROZEN_CONFIG
+
+    schema_version: Annotated[int, Field(ge=1, le=1)] = 1
+    sealed_mandates: Annotated[
+        tuple[SealedMandateMemoryEntry, ...],
+        WIRE_TUPLE_VALIDATOR,
+        Field(max_length=256),
+    ] = ()
+    architectural_notes: Annotated[
+        tuple[ShortText, ...],
+        WIRE_TUPLE_VALIDATOR,
+        Field(max_length=128),
+    ] = ()
+    falsified_paths: Annotated[
+        tuple[ShortText, ...],
+        WIRE_TUPLE_VALIDATOR,
+        Field(max_length=512),
+    ] = ()
+
+
+class ProvisionPlan(BaseModel):
+    """Structured output of dependency provisioning validation (BHV-13 PROVISION)."""
+
+    model_config = STRICT_FROZEN_CONFIG
+
+    approved_specs: Annotated[
+        tuple[IdentifierStr, ...],
+        WIRE_TUPLE_VALIDATOR,
+        Field(max_length=32),
+    ] = ()
+    dev_specs: Annotated[
+        tuple[IdentifierStr, ...],
+        WIRE_TUPLE_VALIDATOR,
+        Field(max_length=32),
+    ] = ()
+    rationale: ShortText
+
+    @model_validator(mode="after")
+    def _require_non_empty_specs(self) -> Self:
+        if not self.approved_specs and not self.dev_specs:
+            msg = "ProvisionPlan requires at least one approved runtime or dev dependency spec."
+            raise ValueError(msg)
+        return self
+
+
+class ProvisionReceipt(BaseModel):
+    """Deterministic substrate receipt returned after executing ``ProvisionPort``."""
+
+    model_config = STRICT_FROZEN_CONFIG
+
+    provisioned_specs: Annotated[
+        tuple[IdentifierStr, ...],
+        WIRE_TUPLE_VALIDATOR,
+        Field(max_length=64),
+    ]
+    updated_files: Annotated[
+        tuple[IdentifierStr, ...],
+        WIRE_TUPLE_VALIDATOR,
+        Field(max_length=16),
+    ]
+    summary: ShortText
+
+
 class RemediationHypothesis(BaseModel):
     """Structured output of BHV-08 HYPOTHESIZE diagnosing RED_TAG citations after REVERT."""
 
@@ -285,6 +446,8 @@ class PceRuntimeBudget(BaseModel):
 
     max_remediation_cycles: Annotated[int, Field(ge=1, le=10)] = 3
     max_elicitation_rounds: Annotated[int, Field(ge=1, le=8)] = 3
+    memory_compaction_threshold: Annotated[int, Field(ge=1, le=256)] = 6
+    persist_workspace_memory: bool = True
     agent_timeout_sec: Annotated[float, Field(gt=0.0, le=600.0, allow_inf_nan=False)] = 30.0
     request_limit_per_step: Annotated[int, Field(ge=1, le=64)] = 6
     tool_calls_limit_per_step: Annotated[int, Field(ge=0, le=128)] = 12
@@ -341,5 +504,6 @@ class PceWorkflowResult(BaseModel):
     certificate: CertificateOfOccupancy | None = None
     dossier_audit: DossierAuditReport | None = None
     elicitation_ticket: ElicitationTicket | None = None
+    memory_ledger: WorkspaceMemoryLedger | None = None
     telemetry: Annotated[tuple[AgentInvocationTelemetry, ...], Field(max_length=256)] = ()
     falsified_paths: Annotated[tuple[ShortText, ...], Field(max_length=128)] = ()
