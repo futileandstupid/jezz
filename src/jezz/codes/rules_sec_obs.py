@@ -54,6 +54,26 @@ _RAW_PATH_SINKS: Final[frozenset[str]] = frozenset(
 _RAW_URL_SINKS: Final[frozenset[str]] = frozenset(
     {"urllib.request.urlopen", "requests.get", "requests.post", "httpx.get", "httpx.post"}
 )
+_UNANCHORED_PATH_CTORS: Final[frozenset[str]] = frozenset(
+    {
+        "Path",
+        "pathlib.Path",
+        "PosixPath",
+        "pathlib.PosixPath",
+        "WindowsPath",
+        "pathlib.WindowsPath",
+        "os.path.abspath",
+        "os.path.realpath",
+        "os.path.expanduser",
+    }
+)
+_HARDCODED_FS_PATH_RE: Final[re.Pattern[str]] = re.compile(
+    r"^(?:"
+    r"/(?:Users|home|root|tmp|var|etc|opt|private|Volumes|mnt|srv|workspace)(?:/|$)|"
+    r"~/|"
+    r"[A-Za-z]:[\\/]"
+    r")"
+)
 _DEBUG_TRAP_CALLS: Final[frozenset[str]] = frozenset(
     {"breakpoint", "pdb.set_trace", "ipdb.set_trace", "bdb.set_trace"}
 )
@@ -525,6 +545,107 @@ def check_sec_005(unit: SourceUnit) -> list[RawDiscrepancy]:
                     location=span,
                     message=f"Network sink '{callee}()' invoked with unvalidated raw URL.",
                     remediation="Validate scheme/host via HttpUrl/AnyHttpUrl before request.",
+                )
+            )
+    return discrepancies
+
+
+def _docstring_constant_ids(tree: ast.Module) -> set[int]:
+    doc_ids: set[int] = set()
+    for node in ast.walk(tree):
+        if (
+            isinstance(
+                node,
+                ast.Module | ast.ClassDef | ast.FunctionDef | ast.AsyncFunctionDef,
+            )
+            and node.body
+        ):
+            first_stmt = node.body[0]
+            if (
+                isinstance(first_stmt, ast.Expr)
+                and isinstance(first_stmt.value, ast.Constant)
+                and isinstance(first_stmt.value.value, str)
+            ):
+                doc_ids.add(id(first_stmt.value))
+    return doc_ids
+
+
+def _extract_static_arg_prefix(expr: ast.expr) -> tuple[str | None, int | None]:
+    if isinstance(expr, ast.Constant) and isinstance(expr.value, str):
+        return expr.value, id(expr)
+    if isinstance(expr, ast.JoinedStr) and expr.values:
+        head = expr.values[0]
+        if isinstance(head, ast.Constant) and isinstance(head.value, str):
+            return head.value, id(head)
+    return None, None
+
+
+def _is_hardcoded_host_path_literal(val: str) -> bool:
+    return "\n" not in val and "://" not in val and _HARDCODED_FS_PATH_RE.search(val) is not None
+
+
+def _inspect_sec_006_call(
+    unit: SourceUnit,
+    call: ast.Call,
+) -> tuple[RawDiscrepancy | None, int | None]:
+    callee = dotted_expr_name(call.func)
+    if not call.args or callee not in _UNANCHORED_PATH_CTORS:
+        return None, None
+    prefix, consumed_id = _extract_static_arg_prefix(call.args[0])
+    if prefix is None:
+        return None, None
+    if unit.is_test_file and not (
+        prefix.startswith(("/", "~")) or _HARDCODED_FS_PATH_RE.search(prefix) is not None
+    ):
+        return None, None
+    span = SourceSpan(file_path=unit.file_path, line=call.lineno, column=call.col_offset)
+    return (
+        RawDiscrepancy(
+            code_id="JBC-SEC-006",
+            location=span,
+            message=(
+                f"Path constructor '{callee}()' invoked with hardcoded literal '{prefix[:64]}' "
+                "instead of a dynamic anchor."
+            ),
+            remediation=(
+                "Derive paths from Path(__file__).resolve(), importlib.resources, Path.home(), "
+                "Path.cwd(), tempfile, or ContainedPath.from_parts(anchor, rel)."
+            ),
+        ),
+        consumed_id,
+    )
+
+
+@jezz_callable
+def check_sec_006(unit: SourceUnit) -> list[RawDiscrepancy]:
+    """Inspect ``unit`` for JBC-SEC-006 (dynamic path anchoring & hardcoded path prohibition)."""
+    skip_ids = _docstring_constant_ids(unit.tree)
+    discrepancies: list[RawDiscrepancy] = []
+    for node in ast.walk(unit.tree):
+        if isinstance(node, ast.Call):
+            finding, consumed_id = _inspect_sec_006_call(unit, node)
+            if consumed_id is not None:
+                skip_ids.add(consumed_id)
+            if finding is not None:
+                discrepancies.append(finding)
+    for node in ast.walk(unit.tree):
+        if (
+            isinstance(node, ast.Constant)
+            and id(node) not in skip_ids
+            and isinstance(node.value, str)
+            and _is_hardcoded_host_path_literal(node.value)
+        ):
+            discrepancies.append(
+                RawDiscrepancy(
+                    code_id="JBC-SEC-006",
+                    location=SourceSpan(
+                        file_path=unit.file_path, line=node.lineno, column=node.col_offset
+                    ),
+                    message=f"Hardcoded host/OS filesystem path literal '{node.value[:64]}'.",
+                    remediation=(
+                        "Calculate paths dynamically from Path(__file__).resolve(), "
+                        "importlib.resources, tmp_path/tempfile, or ContainedPath.from_parts()."
+                    ),
                 )
             )
     return discrepancies

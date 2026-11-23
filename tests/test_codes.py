@@ -84,13 +84,13 @@ def _parse_snippet(source: str, *, file_path: str = "src/sample/mod.py") -> list
 
 
 def test_codebook_edition_1_1_counts_and_verbatim_quotes() -> None:
-    assert CODEBOOK_EDITION == "1.1"
-    assert len(CODE_BOOK) == 30
+    assert CODEBOOK_EDITION == "1.2"
+    assert len(CODE_BOOK) == 31
     counts = {article: len(codes_by_article(article)) for article in CodeArticle}
     assert counts == {
         CodeArticle.DBC: 5,
         CodeArticle.FLT: 6,
-        CodeArticle.SEC: 5,
+        CodeArticle.SEC: 6,
         CodeArticle.COG: 5,
         CodeArticle.OBS: 3,
         CodeArticle.VRF: 6,
@@ -616,7 +616,7 @@ def test_jezz_repository_passes_edition_1_1_inspection_with_zero_variances() -> 
 
     certificate = issue_certificate(final_report, artifact_digest=compute_units_digest(units))
     assert certificate.ruling == OccupancyRuling.APPROVED
-    assert len(certificate.cited_code_ids) == 30
+    assert len(certificate.cited_code_ids) == 31
     assert certificate.exercised_variance_ids == ()
 
 
@@ -846,7 +846,7 @@ async def test_pydantic_graph_red_tags_ungrounded_code_and_certifies_remediated_
     assert isinstance(certificate, CertificateOfOccupancy)
 
     assert certificate.ruling == OccupancyRuling.APPROVED
-    assert len(certificate.cited_code_ids) == 30
+    assert len(certificate.cited_code_ids) == 31
     assert state.evidence.certified is True
     assert state.workspace.sealed_commit == certificate.inspector_seal
     assert state.world_model.falsified_paths == ["red-tag-v1"]
@@ -1023,3 +1023,37 @@ def test_track2b_setup_cfg_visitor_and_singular_test_calibrations(tmp_path: Path
     )
     report = BuildingInspector(manifest).inspect_rough_in((prod_unit, singular_test))
     assert report.ruling == OccupancyRuling.APPROVED, report.to_markdown()
+
+
+def test_sec_006_rejects_hardcoded_paths_and_accepts_dynamic_anchors() -> None:
+    bad_prod = """\
+        from pathlib import Path
+        from jezz.guards import jezz_callable
+
+        @jezz_callable
+        def load_cfg() -> Path:
+            return Path("config/settings.toml")
+    """
+    assert "JBC-SEC-006" in _parse_snippet(bad_prod, file_path="src/jezz/bad_path.py")
+
+    bad_host_test = """\
+        from pathlib import Path
+
+        def test_leaked_host_path() -> None:
+            p = Path("/Users/dev/project/data.json")
+            assert p.name == "data.json"
+    """
+    assert "JBC-SEC-006" in _parse_snippet(bad_host_test, file_path="tests/test_bad_path.py")
+
+    good_anchored = """\
+        from pathlib import Path
+        import icontract
+        from jezz.guards import ContainedPath, IdentifierStr, jezz_callable
+
+        @icontract.ensure(lambda result: result.is_absolute())
+        @jezz_callable
+        def resolve_asset(rel_name: IdentifierStr) -> Path:
+            anchor = Path(__file__).resolve().parent
+            return ContainedPath.from_parts(anchor, rel_name).resolved_path
+    """
+    assert "JBC-SEC-006" not in _parse_snippet(good_anchored, file_path="src/jezz/good_path.py")

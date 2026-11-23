@@ -19,6 +19,7 @@
 - **Package & Environment Management:** Use `uv` exclusively (`uv add`, `uv sync`, `uv run`). Never invoke `pip` or mutate `.venv` directly.
 - **Core Agent Framework:** `pydantic-ai` (`pydantic-graph`, `pydantic-evals`) and `pydantic` (strict runtime validation and static typing across all schemas, behavior nodes, and building-code checks).
 - **Design Discipline:** Prefer explicit data models, invariants, preconditions/postconditions (`icontract`), property-based verification (`hypothesis`), and deterministic static checks over untyped dicts or prompt-only guardrails.
+- **Dynamic Path Anchoring (`JBC-SEC-006`):** Never hardcode filesystem paths (nor pass string literals directly to `Path(...)` / `os.path.*(...)` in production code, nor bake host paths into generated configs/hooks). Every path must be calculated dynamically from known file, package, or injected root locations (`Path(__file__).resolve()`, `importlib.resources`, `tmp_path` / `tempfile`, `${PLUGIN_ROOT}` / `dirname -- "$0"`, or `ContainedPath.from_parts(anchor, rel)`).
 
 ## Verification Commands
 - **Tests (unit, async, & property-based):** `uv run pytest`

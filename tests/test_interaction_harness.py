@@ -127,7 +127,13 @@ def test_jezz_init_installs_workspace_plugin_pyproject_and_pre_commit_idempotent
 
     plugin_root = tmp_path / ".agents" / "plugins" / "jezz"
     assert (plugin_root / "plugin.json").is_file()
-    hooks_doc = _JSON_DICT_ADAPTER.validate_json(_read_utf8(plugin_root / "hooks.json"))
+    mcp_raw = _read_utf8(plugin_root / "mcp_config.json")
+    hooks_raw = _read_utf8(plugin_root / "hooks.json")
+    pre_commit_raw = _read_utf8(tmp_path / ".git" / "hooks" / "pre-commit")
+    assert str(tmp_path) not in mcp_raw
+    assert str(tmp_path) not in hooks_raw
+    assert str(tmp_path) not in pre_commit_raw
+    hooks_doc = _JSON_DICT_ADAPTER.validate_json(hooks_raw)
     assert "jezz-jbc-stop-gate" in hooks_doc
     skill_text = _read_utf8(plugin_root / "skills" / "pce" / "SKILL.md")
     assert skill_text.startswith("---\nname: pce\n")

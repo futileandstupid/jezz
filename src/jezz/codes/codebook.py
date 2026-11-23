@@ -1,4 +1,4 @@
-"""Edition 1.1 of the Jezz Software Building Code (JBC) — 30 provisions across 6 Articles."""
+"""Edition 1.2 of the Jezz Software Building Code (JBC) — 31 provisions across 6 Articles."""
 
 from collections.abc import Mapping
 from collections.abc import Set as AbstractSet
@@ -20,7 +20,7 @@ from jezz.codes.taxonomy import (
 )
 from jezz.guards import IdentifierStr, jezz_callable
 
-CODEBOOK_EDITION: Final[str] = "1.1"
+CODEBOOK_EDITION: Final[str] = "1.2"
 
 _RAW_CODES: tuple[BuildingCode, ...] = (
     # --- Article I: DBC — Design by Contract, Signature Breakers & Bounded Domains (5) ---
@@ -690,6 +690,53 @@ _RAW_CODES: tuple[BuildingCode, ...] = (
                     "that can resolve to a location outside of that directory."
                 ),
                 source_url="https://cwe.mitre.org/data/definitions/22.html",
+            ),
+        ),
+    ),
+    BuildingCode(
+        code_id="JBC-SEC-006",
+        article=CodeArticle.SEC,
+        title="Dynamic Path Anchoring & Hardcoded Path Prohibition",
+        normative_rule=(
+            "Modules SHALL NOT embed hardcoded host or OS filesystem path literals (such as "
+            "'/Users/...', '/home/...', '/tmp/...', '~/...', or drive roots) and production "
+            "modules SHALL NOT pass string literals directly to Path/os.path constructors; all "
+            "filesystem paths SHALL be calculated dynamically from known file, package, or "
+            "injected root anchors."
+        ),
+        hazard=(
+            "Machine-coupled artifacts and CWD-fragile filesystem lookups that fail across "
+            "clones, containers, CI runners, and working directories."
+        ),
+        pass_criteria=(
+            "Zero hardcoded host/OS filesystem path literals across source and tests, and zero "
+            "unanchored string-literal Path/os.path constructor calls in production modules."
+        ),
+        severity=CodeSeverity.STRUCTURAL,
+        variance_permitted=True,
+        triggers=frozenset({CodeTrigger.UNIVERSAL, CodeTrigger.EXTERNAL_BOUNDARY}),
+        enforced_at=frozenset({BehaviorKind.VERIFY_STATIC}),
+        inspection_method=InspectionMethod.AST_STATIC,
+        origin=CodeOrigin.EXTENDED_HYBRID,
+        standard_refs=(
+            StandardReference(
+                body=StandardBody.ISO_IEC_25010,
+                clause="§4.2.8",
+                summary="Portability, adaptability, and environment-independent installation.",
+            ),
+            StandardReference(
+                body=StandardBody.MITRE_CWE,
+                clause="CWE-426",
+                summary="Untrusted or unanchored search path resolution hazards.",
+                quote=(
+                    "The application searches for critical resources using an untrusted search path"
+                ),
+                source_url="https://cwe.mitre.org/data/definitions/426.html",
+            ),
+            StandardReference(
+                body=StandardBody.JEZZ_AGENTIC,
+                clause="AGT-PATH-01",
+                summary="Prevents coding agents from baking machine-local or CWD-relative paths.",
             ),
         ),
     ),

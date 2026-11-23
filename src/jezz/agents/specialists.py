@@ -506,7 +506,11 @@ _JBC_STATUTORY_BRIEF: Final[str] = (
     "reference result; guard divisor parameters); raise specific exceptions with diagnostic "
     "messages ('from err' inside except); never use silent except, while without "
     "LoopBudget.tick(), print(), TODO/FIXME, or # noqa/# type: ignore. "
-    "(4) Respect structural limits: <= 35 statements, <= 6 parameters, nesting <= 4, Cognitive "
+    "(4) Never hardcode filesystem paths (JBC-SEC-006): never use '/Users/...', '/home/...', "
+    "'/tmp/...', '~/...', or string-literal Path('...') constructors; derive all paths "
+    "dynamically from Path(__file__).resolve(), importlib.resources, tmp_path/tempfile, or "
+    "ContainedPath.from_parts(anchor, rel). "
+    "(5) Respect structural limits: <= 35 statements, <= 6 parameters, nesting <= 4, Cognitive "
     "Complexity <= 15, <= 1 elif per if (use MappingProxyType dispatch tables, match, or early "
     "guard returns), and never place else/elif after return/raise/break/continue."
 )

@@ -219,7 +219,7 @@ def register_init_parser(p_init: GuardedArgParser) -> None:
         "repo_path",
         nargs="?",
         type=Path,
-        default=Path("."),
+        default=None,
         help="Target workspace root directory (defaults to current directory).",
     )
     p_init.add_argument(
@@ -310,8 +310,9 @@ def handle_init_command(
     streams: Annotated[CliIoStreams, InstanceGuard(CliIoStreams)],
 ) -> CliExitCode:
     """Execute ``jezz init`` and render the ``WorkspaceInitReport``."""
+    target_repo = ns.repo_path if isinstance(ns.repo_path, Path) else Path.cwd()
     spec = PluginInstallSpec(
-        repo_root=ns.repo_path,
+        repo_root=target_repo,
         scope=PluginInstallScope(str(ns.plugin_scope)),
         global_config_dir=ns.global_config_dir,
         default_model=str(ns.default_model),

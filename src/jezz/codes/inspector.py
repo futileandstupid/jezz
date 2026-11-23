@@ -62,6 +62,7 @@ from jezz.codes.rules_sec_obs import (
     check_sec_003,
     check_sec_004,
     check_sec_005,
+    check_sec_006,
 )
 from jezz.codes.rules_vrf import (
     check_vrf_001,
@@ -127,6 +128,7 @@ def _build_per_unit_rules() -> Mapping[str, _RuleFn]:
         "JBC-SEC-003": check_sec_003,
         "JBC-SEC-004": check_sec_004,
         "JBC-SEC-005": check_sec_005,
+        "JBC-SEC-006": check_sec_006,
         "JBC-COG-001": check_cog_001,
         "JBC-COG-002": check_cog_002,
         "JBC-COG-004": check_cog_004,

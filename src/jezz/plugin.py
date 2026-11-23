@@ -1,7 +1,6 @@
 """Portable Antigravity plugin generator and workspace bootstrapper for ``jezz init``."""
 
 import json
-import shlex
 import shutil
 import sys
 from enum import StrEnum
@@ -22,20 +21,23 @@ from jezz.guards import (
 
 JEZZ_REPO_URL: Final[str] = "https://github.com/futileandstupid/jezz"
 
-_RULES_AGENTS_MD: Final[str] = """# Jezz Statutory Engineering Rules (JBC v1.1 & PCE)
+_RULES_AGENTS_MD: Final[str] = """# Jezz Statutory Engineering Rules (JBC v1.2 & PCE)
 
 ## Methodology & Framing
 - Govern engineering work via **Permit-and-Contract Engineering (`PCE`)**.
 - Never frame deliverables around Agile ceremonies, persona user stories (`As a ..., I want ...`),
   or Markdown task checklists (`- [ ]`). Express requirements as falsifiable `DomainInvariant`s
   and disjoint `ModuleWriteScope`s.
+- Never hardcode filesystem paths (`JBC-SEC-006`). Calculate every path dynamically from known
+  file, package, or injected root anchors (`Path(__file__).resolve()`, `importlib.resources`,
+  `tmp_path` / `tempfile`, or `ContainedPath.from_parts(anchor, rel)`).
 
 ## Statutory Verification Workflow
 - Before writing or editing non-trivial Python modules under `src/` or `tests/`, dry-run candidate
   source buffers in memory via MCP tool `jbc_preview_source` (`0` unwaived `RED_TAG` violations,
   including whole-workspace `JBC-COG-003` cycle and private-import checks).
 - Use `jbc_get_code` or `jbc_list_codes` to inspect normative **Jezz Software Building Code
-  (`JBC` Edition 1.1)** requirements and remediations whenever a provision is cited.
+  (`JBC` Edition 1.2)** requirements and remediations whenever a provision is cited.
 - Before ending any turn that modifies Python files, verify clean occupancy via
   `jbc_inspect_differential` and run workspace dynamic gates (`uv run pytest`, `uv run mypy .`,
   `uv run ruff check .`).
@@ -172,33 +174,35 @@ def resolve_jezz_executable(preferred_repo: Path | None = None) -> Path:
     return sibling_bin
 
 
-def _build_mcp_config_json(
-    jezz_exe: Path,
-    repo_root: Path,
-    scope: PluginInstallScope,
-) -> str:
-    args = ["mcp", "--root", str(repo_root)] if scope == PluginInstallScope.WORKSPACE else ["mcp"]
-    payload = {
-        "mcpServers": {
-            "jezz": {
-                "command": str(jezz_exe),
-                "args": args,
-            }
+_DYNAMIC_PLUGIN_WORKSPACE_PREFIX: Final[str] = (
+    'REPO_ROOT="$(CDPATH= cd -- "${PLUGIN_ROOT:-.}/../../.." && pwd)"; '
+    'JEZZ_BIN="$REPO_ROOT/.venv/bin/jezz"; '
+    '[ -x "$JEZZ_BIN" ] || JEZZ_BIN=jezz; '
+)
+
+
+def _build_mcp_config_json(scope: PluginInstallScope) -> str:
+    if scope == PluginInstallScope.WORKSPACE:
+        entry = {
+            "command": "sh",
+            "args": [
+                "-c",
+                f'{_DYNAMIC_PLUGIN_WORKSPACE_PREFIX}exec "$JEZZ_BIN" mcp --root "$REPO_ROOT"',
+            ],
         }
-    }
-    return json.dumps(payload, indent=2) + "\n"
+    else:
+        entry = {
+            "command": "jezz",
+            "args": ["mcp"],
+        }
+    return json.dumps({"mcpServers": {"jezz": entry}}, indent=2) + "\n"
 
 
-def _build_hooks_json(
-    jezz_exe: Path,
-    repo_root: Path,
-    scope: PluginInstallScope,
-) -> str:
-    quoted_exe = shlex.quote(str(jezz_exe))
+def _build_hooks_json(scope: PluginInstallScope) -> str:
     hook_cmd = (
-        f"{quoted_exe} hook stop --root {shlex.quote(str(repo_root))}"
+        f'{_DYNAMIC_PLUGIN_WORKSPACE_PREFIX}exec "$JEZZ_BIN" hook stop --root "$REPO_ROOT"'
         if scope == PluginInstallScope.WORKSPACE
-        else f"{quoted_exe} hook stop --require-marker"
+        else "exec jezz hook stop --require-marker"
     )
     payload = {
         "jezz-jbc-stop-gate": {
@@ -258,15 +262,13 @@ def _resolve_plugin_target_dir(spec: PluginInstallSpec, resolved_repo: Path) -> 
 
 def _install_plugin_bundle(
     plugin_dir: Path,
-    jezz_exe: Path,
-    resolved_repo: Path,
     spec: PluginInstallSpec,
 ) -> tuple[list[str], list[str]]:
     plugin_dir.mkdir(parents=True, exist_ok=True)
     files = (
         ("plugin.json", _build_plugin_manifest_json()),
-        ("mcp_config.json", _build_mcp_config_json(jezz_exe, resolved_repo, spec.scope)),
-        ("hooks.json", _build_hooks_json(jezz_exe, resolved_repo, spec.scope)),
+        ("mcp_config.json", _build_mcp_config_json(spec.scope)),
+        ("hooks.json", _build_hooks_json(spec.scope)),
         ("rules/AGENTS.md", _RULES_AGENTS_MD),
         ("skills/pce/SKILL.md", _PCE_SKILL_MD),
     )
@@ -302,7 +304,6 @@ def _maybe_bootstrap_pyproject(
 
 def _maybe_install_pre_commit(
     resolved_repo: Path,
-    jezz_exe: Path,
     *,
     overwrite: bool,
 ) -> tuple[bool, str | None, str | None]:
@@ -311,8 +312,12 @@ def _maybe_install_pre_commit(
         return False, None, None
     script = (
         "#!/bin/sh\n"
-        "# Statutory JBC v1.1 Differential Occupancy Ratchet (staged Python files)\n"
-        f"exec {shlex.quote(str(jezz_exe))} inspect {shlex.quote(str(resolved_repo))} --staged\n"
+        "# Statutory JBC Differential Occupancy Ratchet (dynamically anchored to repo root)\n"
+        'HOOK_DIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"\n'
+        'REPO_ROOT="$(CDPATH= cd -- "$HOOK_DIR/../.." && pwd)"\n'
+        'JEZZ_BIN="$REPO_ROOT/.venv/bin/jezz"\n'
+        '[ -x "$JEZZ_BIN" ] || JEZZ_BIN=jezz\n'
+        'exec "$JEZZ_BIN" inspect "$REPO_ROOT" --staged\n'
     )
     did_write, path_str = _write_or_skip_contained(
         resolved_repo,
@@ -344,7 +349,7 @@ def initialize_jezz_workspace(spec: PluginInstallSpec) -> WorkspaceInitReport:
 
     plugin_dir = _resolve_plugin_target_dir(spec, resolved_repo)
     if plugin_dir is not None:
-        p_written, p_skipped = _install_plugin_bundle(plugin_dir, jezz_exe, resolved_repo, spec)
+        p_written, p_skipped = _install_plugin_bundle(plugin_dir, spec)
         written.extend(p_written)
         skipped.extend(p_skipped)
 
@@ -360,7 +365,6 @@ def initialize_jezz_workspace(spec: PluginInstallSpec) -> WorkspaceInitReport:
     if spec.install_pre_commit:
         pre_commit_installed, hook_written, hook_skipped = _maybe_install_pre_commit(
             resolved_repo,
-            jezz_exe,
             overwrite=spec.overwrite,
         )
         if hook_written is not None:

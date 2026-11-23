@@ -237,8 +237,8 @@ async def test_mcp_list_and_get_code_provisions_and_unknown_code_error(tmp_path:
 
     assert all_res.structured_content is not None
     catalog = JbcCatalogPayload.model_validate_json(_first_text_block(list(all_res.content)))
-    assert catalog.edition == "1.1"
-    assert catalog.total_matching == 30
+    assert catalog.edition == "1.2"
+    assert catalog.total_matching == 31
 
     cog_catalog = JbcCatalogPayload.model_validate_json(_first_text_block(list(cog_res.content)))
     assert cog_catalog.total_matching == 5
