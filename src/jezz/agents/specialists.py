@@ -74,7 +74,7 @@ BEHAVIOR_EXECUTION_BOARD: Final[Mapping[BehaviorKind, BehaviorExecutionBinding]]
             engine_kind=ExecutionEngineKind.DETERMINISTIC_ENGINE,
             toolset_access=ToolsetAccessLevel.NONE,
             specialist_role="permit_issuer",
-            rationale="Zero-entropy JBC v1.1 CodePermit and hazard-trigger binder.",
+            rationale="Zero-entropy JBC v1.2 CodePermit and hazard-trigger binder.",
         ),
         BehaviorKind.INSPECT_CODE: BehaviorExecutionBinding(
             behavior_kind=BehaviorKind.INSPECT_CODE,
@@ -179,7 +179,7 @@ BEHAVIOR_EXECUTION_BOARD: Final[Mapping[BehaviorKind, BehaviorExecutionBinding]]
             engine_kind=ExecutionEngineKind.DETERMINISTIC_ENGINE,
             toolset_access=ToolsetAccessLevel.NONE,
             specialist_role="rough_in_inspector",
-            rationale="Runs deterministic JBC v1.1 AST, complexity, cohesion, and security gates.",
+            rationale="Runs deterministic JBC v1.2 AST, complexity, cohesion, and security gates.",
         ),
         BehaviorKind.VERIFY_DYNAMIC: BehaviorExecutionBinding(
             behavior_kind=BehaviorKind.VERIFY_DYNAMIC,
@@ -457,8 +457,9 @@ def _validate_refactor_output(
 
 
 _JBC_CANONICAL_EXEMPLAR: Final[str] = (
-    "Canonical JBC v1.1 Idioms (copy exact jezz.guards signatures):\n"
+    "Canonical JBC v1.2 Idioms (copy exact jezz.guards signatures):\n"
     "```python\n"
+    "from pathlib import Path\n"
     "from types import MappingProxyType\n"
     "from typing import Annotated, Final\n"
     "import icontract\n"
@@ -473,6 +474,14 @@ _JBC_CANONICAL_EXEMPLAR: Final[str] = (
     "    model_config = STRICT_FROZEN_CONFIG\n"
     "    item_id: IdentifierStr\n"
     "    rate_bps: RateBps\n"
+    "@jezz_callable\n"
+    "def load_confined(\n"
+    "    root_dir: Path, rel: IdentifierStr, *, max_bytes: PositiveInt = 65_536,\n"
+    ") -> str:\n"
+    "    # ContainedPath.from_parts raises ValueError on '../', outside, or escaping symlinks;\n"
+    "    # read_bounded_text raises BudgetExceededError(RuntimeError) when file > max_bytes.\n"
+    "    target = ContainedPath.from_parts(root_dir, rel)\n"
+    "    return read_bounded_text(target, max_bytes=max_bytes)\n"
     "@icontract.require(lambda max_steps: max_steps >= 1)\n"
     "@icontract.ensure(lambda result: result >= 0)\n"
     "@jezz_callable\n"
@@ -491,7 +500,7 @@ _JBC_CANONICAL_EXEMPLAR: Final[str] = (
 
 
 _JBC_STATUTORY_BRIEF: Final[str] = (
-    "JBC v1.1 Statutory Requirements: "
+    "JBC v1.2 Statutory Requirements: "
     "(1) Every BaseModel must set model_config = STRICT_FROZEN_CONFIG (from jezz.guards) or "
     "ConfigDict(frozen=True, extra='forbid', strict=True, allow_inf_nan=False), and bound every "
     "field via jezz.guards (PositiveInt, NonNegativeInt, BoundedInt, FiniteFloat, IdentifierStr "
@@ -556,7 +565,7 @@ def build_frame_agent(model: GuardedModel) -> GuardedAgent[FramedMandateProposal
             "('should'/'might'/'ideally'/'maybe'/'try to'). "
             "Populate open_ambiguities whenever material domain constraints, bounds, failure "
             "policies, or edge-case semantics are under-determined rather than guessing (note: "
-            "JBC v1.1 conventions are already fixed and never ambiguous — all BaseModels use "
+            "JBC v1.2 conventions are already fixed and never ambiguous — all BaseModels use "
             "STRICT_FROZEN_CONFIG from jezz.guards, IdentifierStr is 1..256 strict str, "
             "PositiveInt >= 1, NonNegativeInt >= 0, and public callables use @jezz_callable). When "
             "'Authoritative Clarifications Resolving Open Ambiguities' is provided, integrate "
@@ -735,7 +744,7 @@ def build_synthesize_agent(model: GuardedModel) -> GuardedAgent[ConstructionPatc
 
 @jezz_callable
 def build_refactor_agent(model: GuardedModel) -> GuardedAgent[RefactorPatchBundle]:
-    """Build BHV-17 REFACTOR specialist renovating brownfield modules to JBC v1.1 occupancy."""
+    """Build BHV-17 REFACTOR specialist renovating brownfield modules to JBC v1.2 occupancy."""
     agent = Agent[JezzAgentDeps, RefactorPatchBundle](
         model,
         output_type=RefactorPatchBundle,
@@ -745,7 +754,7 @@ def build_refactor_agent(model: GuardedModel) -> GuardedAgent[RefactorPatchBundl
         toolsets=(build_scoped_write_toolset(),),
         instructions=(
             "Renovate the existing non-test src/... file(s) shown in 'Existing Authorized File "
-            "Snapshots' so every file achieves zero JBC v1.1 violations while preserving public "
+            "Snapshots' so every file achieves zero JBC v1.2 violations while preserving public "
             "symbol names, call signatures compatible with locked tests, and observable domain "
             "semantics. Do NOT modify tests/... files or call read/list tools on already-inlined "
             "files. Remediate every cited baseline RED_TAG finding (attach @jezz_callable, "

@@ -1,4 +1,4 @@
-# Pillar 2 — Enforceable Software Building Codes (`JBC` Edition 1.1)
+# Pillar 2 — Enforceable Software Building Codes (`JBC` Edition 1.2)
 
 ## 1. Statutory Rationale: The Building Inspector Model
 
@@ -9,11 +9,11 @@ Existing software standards fail to serve as an enforceable code book for three 
 2. **Post-Mortem Pathology Catalogs:** MITRE CWE enumerates ~900 overlapping weaknesses at inconsistent abstraction levels rather than affirmative construction standards.
 3. **Human-Era Blind Spots:** Existing standards assume human authorship cost structures. Coding agents exhibit fundamentally different failure modes—hallucinating nonexistent packages, authoring assertion-free or tautological test theatre (`assert True`), leaving `pass`/`NotImplementedError` stubs behind typed headers, and injecting `Any` or `# type: ignore` to silence static gates.
 
-Pillar 2 establishes the **Jezz Software Building Code (`JBC` Edition 1.1 — 30 provisions across 6 Articles)** and an automated **Building Inspector** (`BuildingInspector`) that gates occupancy across Pillar 1's behavioral state machine.
+Pillar 2 establishes the **Jezz Software Building Code (`JBC` Edition 1.2 — 31 provisions across 6 Articles)** and an automated **Building Inspector** (`BuildingInspector`) that gates occupancy across Pillar 1's behavioral state machine.
 
 ---
 
-## 2. Key Architectural Design Decisions in Edition 1.1
+## 2. Key Architectural Design Decisions in Edition 1.2
 
 ### A. Option A Runtime Signature Breakers (`JBC-DBC-004` + `JBC-COG-003`)
 In Python, static annotations (`def charge(acct: str, amt: float) -> Receipt:`) are inert `__annotations__` metadata at runtime—labeling a panel slot `"20A"` with a Sharpie while installing no breaker.
@@ -35,9 +35,14 @@ Because arbitrary `while cond:` termination is undecidable, `JBC` adopts the saf
 - **Statutory Sunset Expiration (`CodeVariance.expires_on`):** Non-`LIFE_SAFETY` variances support an optional `expires_on: datetime.date` sunset deadline evaluated against an explicit `reference_date` (`--as-of YYYY-MM-DD`, defaulting to UTC today). Once `reference_date > expires_on`, `BuildingInspector` automatically flips the discrepancy from `VARIANCE_WAIVED` back to `VIOLATION` (`RED_TAG`) with an explicit `[Expired variance '...' (sunset YYYY-MM-DD)]` citation so temporary waivers never calcify into permanent `# noqa` debt.
 - **Differential Occupancy Ratchet (`jezz inspect --changed-since <ref>` / `--staged`):** Enables immediate CI adoption on unrenovated brownfield repositories. `inspect_differential_rough_in` parses the full workspace so cross-module provisions (`JBC-COG-003` Tarjan cycle detection and intra-package enclosure rules) retain whole-graph visibility—catching cycles introduced between a touched module and an untouched legacy module—while scoping per-unit `RED_TAG` enforcement strictly to touched Python files resolved via `ContainedPath`-validated `git merge-base` or staged-index diffs.
 
+### E. Dynamic Path Anchoring & Hardcoded Path Prohibition (`JBC-SEC-006`)
+Coding agents trained on ad-hoc scripts frequently bake machine-local absolute paths, OS temp prefixes, home-tilde expansions, or CWD-fragile string-literal `Path("...")` calls directly into modules and generated hooks (`AGT-PATH-01`, `CWE-426`, `ISO/IEC 25010 §4.2.8`):
+- **Zero Hardcoded Host/OS Path Literals (`src/` & `tests/`):** `check_sec_006` rejects embedded host-root, home-directory, temporary-directory, and Windows drive-letter path literals across both production and test units (exempting URL schemes, MIME/REST route strings, and non-path identifiers).
+- **Dynamic Anchor Derivation in Production Modules:** Production code is prohibited from passing string literals directly to `Path(...)` or `os.path.*(...)` constructors; every filesystem path must be computed dynamically from an explicit anchor (`Path(__file__).resolve()`, `importlib.resources`, `tempfile` / `tmp_path`, injected runtime environment anchors such as `${PLUGIN_ROOT}`, or `ContainedPath.from_parts(anchor, rel)`).
+
 ---
 
-## 3. Edition 1.1 Code Book — 30 Provisions Across 6 Articles
+## 3. Edition 1.2 Code Book — 31 Provisions Across 6 Articles
 
 ### Article I: `DBC` — Design by Contract, Signature Breakers & Bounded Domains (5)
 | Code | Title | Severity | Waivable | Primary Lineage & Verbatim Anchor |
@@ -58,7 +63,7 @@ Because arbitrary `while cond:` termination is undecidable, `JBC` adopts the saf
 | `JBC-FLT-005` | Structured Concurrency & Wall-Clock Cancel Deadlines | `structural` | Yes | CWE-400 (Slowloris & orphan task prevention) |
 | `JBC-FLT-006` | Bounded Memory Caches & Stream Allocation Ceilings | `structural` | Yes | CWE-770 |
 
-### Article III: `SEC` — Trust Boundaries, Ingress/Egress & Sink Containment (5)
+### Article III: `SEC` — Trust Boundaries, Ingress/Egress & Sink Containment (6)
 | Code | Title | Severity | Waivable | Primary Lineage & Verbatim Anchor |
 | :--- | :--- | :--- | :---: | :--- |
 | `JBC-SEC-001` | Parameterized Sink Execution & Dynamic Eval Prohibition | `life_safety` | No | CWE-89; OWASP ASVS V5.3.4 (*"Verify that data selection or database queries... use parameterized queries..."*) |
@@ -66,6 +71,7 @@ Because arbitrary `while cond:` termination is undecidable, `JBC` adopts the saf
 | `JBC-SEC-003` | Strict Closed Boundary Schemas (`extra='forbid'`, `strict=True`, `allow_inf_nan=False`) | `structural` | Yes | CWE-754 (*"...does not check or incorrectly checks for unusual or exceptional conditions..."*); OWASP ASVS V5.1.3 |
 | `JBC-SEC-004` | Typed Wire Ingress & Explicit Egress Projection | `structural` | Yes | OWASP `API3:2023` (*"This category combines API3:2019 Excessive Data Exposure and API6:2019 - Mass Assignment..."*); CWE-200 |
 | `JBC-SEC-005` | Taint Separation & Canonicalized Sink Types | `life_safety` | No | CWE-22 (*"...uses external input to construct a pathname... underneath a restricted parent directory, but it does not properly neutralize special elements..."*) |
+| `JBC-SEC-006` | Dynamic Path Anchoring & Hardcoded Path Prohibition | `structural` | Yes | ISO/IEC 25010 §4.2.8; CWE-426 (*"The application searches for critical resources using an untrusted search path"*); `AGT-PATH-01` |
 
 ### Article IV: `COG` — Complexity, Dispatch Tables & Class Duty Isolation (5)
 | Code | Title | Severity | Waivable | Primary Lineage & Verbatim Anchor |

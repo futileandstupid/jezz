@@ -1,4 +1,4 @@
-"""Pillar 2 public API: Enforceable Software Building Codes (JBC v1.1) and Inspector."""
+"""Pillar 2 public API: Enforceable Software Building Codes (JBC v1.2) and Inspector."""
 
 from jezz.codes.ast_graph import (
     ModuleGraphEntry,

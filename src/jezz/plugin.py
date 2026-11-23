@@ -47,7 +47,7 @@ _PCE_SKILL_MD: Final[str] = """---
 name: pce
 description: >-
   Executes the 5-phase Permit-and-Contract Engineering (PCE) workflow and enforces Jezz Software
-  Building Code (JBC Edition 1.1) occupancy gates. Activate when planning features, writing or
+  Building Code (JBC Edition 1.2) occupancy gates. Activate when planning features, writing or
   renovating Python code under JBC governance, or auditing PCE engineering dossiers.
 ---
 

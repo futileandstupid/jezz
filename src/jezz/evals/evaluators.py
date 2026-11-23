@@ -29,7 +29,7 @@ type GuardedEvalReason = Annotated[EvaluationReason, InstanceGuard(EvaluationRea
 def evaluate_jbc_safety(
     ctx: GuardedEvalContext,
 ) -> Mapping[IdentifierStr, GuardedEvalReason]:
-    """Score JBC Edition 1.1 LIFE_SAFETY, STRUCTURAL, and total violation counts."""
+    """Score JBC Edition 1.2 LIFE_SAFETY, STRUCTURAL, and total violation counts."""
     out = ctx.output
     cited = ", ".join(out.violated_code_ids) if out.violated_code_ids else "0 violations"
     results: dict[str, GuardedEvalReason] = {

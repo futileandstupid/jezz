@@ -26,3 +26,4 @@ htmlcov/
 # JetBrains IDE & Local Agent Config
 .idea/
 .agents/
+skills/system/

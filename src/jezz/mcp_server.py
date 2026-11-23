@@ -1,4 +1,4 @@
-"""Read-only Model Context Protocol (MCP) statutory gate server for JBC v1.1 and PCE."""
+"""Read-only Model Context Protocol (MCP) statutory gate server for JBC v1.2 and PCE."""
 
 import asyncio
 import json
@@ -70,12 +70,13 @@ _READ_ONLY_ANNOTATIONS: Final[ToolAnnotations] = ToolAnnotations(
 )
 
 _SERVER_INSTRUCTIONS: Final[str] = (
-    "Jezz Software Building Code (JBC Edition 1.1) & Permit-and-Contract Engineering (PCE) "
+    "Jezz Software Building Code (JBC Edition 1.2) & Permit-and-Contract Engineering (PCE) "
     "statutory gate server. Use jbc_preview_source to validate candidate Python buffers in "
     "memory (including whole-workspace JBC-COG-003 cycle/encapsulation checks) before writing "
     "to disk; use jbc_inspect_differential or jbc_inspect_workspace for Rough-In verification; "
-    "use jbc_get_code / jbc_list_codes for normative JBC provisions; and use "
-    "jbc_verify_behavior_graph and jbc_audit_dossier for Pillar 1 and Pillar 3 verification."
+    "use jbc_query_ast_graph for workspace AST import/call/symbol slices; use jbc_get_code / "
+    "jbc_list_codes for normative JBC provisions; and use jbc_verify_behavior_graph and "
+    "jbc_audit_dossier for Pillar 1 and Pillar 3 verification."
 )
 
 type GuardedMcpServer = Annotated[MCPServer[object], InstanceGuard(MCPServer)]
@@ -96,7 +97,7 @@ type WireJsonText = Annotated[
 
 
 class BuildingCodeSummary(BaseModel):
-    """Compact statutory summary of a single JBC Edition 1.1 BuildingCode provision."""
+    """Compact statutory summary of a single JBC Edition 1.2 BuildingCode provision."""
 
     model_config = STRICT_FROZEN_CONFIG
 
@@ -131,7 +132,7 @@ class BuildingCodeSummary(BaseModel):
 
 
 class JbcCatalogPayload(BaseModel):
-    """Filtered JBC Edition 1.1 catalog response returned by ``jbc_list_codes``."""
+    """Filtered JBC Edition 1.2 catalog response returned by ``jbc_list_codes``."""
 
     model_config = STRICT_FROZEN_CONFIG
 
@@ -169,7 +170,7 @@ def list_jbc_codes(
     article: CodeArticle | None = None,
     trigger: CodeTrigger | None = None,
 ) -> JbcCatalogPayload:
-    """List JBC Edition 1.1 provisions filtered optionally by ``article`` and ``trigger``."""
+    """List JBC Edition 1.2 provisions filtered optionally by ``article`` and ``trigger``."""
     matched: list[BuildingCodeSummary] = []
     for code_id in sorted(CODE_BOOK):
         code = CODE_BOOK[code_id]
@@ -380,7 +381,7 @@ def _run_ast_graph_query(
 
 
 class JezzWorkspaceGate:
-    """Workspace-jailed JBC v1.1 and PCE verification gate bound to ``anchor_root``."""
+    """Workspace-jailed JBC v1.2 and PCE verification gate bound to ``anchor_root``."""
 
     @jezz_callable
     def __init__(self, workspace_root: Path | None = None) -> None:
@@ -408,7 +409,7 @@ class JezzWorkspaceGate:
         permit_path: IdentifierStr | None = None,
         as_of: IdentifierStr | None = None,
     ) -> InspectionReport:
-        """Run JBC Edition 1.1 Rough-In static inspection across the workspace."""
+        """Run JBC Edition 1.2 Rough-In static inspection across the workspace."""
         return _run_tool_safely(
             lambda: _run_workspace_inspection(
                 self._anchor_root,
@@ -531,8 +532,8 @@ def _register_statutory_tools(server: MCPServer[object], gate: JezzWorkspaceGate
     specs: tuple[tuple[str, str, str, Callable[..., object]], ...] = (
         (
             "jbc_list_codes",
-            "List JBC Edition 1.1 Building Codes",
-            "List JBC v1.1 provisions filtered optionally by CodeArticle or CodeTrigger.",
+            "List JBC Edition 1.2 Building Codes",
+            "List JBC v1.2 provisions filtered optionally by CodeArticle or CodeTrigger.",
             list_jbc_codes,
         ),
         (
@@ -550,7 +551,7 @@ def _register_statutory_tools(server: MCPServer[object], gate: JezzWorkspaceGate
         (
             "jbc_inspect_workspace",
             "Inspect Workspace (JBC Rough-In)",
-            "Run full JBC v1.1 Rough-In static inspection across workspace Python files.",
+            "Run full JBC v1.2 Rough-In static inspection across workspace Python files.",
             gate.inspect_workspace,
         ),
         (

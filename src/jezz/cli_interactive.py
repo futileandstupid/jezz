@@ -277,7 +277,7 @@ def register_hook_parser(p_hook: GuardedArgParser) -> None:
     hook_sub = p_hook.add_subparsers(dest="hook_event", required=True)
     p_stop = hook_sub.add_parser(
         "stop",
-        help="Run the JBC v1.1 Differential Occupancy Ratchet as an Antigravity Stop gate.",
+        help="Run the JBC v1.2 Differential Occupancy Ratchet as an Antigravity Stop gate.",
     )
     p_stop.add_argument(
         "--root",

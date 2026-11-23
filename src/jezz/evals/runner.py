@@ -214,6 +214,7 @@ def _build_isolated_model_suite(
         synthesize_model=deps.model_factory(),
         hypothesize_model=deps.model_factory(),
         refactor_model=deps.model_factory(),
+        decompose_model=deps.model_factory(),
     )
 
 
@@ -223,7 +224,7 @@ async def run_pce_treatment_case(
     model: GuardedModel,
     deps: GuardedHarnessDeps,
 ) -> ArmRunOutcome:
-    """Execute one benchmark Case under the Jezz PCE + JBC v1.1 Treatment Arm."""
+    """Execute one benchmark Case under the Jezz PCE + JBC v1.2 Treatment Arm."""
     ws = provision_scratch_workspace(
         deps.work_root,
         f"pce_{task.case_id}",
@@ -409,7 +410,7 @@ def format_ab_benchmark_markdown(comparison: AbBenchmarkComparison) -> BoundedTe
         "| Metric | Control (`SDD` Prose) | Treatment (`Jezz PCE`) |",
         "| :--- | :---: | :---: |",
         _metric_row(
-            "JBC v1.1 Occupiable Cases (`0` violations)",
+            "JBC v1.2 Occupiable Cases (`0` violations)",
             f"`{c.cases_jbc_occupiable}/{c.cases_total}`",
             f"`{t.cases_jbc_occupiable}/{t.cases_total}`",
         ),

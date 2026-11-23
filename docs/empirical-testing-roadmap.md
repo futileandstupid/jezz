@@ -1,18 +1,19 @@
-# Empirical Validation & Early Testing Roadmap
+# Empirical Validation & Longitudinal Testing Roadmap
 
-With Pillars 1–4 implemented, self-audited, and passing (`jezz.behaviors`, `jezz.codes`, `jezz.methodology`, `jezz.agents`), this roadmap defines four progressive empirical testing tracks to evaluate `jezz` against real-world Python codebases, live LLMs, and industry "Spec-Driven Development" ("SDD") baselines.
+With Pillars 1–4 implemented, self-audited, and passing (`jezz.behaviors`, `jezz.codes`, `jezz.methodology`, `jezz.agents`), this roadmap tracks five progressive empirical validation stages evaluating `jezz` against brownfield Python repositories, live single- and multi-mandate LLM workflows, and industry "Spec-Driven Development" ("SDD") baselines.
 
 ---
 
-## Track 1 — Thin CLI Harness (`jezz inspect` / `jezz audit` / `jezz run`) — *Implemented*
+## Track 1 — CLI, MCP, & Antigravity Lifecycle Harness (`jezz inspect` / `audit` / `run` / `renovate` / `init` / `mcp` / `hook`) — *Implemented*
 
-**Goal:** Expose `BuildingInspector`, `audit_pce_dossier`, and `PceWorkflowOrchestrator` via a minimal, zero-variance CLI entrypoint (`pyproject.toml` `[project.scripts]` -> `src/jezz/cli.py`) so external repositories and scratch workspaces can be inspected or executed from a single terminal command.
+**Goal:** Expose `BuildingInspector`, `audit_pce_dossier`, `PceWorkflowOrchestrator`, the read-only `stdio` MCP gate, and the Antigravity `Stop` lifecycle hook via a zero-variance CLI entrypoint (`pyproject.toml` `[project.scripts]` -> `src/jezz/cli.py`).
 
 - **Commands:**
-  - `uv run jezz inspect <repo_path>` — Run Rough-In (`JBC` v1.1 static/AST/cohesion/security) inspection over `<repo_path>` (supporting both `src/` and flat package layouts while pruning virtualenvs/caches) and emit a Markdown or JSON `InspectionReport` (`0` on `APPROVED` / `APPROVED_WITH_VARIANCES`, `1` on `RED_TAG`, `2` on input error).
-  - `uv run jezz audit <dossier_json>` — Verify all five `PCE` phases via `audit_pce_dossier`.
-  - `uv run jezz run <repo_path> --model <provider:model> (--prompt "..." | --mandate <json>)` — Execute `PceWorkflowOrchestrator` with optional `--write-dossier` output.
-- **Status:** Verified (`src/jezz/cli.py`, `src/jezz/__main__.py`, `tests/test_cli.py`) with zero `JBC` v1.1 variances.
+  - `uv run jezz inspect <repo_path> [--changed-since <ref> | --staged]` — Run full or differential Rough-In (`JBC` Edition `1.2`, `29` static / `31` total provisions) inspection (`0` on `APPROVED` / `APPROVED_WITH_VARIANCES`, `1` on `RED_TAG`, `2` on input error).
+  - `uv run jezz audit <dossier_json> [--repo <repo_path>]` — Verify all five `PCE` phases and SHA-256 `CertificateOfOccupancy` seals via `audit_pce_dossier`.
+  - `uv run jezz run` / `uv run jezz renovate` — Execute greenfield or brownfield `PceWorkflowOrchestrator` workflows (supporting `--plan-only`, `--write-mandate`, `--interactive`, `--progress`, and role-tiered `[tool.jezz.models]` + Proton Pass `pass-cli` secret resolution).
+  - `uv run jezz init` / `uv run jezz mcp` / `uv run jezz hook stop` — Install portable `${PLUGIN_ROOT}`-anchored Antigravity plugins (`JBC-SEC-006`) and enforce turn-boundary Differential Occupancy Ratchets.
+- **Status:** Verified (`src/jezz/cli.py`, `src/jezz/cli_interactive.py`, `src/jezz/mcp_server.py`, `src/jezz/hooks.py`, `src/jezz/plugin.py`) with zero `JBC` v1.2 variances.
 
 ---
 
@@ -38,13 +39,21 @@ With Pillars 1–4 implemented, self-audited, and passing (`jezz.behaviors`, `je
 
 ---
 
-## Track 4 — Controlled A/B Benchmark via `pydantic-evals` (Prose "SDD" vs. `jezz` `PCE`) — *Completed (Waves 4A, 4B, & 4C v1.2)*
+## Track 4 — Controlled A/B Benchmark via `pydantic-evals` (Prose "SDD" vs. `jezz` `PCE`) — *Completed (Waves 4A–4E)*
 
-**Goal:** Quantitatively test Pillar 3A's core thesis using `pydantic-evals` over 6 adversarial benchmark tasks (`28` live end-to-end workspace builds across Waves 4A, 4B, & 4C v1.2 on `google:gemini-3.8-flash`) seeded with classic LLM failure modes (SQL injection sinks, IEEE-754 $>2^{53}$ float corruption, path/symlink escapes, silent exception swallowing, unbounded loops, class duty creep, and multi-scope state transitions).
+**Goal:** Quantitatively test Pillar 3A's core thesis using `pydantic-evals` over 6 adversarial benchmark tasks (`46` live end-to-end workspace builds across Waves 4A–4E on uniform `google:gemini-3.8-flash` and symmetric tiered `google:gemini-4-hydrogen` + `google:gemini-3.8-flash`) seeded with classic LLM failure modes (SQL injection sinks, IEEE-754 $>2^{53}$ float corruption, path/symlink escapes, silent exception swallowing, unbounded loops, class duty creep, and multi-scope state transitions).
 
-- **Experimental Arms (Identical Base Model `google:gemini-3.8-flash` & Workspace Manifests):**
+- **Experimental Arms (Matched Models & Workspace Manifests):**
   - **Control Arm (Marketed Prose SDD):** Steelmanned 7-article `constitution.md` + `spec.md` $\to$ `design.md` $\to$ `tasks.md` $\to$ implementation + `- [x]` checklist (`jezz.evals.sdd_baseline`).
-  - **Treatment Arm (`jezz` `PCE` + `JBC` v1.1):** Matched `EngineeringMandate` executed through `PceWorkflowOrchestrator` + `UvSubprocessGateRunner`.
+  - **Treatment Arm (`jezz` `PCE` + `JBC` v1.1 / v1.2):** Matched `EngineeringMandate` executed through `PceWorkflowOrchestrator` + `UvSubprocessGateRunner`.
 - **Headline Empirical Findings ([track-4-sdd-vs-pce-benchmark.md](track-4-sdd-vs-pce-benchmark.md)):**
-  1. **100% Suite Closure & Zero Silent Defect Escape vs. Checkbox Theatre:** Marketed SDD passed `OpenSpec`/Kiro Markdown validation (`[x]` + `SHALL` + `Scenario`) on **`14/14` (`100%`)** of runs while achieving **`0/14` (`0%`)** `JBC` v1.1 occupancy (`15` `LIFE_SAFETY` violations / `206` total violations), failing `mypy --strict` on `50%`, and escaping with held-out oracle crashes on **`4/14` (`28.6%`)**. With Pillar 4 v1.2 (`Wave 4C` staged runtime import gate + PEP 695 `TypeAliasType` gate + inline snapshots), **all `6/6` (`100%`) benchmark tasks** achieved `OCCUPANCY_CERTIFIED` seals with **`0/30` `JBC` violations**, **`100%` `mypy --strict` pass**, and **`100%` (`18/18` checks across Waves 4B + 4C) held-out `Hypothesis` oracle survival** (`0%` silent defect escape).
-  2. **`16.1x` Specification Compression, `-20.3%` Request Reduction, & `-72%` Complexity:** SDD generated `~600+` mean lines of Markdown per task vs. `38.7` lines per `EngineeringMandate` (`93.8%` review reduction), while `PCE` v1.2 cut LLM requests to `32.5` per case (`-20.3%` vs. Wave 4B), cut peak Cognitive Complexity by `60%–72%`, and eliminated `elif` ladders (`0`).
+  1. **100% Suite Closure on Both Uniform & Tiered Routing with Zero Silent Defect Escape:** Marketed SDD passed `OpenSpec`/Kiro Markdown validation (`[x]` + `SHALL` + `Scenario`) on **`23/23` (`100%`)** of runs while achieving **`0/23` (`0%`)** `JBC` occupancy (`36` `LIFE_SAFETY` violations / `375` total violations), failing `mypy --strict` on `56.5%` (`13/23`), failing its own `pytest` suites on `39.1%` (`9/23`), and escaping with held-out oracle crashes on **`4/23` (`17.4%`)**. Conversely, `jezz` `PCE` achieved **`6/6` (`100%`) task closure** on both uniform `gemini-3.8-flash` (Waves 4B+4C) and symmetric tiered `gemini-4-hydrogen` + `gemini-3.8-flash` (Waves 4D+4E), with **`0` unwaived `JBC` violations** across all `15` certified builds and **`100%` (`12/12` post-calibration builds = `36/36` checks) held-out `Hypothesis` oracle survival (`0.0%` silent defect escape)**.
+  2. **Over-Specified Prose Drift vs. Executable Contract Leverage:** Upgrading SDD's Architect to frontier `gemini-4-hydrogen` (`Wave 4D`) *increased* `JBC` violations by `+61.0%` (`3.8x` more `LIFE_SAFETY` defects), whereas channeling `gemini-4-hydrogen` into compiled Phase III `PCE` contracts cut mean latency by `-48.5%` and requests by `-37.1%`.
+
+---
+
+## Track 5 — Multi-Mandate Longitudinal Crucible (`jezz-crucible-ledger`) & `JBC` Edition `1.2` — *Completed*
+
+**Goal:** Stress-test `jezz` longitudinally across 4 sequential, interdependent mandates in a single repository (**`jezz-crucible-ledger`** — Double-Entry Integer-Cent Ledger & Escrow Engine, `11` Python units / `2,693` LOC) spanning greenfield `--mandate`, raw `--prompt` with AST-grounded `DECOMPOSE`, 2-scope / 2-wave topological DAG `DELEGATE -> RECONCILE`, interactive co-engineering + brownfield `jezz renovate` (`BHV-17 REFACTOR`), and live `jezz hook stop` enforcement.
+
+- **Report & Calibrations:** [track-5-multi-mandate-crucible.md](track-5-multi-mandate-crucible.md) — Sealed all 4 sequential `EngineeringDossier`s with `0` unwaived `JBC` violations and `0` reverts (`21/21` `pytest` + `Hypothesis`, `mypy --strict` clean); landed 8 runtime/introspection calibrations (including parallel `InstrumentNode`, read-only upstream AST signature injection, test-only `mypy` remediation routing, and class-method / `TypeAliasType` package introspection closing `Wave 4E`); and codified **`JBC-SEC-006` (Edition `1.2` — `31` provisions)** banning hardcoded paths across code and generated plugins.

@@ -1,4 +1,4 @@
-"""Pillar 2: Statutory schema, hazard triggers, and verbatim standards lineage for JBC v1.1."""
+"""Pillar 2: Statutory schema, hazard triggers, and verbatim standards lineage for JBC v1.2."""
 
 import re
 from enum import StrEnum

@@ -352,7 +352,7 @@ def resolve_specialist_routing(
     *,
     project_config: JezzModelsConfig | None = None,
 ) -> ResolvedModelRouting:
-    """Resolve all 7 specialist slots across CLI flags and ``[tool.jezz.models]``."""
+    """Resolve all 8 specialist slots across CLI flags and ``[tool.jezz.models]``."""
     resolved_by_slot: dict[SpecialistRoleSlot, str] = {}
     missing_slots: list[str] = []
     for slot in SpecialistRoleSlot:

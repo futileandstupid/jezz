@@ -209,6 +209,17 @@ def test_inspect_installed_package_api_extracts_signatures_and_blocks_unsafe_roo
     assert sym_fallback.module_path == "hypothesis.strategies"
     assert "DataObject" in sym_fallback.exported_classes
 
+    method_hit = inspect_installed_package_api("jezz.guards", symbol_filter="from_parts")
+    assert "ContainedPath" in method_hit.exported_classes
+    assert any("ContainedPath.from_parts(" in s for s in method_hit.member_signatures)
+
+    deep_fallback = inspect_installed_package_api("jezz.guards.ContainedPath.from_parts")
+    assert deep_fallback.module_path == "jezz.guards"
+    assert any("ContainedPath.from_parts(" in s for s in deep_fallback.member_signatures)
+
+    alias_hit = inspect_installed_package_api("jezz.guards", symbol_filter="IdentifierStr")
+    assert any(s.startswith("type IdentifierStr =") for s in alias_hit.member_signatures)
+
     with pytest.raises(ValueError, match="Refusing side-effectful module"):
         inspect_installed_package_api("antigravity")
 

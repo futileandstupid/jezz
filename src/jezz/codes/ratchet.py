@@ -1,4 +1,4 @@
-"""Git-aware Differential Occupancy Ratchet for incremental brownfield JBC v1.1 enforcement."""
+"""Git-aware Differential Occupancy Ratchet for incremental brownfield JBC v1.2 enforcement."""
 
 import re
 import subprocess
@@ -293,7 +293,7 @@ def inspect_differential_rough_in(
     *,
     permit: CodePermit | None = None,
 ) -> DifferentialInspectionReport:
-    """Gate touched units under JBC v1.1 while preserving whole-workspace cycle analysis."""
+    """Gate touched units under JBC v1.2 while preserving whole-workspace cycle analysis."""
     active_permit = permit or CodePermit.full_book(permit_id="PERMIT-RATCHET")
     active_date = (
         scope.reference_date if scope.reference_date is not None else datetime.now(UTC).date()

@@ -669,7 +669,7 @@ def _tool_preview_rough_in(
     rel_path: IdentifierStr,
     candidate_source: SourceCodeText,
 ) -> BoundedText:
-    """Run deterministic JBC v1.1 rough-in and runtime-import inspection without writing."""
+    """Run deterministic JBC v1.2 rough-in and runtime-import inspection without writing."""
     try:
         unit = parse_source_unit(rel_path, candidate_source)
     except SyntaxError as exc:

@@ -1,4 +1,4 @@
-"""Antigravity lifecycle hook engine enforcing JBC Edition 1.1 statutory Stop gates."""
+"""Antigravity lifecycle hook engine enforcing JBC Edition 1.2 statutory Stop gates."""
 
 import io
 import json
@@ -212,7 +212,7 @@ def _format_stop_remediation(report: InspectionReport) -> str:
     violations = report.unwaived_violations()
     shown = violations[:_MAX_HOOK_FINDINGS]
     lines = [
-        f"JBC v1.1 Statutory Stop Gate (RED_TAG — {len(violations)} unwaived violation(s) "
+        f"JBC v1.2 Statutory Stop Gate (RED_TAG — {len(violations)} unwaived violation(s) "
         "in modified workspace files):",
     ]
     for finding in shown:
@@ -236,7 +236,7 @@ def _discover_or_block_syntax(repo_root: Path) -> tuple[SourceUnit, ...] | StopH
     except SyntaxError as exc:
         loc = f"{exc.filename or '<unknown>'}:L{exc.lineno or 1}"
         return _block_stop(
-            f"JBC v1.1 Statutory Stop Gate (SYNTAX_ERROR at {loc}): {exc.msg}. "
+            f"JBC v1.2 Statutory Stop Gate (SYNTAX_ERROR at {loc}): {exc.msg}. "
             "Repair invalid Python syntax before completing your turn."
         )
 

@@ -1,4 +1,4 @@
-"""Automated Software Building Inspector (JBC v1.1) and Pillar 1 runtime governance bridge."""
+"""Automated Software Building Inspector (JBC v1.2) and Pillar 1 runtime governance bridge."""
 
 import ast
 import configparser
@@ -520,7 +520,7 @@ def collect_per_unit_discrepancies(
 
 
 class BuildingInspector:
-    """Deterministic enforcement engine for the Jezz Software Building Code (JBC v1.1)."""
+    """Deterministic enforcement engine for the Jezz Software Building Code (JBC v1.2)."""
 
     @jezz_callable
     def __init__(self, manifest: ManifestDependencies | None = None) -> None:

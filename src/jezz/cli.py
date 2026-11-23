@@ -769,7 +769,7 @@ def _register_model_routing_flags(parser: argparse.ArgumentParser) -> None:
         "--architect-model",
         dest="architect_model",
         default=None,
-        help="Model override for FRAME, SPECIFY, and HYPOTHESIZE specialists.",
+        help="Model override for FRAME, DECOMPOSE, SPECIFY, and HYPOTHESIZE specialists.",
     )
     parser.add_argument(
         "--builder-model",
@@ -865,7 +865,7 @@ def _register_benchmark_subparser(
 def _register_inspect_subparser(
     sub: argparse._SubParsersAction[argparse.ArgumentParser],
 ) -> None:
-    p_ins = sub.add_parser("inspect", help="Run JBC v1.1 Rough-In inspection on a repository.")
+    p_ins = sub.add_parser("inspect", help="Run JBC v1.2 Rough-In inspection on a repository.")
     p_ins.add_argument("repo_path", type=Path, help="Target repository root directory.")
     p_ins.add_argument("--target-dir", dest="target_dirs", action="append", default=None)
     p_ins.add_argument("--permit", type=Path, default=None, help="Optional CodePermit JSON file.")
@@ -899,7 +899,7 @@ def _register_mcp_subparser(
 ) -> None:
     p_mcp = sub.add_parser(
         "mcp",
-        help="Run the read-only JBC v1.1 & PCE statutory MCP server over stdio.",
+        help="Run the read-only JBC v1.2 & PCE statutory MCP server over stdio.",
     )
     p_mcp.add_argument(
         "--root",
@@ -913,7 +913,7 @@ def _register_mcp_subparser(
 def _build_cli_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="jezz",
-        description="Jezz Software Building Code (JBC v1.1) & PCE runtime CLI.",
+        description="Jezz Software Building Code (JBC v1.2) & PCE runtime CLI.",
     )
     sub = parser.add_subparsers(dest="command", required=True)
 
@@ -935,7 +935,7 @@ def _build_cli_parser() -> argparse.ArgumentParser:
     _register_workflow_subparser(
         sub,
         name="renovate",
-        help_text="Renovate a brownfield workspace via BHV-17 REFACTOR to JBC v1.1 occupancy.",
+        help_text="Renovate a brownfield workspace via BHV-17 REFACTOR to JBC v1.2 occupancy.",
     )
     _register_benchmark_subparser(sub)
     _register_mcp_subparser(sub)

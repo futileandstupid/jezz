@@ -444,7 +444,7 @@ class ElicitNode(AtomicBehaviorGraphNode[PceGraphDeps, PceWorkflowResult]):
 
 @dataclass
 class BindCodesNode(AtomicBehaviorGraphNode[PceGraphDeps, PceWorkflowResult]):
-    """Phase II (BHV-03 BIND_CODES): Lock JBC v1.1 CodePermit into execution state."""
+    """Phase II (BHV-03 BIND_CODES): Lock JBC v1.2 CodePermit into execution state."""
 
     behavior_kind: ClassVar[BehaviorKind] = BehaviorKind.BIND_CODES
 
@@ -724,7 +724,7 @@ class InstrumentNode(AtomicBehaviorGraphNode[PceGraphDeps, PceWorkflowResult]):
             prompt = (
                 f"{prompt}\nBrownfield Renovation Mode: Preserve/lock existing observable "
                 "public behavior from src/... snapshots while defining every mandated "
-                "verification_symbol under full JBC v1.1 test compliance."
+                "verification_symbol under full JBC v1.2 test compliance."
             )[:60_000]
         test_scopes = _test_owning_scopes(mandate)
         assignments = (
@@ -984,7 +984,7 @@ class ReconcileNode(AtomicBehaviorGraphNode[PceGraphDeps, PceWorkflowResult]):
 
 @dataclass
 class VerifyStaticNode(AtomicBehaviorGraphNode[PceGraphDeps, PceWorkflowResult]):
-    """Rough-In Gate (BHV-18 VERIFY_STATIC): Run JBC v1.1 static/AST/cohesion inspection."""
+    """Rough-In Gate (BHV-18 VERIFY_STATIC): Run JBC v1.2 static/AST/cohesion inspection."""
 
     behavior_kind: ClassVar[BehaviorKind] = BehaviorKind.VERIFY_STATIC
 

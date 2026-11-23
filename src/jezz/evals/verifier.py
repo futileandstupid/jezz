@@ -1,4 +1,4 @@
-"""Track 4: Isolated workspace provisioning, JBC v1.1 grading, and held-out oracle verification."""
+"""Track 4: Isolated workspace provisioning, JBC v1.2 grading, and held-out oracle verification."""
 
 import ast
 import importlib
@@ -497,7 +497,7 @@ def grade_workspace_artifacts(
     metrics: ArmExecutionMetrics,
     verifier: Annotated[WorkspaceVerifierPort, InstanceGuard(WorkspaceVerifierPort)],
 ) -> ArmRunOutcome:
-    """Run deterministic JBC v1.1 full-book inspection and held-out oracle on ``ws_dir``."""
+    """Run deterministic JBC v1.2 full-book inspection and held-out oracle on ``ws_dir``."""
     resolved_ws = ws_dir.resolve()
     units = load_workspace_units(resolved_ws, target_dirs=("src", "tests"))
     oracle = verifier.verify_workspace(resolved_ws, task)
