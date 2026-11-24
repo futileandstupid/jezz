@@ -4,14 +4,14 @@ With Pillars 1–4 implemented, self-audited, and passing (`jezz.behaviors`, `je
 
 ---
 
-## Track 1 — CLI, MCP, & Antigravity Lifecycle Harness (`jezz inspect` / `audit` / `run` / `renovate` / `init` / `mcp` / `hook`) — *Implemented*
+## Track 1 — CLI, MCP, & Antigravity Lifecycle Harness (`jezz inspect` / `audit` / `run` / `renovate` / `init` / `mcp` / `hook`) — *Completed*
 
 **Goal:** Expose `BuildingInspector`, `audit_pce_dossier`, `PceWorkflowOrchestrator`, the read-only `stdio` MCP gate, and the Antigravity `Stop` lifecycle hook via a zero-variance CLI entrypoint (`pyproject.toml` `[project.scripts]` -> `src/jezz/cli.py`).
 
 - **Commands:**
   - `uv run jezz inspect <repo_path> [--changed-since <ref> | --staged]` — Run full or differential Rough-In (`JBC` Edition `1.2`, `29` static / `31` total provisions) inspection (`0` on `APPROVED` / `APPROVED_WITH_VARIANCES`, `1` on `RED_TAG`, `2` on input error).
-  - `uv run jezz audit <dossier_json> [--repo <repo_path>]` — Verify all five `PCE` phases and SHA-256 `CertificateOfOccupancy` seals via `audit_pce_dossier`.
-  - `uv run jezz run` / `uv run jezz renovate` — Execute greenfield or brownfield `PceWorkflowOrchestrator` workflows (supporting `--plan-only`, `--write-mandate`, `--interactive`, `--progress`, and role-tiered `[tool.jezz.models]` + Proton Pass `pass-cli` secret resolution).
+  - `uv run jezz audit <dossier_json> [--repo <repo_path>]` — Verify all five `PCE` phases and SHA-256 `CertificateOfOccupancy` seals (including `ratchet_scoped` brownfield slices) via `audit_pce_dossier`.
+  - `uv run jezz run` / `uv run jezz renovate [--ratchet]` — Execute greenfield or brownfield `PceWorkflowOrchestrator` workflows (supporting `--plan-only`, `--write-mandate`, `--interactive`, `--progress`, zero-credential `antigravity:<slug>` routing, and role-tiered `[tool.jezz.models]` + Proton Pass `pass-cli` secret resolution).
   - `uv run jezz init` / `uv run jezz mcp` / `uv run jezz hook stop` — Install portable `${PLUGIN_ROOT}`-anchored Antigravity plugins (`JBC-SEC-006`) and enforce turn-boundary Differential Occupancy Ratchets.
 - **Status:** Verified (`src/jezz/cli.py`, `src/jezz/cli_interactive.py`, `src/jezz/mcp_server.py`, `src/jezz/hooks.py`, `src/jezz/plugin.py`) with zero `JBC` v1.2 variances.
 

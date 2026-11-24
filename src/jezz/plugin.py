@@ -86,13 +86,13 @@ specifications.
 ## Mode 2: Autonomous `jezz` CLI Delegation
 
 - **Plan & Mandate Preview (No Workspace Mutation):**
-  `uv run jezz run <repo_path> --prompt "<objective>" --plan-only --write-mandate mandate.json`
+  `uv run jezz run <repo> [--model antigravity:<slug>] --prompt "..." --plan-only`
 - **Greenfield Synthesis from Prompt or Mandate:**
-  `uv run jezz run <repo_path> --mandate mandate.json --write-dossier dossier.json`
-- **Brownfield JBC Renovation:**
-  `uv run jezz renovate <repo_path> --prompt "<renovation objective>"`
+  `uv run jezz run <repo> [--model antigravity:<slug>] --mandate mandate.json`
+- **Brownfield JBC Renovation (Full or Scoped `--ratchet`):**
+  `uv run jezz renovate <repo> [--ratchet] [--permit permit.json] --prompt "..."`
 - **Polyglot Differential Occupancy Ratchet:**
-  `uv run jezz inspect <repo_path> --changed-since HEAD` (or `--staged`)
+  `uv run jezz inspect <repo> --changed-since HEAD` (or `--staged`)
 """
 
 

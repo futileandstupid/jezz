@@ -19,11 +19,13 @@ Root `action.yml` exposes **Jezz Software Building Code (`JBC` Edition 1.2) & `P
     # language: "rust,go"  # optional space- or comma-separated filter
     # permit: "permit.json"
     # dossier: "dossier.json"
+    # enable-cache: "true" # optional astral-sh/setup-uv cache (default: "false")
 ```
 
 ### Security & Determinism Invariants
-- **Zero Raw `${{ inputs.* }}` Shell Interpolation (`JBC-SEC-001`):** Every action input (`working-directory`, `mode`, `base-ref`, `language`, `permit`, `as-of`, `dossier`, `python-version`) is bound strictly through step `env:` variables (`JEZZ_*`) before bash execution, eliminating untrusted PR branch/input shell injection.
+- **Zero Raw `${{ inputs.* }}` Shell Interpolation (`JBC-SEC-001`):** Every action input (`working-directory`, `mode`, `base-ref`, `language`, `permit`, `as-of`, `dossier`, `python-version`, `enable-cache`) is bound strictly through step `env:` variables (`JEZZ_*`) or boolean input expressions before bash execution, eliminating untrusted PR branch/input shell injection.
 - **Zero Hardcoded Host Paths (`JBC-SEC-006`):** Invokes `uv run --python "$JEZZ_PYTHON_VERSION" --project "$JEZZ_ACTION_PATH" jezz ...` anchored dynamically to `${{ github.action_path }}`, isolating `jezz`'s Python `>=3.14` environment from the target repository's toolchain (`Cargo.toml`, `go.mod`, `package.json`, or older Python virtualenvs).
+- **Fail-Fast Keyless CLI Preflight (`_load_workflow_inputs`, `src/jezz/cli.py`):** Validates local `--mandate` and `--resume-elicitation` JSON artifacts prior to resolving provider credentials (`pass-cli`), ensuring deterministic exit code `2` validation diagnostics on keyless CI runners.
 - **Automatic PR/Push Base Resolution & Step Summaries:** Defaults `base-ref` to `origin/${{ github.base_ref }}` on `pull_request` events and `HEAD~1` on `push` events, appends structured Markdown inspection and dossier-seal reports to `$GITHUB_STEP_SUMMARY`, and exports `inspect-exit-code` and `audit-exit-code` via `$GITHUB_OUTPUT`.
 - **CI Dogfooding (`.github/workflows/jbc-gate.yml`):** Gate 6 of `jezz`'s own CI workflow dogfoods `uses: ./` on every push and pull request.
 
