@@ -296,32 +296,45 @@ def _one_shot_clarification_callback(
     return _supply
 
 
-def _dispatch_orchestrator_coro(
-    orchestrator: PceWorkflowOrchestrator,
-    ns: argparse.Namespace,
-    resolved_repo: Path,
-    permit: CodePermit | None,
-    mode: PceWorkflowMode,
-) -> Coroutine[object, object, PceWorkflowResult]:
+type _LoadedWorkflowInputs = tuple[
+    ElicitationTicket | None,
+    EngineeringMandate | None,
+    str,
+    tuple[str, ...],
+]
+
+
+def _load_workflow_inputs(ns: argparse.Namespace) -> _LoadedWorkflowInputs:
+    answers = tuple(str(c) for c in (ns.clarifications or ()))
     if ns.resume_elicitation is not None:
-        if not ns.clarifications:
+        if not answers:
             msg = "--resume-elicitation requires at least one --clarification answer."
             raise ValueError(msg)
         ticket = ElicitationTicket.model_validate_json(_read_json_file(ns.resume_elicitation))
-        return orchestrator.resume_elicitation(
-            resolved_repo,
-            ticket,
-            tuple(str(c) for c in ns.clarifications),
-            permit=permit,
-        )
+        return ticket, None, "", answers
     if ns.mandate is not None:
         mandate = EngineeringMandate.model_validate_json(_read_json_file(ns.mandate))
+        return None, mandate, "", answers
+    return None, None, str(ns.prompt), answers
+
+
+def _dispatch_orchestrator_coro(
+    orchestrator: PceWorkflowOrchestrator,
+    resolved_repo: Path,
+    permit: CodePermit | None,
+    mode: PceWorkflowMode,
+    loaded: _LoadedWorkflowInputs,
+) -> Coroutine[object, object, PceWorkflowResult]:
+    ticket, mandate, prompt_text, answers = loaded
+    if ticket is not None:
+        return orchestrator.resume_elicitation(resolved_repo, ticket, answers, permit=permit)
+    if mandate is not None:
         if mode == PceWorkflowMode.RENOVATE:
             return orchestrator.renovate_mandate(resolved_repo, mandate, permit=permit)
         return orchestrator.execute_mandate(resolved_repo, mandate, permit=permit)
     if mode == PceWorkflowMode.RENOVATE:
-        return orchestrator.renovate_prompt(resolved_repo, str(ns.prompt), permit=permit)
-    return orchestrator.execute_prompt(resolved_repo, str(ns.prompt), permit=permit)
+        return orchestrator.renovate_prompt(resolved_repo, prompt_text, permit=permit)
+    return orchestrator.execute_prompt(resolved_repo, prompt_text, permit=permit)
 
 
 def _resolve_credentials_for_models(
@@ -383,6 +396,7 @@ def _execute_pce_run(
     if timeout_sec <= 0.0 or timeout_sec > 3600.0:
         msg = f"Invalid --timeout-sec={timeout_sec}; expected (0, 3600]."
         raise ValueError(msg)
+    loaded = _load_workflow_inputs(ns)
     routing, creds_by_model = _resolve_cli_routing(ns, (resolved_repo, Path.cwd()))
     suite = routing.build_suite(lambda m: _instantiate_cli_model(m, creds_by_model[m]))
     is_subproc = ns.gate_runner == GateRunnerChoice.SUBPROCESS
@@ -413,7 +427,7 @@ def _execute_pce_run(
         budget=budget,
         elicitation_callback=hooks,
     )
-    coro = _dispatch_orchestrator_coro(orchestrator, ns, resolved_repo, permit, mode)
+    coro = _dispatch_orchestrator_coro(orchestrator, resolved_repo, permit, mode, loaded)
     return asyncio.run(_await_with_deadline(coro, timeout_sec))
 
 

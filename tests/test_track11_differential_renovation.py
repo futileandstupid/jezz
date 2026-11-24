@@ -353,7 +353,16 @@ def test_monorepo_unit_ceiling_and_cli_validation_error_formatting(tmp_path: Pat
     out_buf = io.StringIO()
     err_buf = io.StringIO()
     rc = main(
-        ["renovate", str(tmp_path), "--mandate", str(bad_mandate), "--gate-runner", "in-process"],
+        [
+            "renovate",
+            str(tmp_path),
+            "--model",
+            "antigravity:claude-sonnet-5-5-medium",
+            "--mandate",
+            str(bad_mandate),
+            "--gate-runner",
+            "in-process",
+        ],
         stdout=out_buf,
         stderr=err_buf,
     )

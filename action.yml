@@ -39,6 +39,10 @@ inputs:
     description: "Python runtime version for executing jezz (>=3.14)."
     required: false
     default: "3.14"
+  enable-cache:
+    description: "Enable astral-sh/setup-uv dependency caching inside the composite action."
+    required: false
+    default: "false"
 
 outputs:
   inspect-exit-code:
@@ -54,7 +58,7 @@ runs:
     - name: Install uv
       uses: astral-sh/setup-uv@v10.4.0
       with:
-        enable-cache: true
+        enable-cache: ${{ inputs.enable-cache == 'true' }}
 
     - name: Install Python runtime for jezz gate
       shell: bash
