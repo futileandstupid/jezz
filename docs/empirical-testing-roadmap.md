@@ -1,6 +1,6 @@
 # Empirical Validation & Longitudinal Testing Roadmap
 
-With Pillars 1–4 implemented, self-audited, and passing (`jezz.behaviors`, `jezz.codes`, `jezz.methodology`, `jezz.agents`), this roadmap tracks eight progressive empirical validation and architectural hardening stages evaluating `jezz` against brownfield Python and polyglot (TypeScript, Rust, Go) repositories, live single- and multi-mandate LLM workflows, industry "Spec-Driven Development" ("SDD") baselines, full $F_8 = 21$ runtime closure, and cross-provider prompt-caching compression.
+With Pillars 1–4 implemented, self-audited, and passing (`jezz.behaviors`, `jezz.codes`, `jezz.methodology`, `jezz.agents`), this roadmap tracks progressive empirical validation and architectural hardening stages evaluating `jezz` against brownfield Python and polyglot (TypeScript, Rust, Go) repositories, live single- and multi-mandate LLM workflows across all four languages, industry "Spec-Driven Development" ("SDD") baselines, full $F_8 = 21$ runtime closure, and cross-provider prompt-caching compression.
 
 ---
 
@@ -81,3 +81,35 @@ With Pillars 1–4 implemented, self-audited, and passing (`jezz.behaviors`, `je
 **Goal:** Generalize `JBC` Edition `1.2` static inspection, `WorkspaceAstGraph`, ecosystem manifest grounding, CLI/MCP/Stop-hook Differential Occupancy Ratchets, and `PCE` `EngineeringDossier` seal auditing across **Python (`.py`), TypeScript (`.ts`, `.tsx`), Rust (`.rs`), and Go (`.go`)** via a hexagonal `LanguageAdapterPort` and official C-extension `tree-sitter` grammars, validated on a 4-language `PCE` crucible and real-world brownfield repositories.
 
 - **Report & Calibrations:** [track-8-polyglot-inspector.md](track-8-polyglot-inspector.md) — Implemented `PolyglotUnit` / `InspectedUnit`, `package.json` (monorepo `packages/*`/`apps/*` + `@types/*`), `Cargo.toml` (`[workspace.members]`), and `go.mod` manifest loaders (`JBC-VRF-003`), universal CST complexity/`LCOM4`/Tarjan SCC evaluators, and idiomatic TypeScript/Rust/Go hazard scanners; verified `OCCUPANCY_SEALED` on a 4-language `PCE` crucible (`tests/test_track8_polyglot_inspector.py`); and audited **6 open-source repositories (`colinhacks/zod`, `honojs/hono`, `BurntSushi/ripgrep`, `serde-rs/json`, `go-chi/chi`, `spf13/cobra` — `1,110` units / `300,067` LOC / `15,936` AST/CST symbols)** in `62.95s` (`0` crashes, `0` CST parse errors, `6,926` calibrated violations after Calibrations `8A–8D`).
+
+---
+
+## Track 9 — Polyglot Autonomous `PCE` Runtime (`jezz run` & `jezz renovate` Across Python, TypeScript, Rust, & Go) — *Completed*
+
+**Goal:** Extend Pillar 4 (`PceWorkflowOrchestrator`, `WorkspaceSandbox`, `DynamicGatePort`, `ProvisionPort`, and specialist prompts/validators) so `jezz run` and `jezz renovate` execute closed-loop autonomous construction, real static compiler / test verification, and SHA-256 `CertificateOfOccupancy` sealing across **Python, TypeScript, Rust, and Go**.
+
+- **Report & Live Empirical Trial:** [track-9-polyglot-pce-runtime.md](track-9-polyglot-pce-runtime.md) — Added `PolyglotSubprocessGateRunner` (`tsc --noEmit` + `vitest`/`node --test`, `cargo check --all-targets` + `cargo test`, `go vet ./...` + `go test -v ./...` with fail-closed zero-test guards), `PolyglotSubprocessProvisionRunner` (`uv add`, `npm install`, `cargo add`, `go get`), universal `all(...)` `JBC-VRF-005`/`006` conjunction, and language-routed `JBC` briefs (`polyglot_prompts.py` preserving Python `InstructionPart` byte-identity); verified 3-language parallel `DELEGATE -> RECONCILE` (`tests/test_track9_polyglot_runtime.py`); and achieved **`4 / 4` (`100%`) Pass-1 `OCCUPANCY_CERTIFIED` & `OCCUPANCY_SEALED`** on live tiered Gemini builds (`Probes 9A–9D`: TypeScript greenfield, Rust greenfield, Go greenfield, and brownfield Rust `renovate`) with **`0` rollbacks**, `26.5%–57.3%` prompt-cache hit ratios, and **`47.7K–82.5K` gross input tokens** (`~4x–5x` native-idiom token compression vs. Python).
+
+---
+
+## Track 10 — Zero-Credential `antigravity:<model>` Provider & Cross-Provider Empirical Benchmark (`Claude Opus 5.5`, `Claude Sonnet 5.5`, `GPT-OSS 120B`, & `Gemini`) — *Completed (`Waves 10A & 10B`)*
+
+**Goal:** Enable zero-credential cross-provider execution across Anthropic Claude and OpenAI open-weight reasoning models via the local Antigravity CLI (`antigravity:<slug>` -> `AntigravityCliModel`), and empirically test whether Track 4's SDD vs. `PCE` divergence and Wave 4D's "Over-Specified Prose Drift" hold outside Google Gemini.
+
+- **Report & Live Benchmark:** [track-10-cross-provider-benchmark.md](track-10-cross-provider-benchmark.md) — Implemented `AntigravityCliModel` (`src/jezz/agents/agy_model.py`, preserving multi-turn `--conversation <id>` prefix caches across `TlsResilientModel`), verified **`640 / 640` offline cross-provider wire probes** (`10` provider models), and executed **`19` live workspace builds (`Waves 10A & 10B`)**: Control SDD achieved `8/8` (`100%`) Markdown `[x]` compliance and **`0/8` (`0%`) `JBC` occupancy (`192` violations, `17` `LIFE_SAFETY`)**, with upgrading SDD's Architect from `Claude Sonnet 5.5` to `Claude Opus 5.5` bloating specs `+80.5%` and **increasing `JBC` violations `+34.3%`** (`+124.5%` latency); conversely, `jezz` `PCE` achieved **`100%` `JBC` v1.2 occupancy** across `Claude Sonnet 5.5`, `Claude Opus 5.5 + Sonnet 5.5` (`100%` `6/6` oracle pass post-`Calibration 10A`, **`-34.0%` faster than SDD**, `49.6%–57.8%` cache hit ratios), `GPT-OSS 120B` (`42.2%–56.3%` cache hits post-`Calibration 10B`), and tiered `Gemini`.
+
+---
+
+## Track 11 — External Brownfield OSS Renovation Crucible (`jezz renovate --ratchet`) — *Completed*
+
+**Goal:** Enable surgical brownfield renovation inside large legacy repositories without requiring whole-monorepo remediation (`inspect_differential_final`, `jezz renovate --ratchet`, `EngineeringDossier.ratchet_scoped`), and validate live autonomous renovation across external open-source Go, Rust, and Python repositories.
+
+- **Report & Crucible Results:** [track-11-brownfield-renovation-crucible.md](track-11-brownfield-renovation-crucible.md) — Applied `Calibrations 11A–11C` (`100,000`-unit monorepo ceilings, safe `ValidationError` formatting, Rust inline-`mod { use super::*; }` scope resolution, `@functools.lru_cache` unit memoization, and differential Rough-In preview cutting `291K`-LOC `spec-kit` warm preview latency to `1.61s`), and certified & sealed **`3 / 3` (`100%`) external OSS probes** (`go-chi/chi @ c64ed7d663`: `APPROVED` / `OCCUPANCY_SEALED`, `79.0%` cache hits; `serde-rs/json @ f51fa15a70`: `APPROVED_WITH_VARIANCES` / `OCCUPANCY_SEALED` under `CodePermit`, `79.8%` cache hits; `github/spec-kit @ a55782f1f1`: `APPROVED` / `OCCUPANCY_SEALED` across `700` units / `32,419` baseline violations, `76.9%` cache hits).
+
+---
+
+## Track 12 — Turnkey Distribution, Reusable CI Gate, & `v0.2.0` Release Packaging — *Completed*
+
+**Goal:** Package `jezz` `v0.2.0` with a reusable composite GitHub Action (`action.yml`) so external Python, TypeScript, Rust, and Go repositories can enforce `JBC` Edition `1.2` Differential Occupancy Ratchets and `PCE` Dossier seals in CI/CD with a single step.
+
+- **Report & Verification:** [track-12-distribution-and-ci-gate.md](track-12-distribution-and-ci-gate.md) — Shipped `action.yml` (dogfooded via `uses: ./` in `.github/workflows/jbc-gate.yml`), synchronized `"0.2.0"` across `pyproject.toml`, `src/jezz/__init__.py`, and `src/jezz/mcp_server.py`, and verified end-to-end composite gate execution, `$GITHUB_STEP_SUMMARY` rendering, and zero shell-interpolation / hardcoded-path hazards (`tests/test_track12_packaging_and_action.py`).

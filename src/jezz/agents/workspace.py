@@ -20,12 +20,17 @@ from pydantic import BaseModel, Field
 from pydantic_ai import FunctionToolset, ModelRetry, RunContext
 
 from jezz.agents.env_introspect import inspect_installed_package_api
+from jezz.agents.polyglot_prompts import is_polyglot_test_path
 from jezz.agents.schemas import FilePatchArtifact
+from jezz.codes.adapters import parse_any_source_unit
 from jezz.codes.ast_graph import build_workspace_ast_graph, extract_symbol_source_slice
 from jezz.codes.ast_utils import SourceUnit, dotted_expr_name, parse_source_unit
 from jezz.codes.codebook import CODE_BOOK
-from jezz.codes.inspector import BuildingInspector, load_workspace_units
+from jezz.codes.discovery import discover_workspace_units
+from jezz.codes.inspector import BuildingInspector
 from jezz.codes.permits import CodePermit, GateAttestation, GateKind
+from jezz.codes.polyglot_ir import InspectedUnit, PolyglotUnit
+from jezz.codes.ratchet import DifferentialScope, inspect_differential_rough_in
 from jezz.guards import (
     BoundedText,
     ContainedPath,
@@ -41,7 +46,7 @@ from jezz.guards import (
 from jezz.methodology.dossier import extract_compiled_symbols
 from jezz.methodology.mandate import DomainInvariant, EngineeringMandate, ModuleWriteScope
 
-type DynamicCheckFn = Callable[["WorkspaceSandbox", Sequence[SourceUnit]], PositiveInt]
+type DynamicCheckFn = Callable[["WorkspaceSandbox", Sequence[InspectedUnit]], PositiveInt]
 
 
 def _write_contained_utf8(target: ContainedPath, content: str) -> None:
@@ -104,7 +109,7 @@ class WorkspaceSandbox:
 
     @property
     def authorized_files(self) -> frozenset[str]:
-        """Return immutable set of Python files authorized for write mutations."""
+        """Return immutable set of source/test files authorized for write mutations."""
         return self._authorized_files
 
     @property
@@ -184,10 +189,10 @@ class WorkspaceSandbox:
     @jezz_callable
     def load_units(
         self,
-        target_dirs: Sequence[IdentifierStr] = ("src", "tests"),
-    ) -> tuple[SourceUnit, ...]:
-        """Parse all ``.py`` workspace units under ``target_dirs``."""
-        return load_workspace_units(self._repo_root, target_dirs=target_dirs)
+        target_dirs: Sequence[IdentifierStr] = (),
+    ) -> tuple[InspectedUnit, ...]:
+        """Parse all supported polyglot workspace units (Python, TS, Rust, Go)."""
+        return discover_workspace_units(self._repo_root, target_dirs=target_dirs)
 
 
 @runtime_checkable
@@ -197,7 +202,7 @@ class DynamicGatePort(Protocol):
     def run_gates(
         self,
         sandbox: WorkspaceSandbox,
-        units: Sequence[SourceUnit],
+        units: Sequence[InspectedUnit],
     ) -> tuple[GateAttestation, ...]:
         """Execute dynamic verification gates and return GateAttestations."""
         ...
@@ -227,6 +232,12 @@ def _measure_callable_execution(
     return exit_code, max(1, checks), elapsed_ms, peak_kb, summary
 
 
+def _unit_has_tests(unit: InspectedUnit) -> bool:
+    if unit.is_test_file or is_polyglot_test_path(unit.file_path):
+        return True
+    return isinstance(unit, PolyglotUnit) and any(fn.is_test_callable for fn in unit.callables)
+
+
 class InProcessGateRunner:
     """Deterministic in-process dynamic gate runner with wall-clock and tracemalloc watchdogs."""
 
@@ -238,21 +249,21 @@ class InProcessGateRunner:
     def run_gates(
         self,
         sandbox: WorkspaceSandbox,
-        units: Sequence[SourceUnit],
+        units: Sequence[InspectedUnit],
     ) -> tuple[GateAttestation, ...]:
         """Run dynamic falsification check plus static/symbol compilation attestations."""
         active_fn = self._dynamic_check
 
-        def _invoke_pytest() -> int:
+        def _invoke_suite() -> int:
             if active_fn is not None:
                 return active_fn(sandbox, units)
-            test_units = [u for u in units if u.is_test_file]
+            test_units = [u for u in units if _unit_has_tests(u)]
             if not test_units:
                 err_text = "Zero test files present in workspace during dynamic gate."
                 raise AssertionError(err_text)
             return max(1, sum(len(u.callables) for u in test_units))
 
-        code, count, dur_ms, mem_kb, summary_text = _measure_callable_execution(_invoke_pytest)
+        code, count, dur_ms, mem_kb, summary_text = _measure_callable_execution(_invoke_suite)
         unit_count = max(1, len(units))
         symbol_count = max(1, len(extract_compiled_symbols(units)))
         return (
@@ -286,8 +297,11 @@ class UvSubprocessGateRunner:
     def __init__(
         self,
         timeout_sec: Annotated[float, Field(gt=0.0, le=60.0, allow_inf_nan=False)] = 30.0,
+        *,
+        ratchet_to_scope: bool = False,
     ) -> None:
         self._timeout_sec = timeout_sec
+        self._ratchet_to_scope = ratchet_to_scope
 
     def _run_uv_gate(
         self,
@@ -298,14 +312,26 @@ class UvSubprocessGateRunner:
         fallback_checks: int,
     ) -> GateAttestation:
         t0 = time.perf_counter()
-        proc = subprocess.run(
-            ("uv", "run", *args),
-            cwd=repo_root,
-            capture_output=True,
-            text=True,
-            check=False,
-            timeout=self._timeout_sec,
-        )
+        try:
+            proc = subprocess.run(
+                ("uv", "run", *args),
+                cwd=repo_root,
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=self._timeout_sec,
+            )
+        except subprocess.TimeoutExpired:
+            return GateAttestation(
+                gate_kind=gate_kind,
+                tool_name=tool_name,
+                passed=False,
+                exit_code=124,
+                checks_executed=max(1, fallback_checks),
+                duration_ms=self._timeout_sec * 1000.0,
+                peak_memory_kb=1024,
+                summary=f"Gate '{tool_name}' exceeded {self._timeout_sec:.1f}s timeout.",
+            )
         elapsed_ms = max(0.05, (time.perf_counter() - t0) * 1000.0)
         raw_out = (proc.stdout.strip() or proc.stderr.strip() or f"{tool_name} completed")[:512]
         return GateAttestation(
@@ -323,10 +349,16 @@ class UvSubprocessGateRunner:
     def run_gates(
         self,
         sandbox: WorkspaceSandbox,
-        units: Sequence[SourceUnit],
+        units: Sequence[InspectedUnit],
     ) -> tuple[GateAttestation, ...]:
         """Run ``uv run pytest`` and ``uv run mypy .`` with finite timeouts."""
         count = max(1, len(units))
+        scoped_py = tuple(sorted(p for p in sandbox.authorized_files if p.endswith(".py")))
+        mypy_args = (
+            ("mypy", "--follow-imports=silent", *scoped_py)
+            if (self._ratchet_to_scope and scoped_py)
+            else ("mypy", ".")
+        )
         return (
             self._run_uv_gate(
                 sandbox.repo_root,
@@ -335,9 +367,7 @@ class UvSubprocessGateRunner:
                 ("pytest", "-q", "--tb=short", "--no-header"),
                 count,
             ),
-            self._run_uv_gate(
-                sandbox.repo_root, GateKind.STATIC_TYPES, "mypy", ("mypy", "."), count
-            ),
+            self._run_uv_gate(sandbox.repo_root, GateKind.STATIC_TYPES, "mypy", mypy_args, count),
         )
 
 
@@ -378,10 +408,10 @@ def _tool_inspect_file_symbols(
     ctx: RunContext[JezzAgentDeps],
     rel_path: IdentifierStr,
 ) -> tuple[str, ...]:
-    """Parse ``rel_path`` and return all compiled class and callable symbols."""
+    """Parse ``rel_path`` and return all compiled class/struct/type and callable symbols."""
     try:
         source = ctx.deps.sandbox.read_file(rel_path)
-        unit = parse_source_unit(rel_path, source)
+        unit = parse_any_source_unit(rel_path, source)
     except FileNotFoundError, IsADirectoryError:
         return ()
     except (SyntaxError, ValueError) as exc:
@@ -608,14 +638,16 @@ def _scan_unit_type_alias_misuse(
 
 @jezz_callable
 def find_type_alias_misuse(
-    candidate_units: Annotated[Sequence[SourceUnit], Field(max_length=64)],
-    workspace_units: Annotated[Sequence[SourceUnit], Field(max_length=512)] = (),
+    candidate_units: Annotated[Sequence[InspectedUnit], Field(max_length=4096)],
+    workspace_units: Annotated[Sequence[InspectedUnit], Field(max_length=100_000)] = (),
 ) -> ShortText | None:
-    """Detect runtime-fatal calls or subscripts on PEP 695 TypeAliasType definitions."""
-    all_aliases, nongeneric_aliases = _collect_known_type_aliases(
-        (*workspace_units, *candidate_units)
-    )
-    for unit in candidate_units:
+    """Detect runtime-fatal calls or subscripts on Python PEP 695 TypeAliasType definitions."""
+    py_candidates = [u for u in candidate_units if isinstance(u, SourceUnit)]
+    if not py_candidates:
+        return None
+    py_workspace = [u for u in workspace_units if isinstance(u, SourceUnit)]
+    all_aliases, nongeneric_aliases = _collect_known_type_aliases((*py_workspace, *py_candidates))
+    for unit in py_candidates:
         issue = _scan_unit_type_alias_misuse(unit, all_aliases, nongeneric_aliases)
         if issue is not None:
             return issue
@@ -626,7 +658,7 @@ def _tool_query_ast_graph(
     ctx: RunContext[JezzAgentDeps],
     module_or_file: IdentifierStr | None = None,
 ) -> BoundedText:
-    """Query the workspace AST import, topological layer, and public symbol graph."""
+    """Query the workspace AST/CST import, topological layer, and public symbol graph."""
     graph = build_workspace_ast_graph(ctx.deps.sandbox.load_units())
     if module_or_file is None:
         return graph.to_compact_brief()
@@ -645,7 +677,7 @@ def _tool_find_symbol_callers(
     ctx: RunContext[JezzAgentDeps],
     target_symbol: IdentifierStr,
 ) -> BoundedText:
-    """Find all workspace functions/methods whose AST body calls ``target_symbol``."""
+    """Find all workspace functions/methods whose AST/CST body calls ``target_symbol``."""
     graph = build_workspace_ast_graph(ctx.deps.sandbox.load_units())
     callers = graph.find_callers(target_symbol)
     if not callers:
@@ -662,7 +694,7 @@ def _tool_read_symbol_slice(
     symbol_query: IdentifierStr,
     file_path: IdentifierStr | None = None,
 ) -> SourceCodeText:
-    """Read the exact AST line slice for a class, method, function, or type alias."""
+    """Read the exact AST/CST line slice for a class, struct, method, function, or type alias."""
     return extract_symbol_source_slice(
         ctx.deps.sandbox.load_units(),
         symbol_query,
@@ -708,7 +740,8 @@ def _tool_consult_building_code(
 
 def _missing_test_verification_symbols(
     deps: JezzAgentDeps,
-    candidate_unit: SourceUnit,
+    candidate_unit: InspectedUnit,
+    workspace_units: Sequence[InspectedUnit],
 ) -> list[str]:
     expected = (
         deps.scoped_invariants
@@ -718,12 +751,35 @@ def _missing_test_verification_symbols(
     if not expected:
         return []
     other_tests = [
-        u
-        for u in deps.sandbox.load_units()
-        if u.is_test_file and u.file_path != candidate_unit.file_path
+        u for u in workspace_units if _unit_has_tests(u) and u.file_path != candidate_unit.file_path
     ]
     compiled = extract_compiled_symbols((candidate_unit, *other_tests))
     return [inv.verification_symbol for inv in expected if inv.verification_symbol not in compiled]
+
+
+def _preview_python_runtime_gates(
+    deps: JezzAgentDeps,
+    unit: SourceUnit,
+    workspace_units: Sequence[InspectedUnit],
+) -> str | None:
+    alias_err = find_type_alias_misuse((unit,), workspace_units)
+    if alias_err is not None:
+        return f"RED_TAG (type alias misuse): {alias_err}"
+    if not unit.file_path.startswith("src/"):
+        return None
+    probe = FilePatchArtifact(
+        file_path=unit.file_path,
+        source_code=unit.source,
+        rationale="rough-in preview",
+    )
+    runtime_err = verify_runtime_importable_patches(
+        deps.sandbox,
+        (probe,),
+        ignore_missing_local_imports=True,
+    )
+    if runtime_err is not None:
+        return f"RED_TAG (runtime import gate): {runtime_err}"
+    return None
 
 
 def _tool_preview_rough_in(
@@ -731,36 +787,32 @@ def _tool_preview_rough_in(
     rel_path: IdentifierStr,
     candidate_source: SourceCodeText,
 ) -> BoundedText:
-    """Run deterministic JBC v1.2 rough-in and runtime-import inspection without writing."""
+    """Run deterministic polyglot JBC v1.2 rough-in and import inspection without writing."""
     try:
-        unit = parse_source_unit(rel_path, candidate_source)
-    except SyntaxError as exc:
-        return f"RED_TAG (SyntaxError at line {exc.lineno}): {exc.msg}"
-    report = ctx.deps.inspector.inspect_rough_in((unit,), permit=ctx.deps.permit)
-    if not report.is_occupiable:
-        lines = [
-            f"{f.code_id} (L{f.location.line}): {f.message} -> Fix: {f.remediation}"
-            for f in report.unwaived_violations()[:8]
-        ]
-        return f"RED_TAG ({len(report.unwaived_violations())} violation(s)): " + " | ".join(lines)
-    alias_err = find_type_alias_misuse((unit,), ctx.deps.sandbox.load_units())
-    if alias_err is not None:
-        return f"RED_TAG (type alias misuse): {alias_err}"
-    if rel_path.startswith("src/") and rel_path.endswith(".py"):
-        probe = FilePatchArtifact(
-            file_path=rel_path,
-            source_code=candidate_source,
-            rationale="rough-in preview",
-        )
-        runtime_err = verify_runtime_importable_patches(
-            ctx.deps.sandbox,
-            (probe,),
-            ignore_missing_local_imports=True,
-        )
-        if runtime_err is not None:
-            return f"RED_TAG (runtime import gate): {runtime_err}"
-    if rel_path.startswith("tests/") and rel_path.endswith(".py"):
-        missing_verif = _missing_test_verification_symbols(ctx.deps, unit)
+        unit = parse_any_source_unit(rel_path, candidate_source)
+    except (SyntaxError, ValueError) as exc:
+        line_note = f" at line {exc.lineno}" if isinstance(exc, SyntaxError) and exc.lineno else ""
+        return f"RED_TAG ({type(exc).__name__}{line_note}): {exc}"
+    ws_units = ctx.deps.sandbox.load_units()
+    others = [u for u in ws_units if u.file_path != unit.file_path]
+    diff_report = inspect_differential_rough_in(
+        ctx.deps.inspector,
+        (*others, unit),
+        DifferentialScope(changed_paths=frozenset({unit.file_path})),
+        permit=ctx.deps.permit,
+    )
+    cited = [
+        f"{f.code_id} (L{f.location.line}): {f.message} -> Fix: {f.remediation}"
+        for f in diff_report.report.unwaived_violations()
+    ]
+    if cited:
+        return f"RED_TAG ({len(cited)} violation(s)): " + " | ".join(cited[:8])
+    if isinstance(unit, SourceUnit):
+        py_err = _preview_python_runtime_gates(ctx.deps, unit, ws_units)
+        if py_err is not None:
+            return py_err
+    if is_polyglot_test_path(rel_path):
+        missing_verif = _missing_test_verification_symbols(ctx.deps, unit, ws_units)
         if missing_verif:
             return (
                 f"APPROVED JBC rough-in for '{rel_path}', Note: mandated verification_symbol(s) "
@@ -787,7 +839,7 @@ def build_readonly_toolset() -> Annotated[
             _tool_consult_building_code,
         ),
         max_retries=4,
-        timeout=10.0,
+        timeout=30.0,
         id="jezz_readonly_epistemic",
     )
 
@@ -811,6 +863,6 @@ def build_scoped_write_toolset() -> Annotated[
             _tool_preview_rough_in,
         ),
         max_retries=4,
-        timeout=10.0,
+        timeout=30.0,
         id="jezz_scoped_mutation",
     )

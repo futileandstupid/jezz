@@ -19,10 +19,11 @@ from jezz.codes.inspector import (
     collect_per_unit_discrepancies,
     detect_hazard_triggers,
 )
-from jezz.codes.permits import CodePermit, InspectionReport
+from jezz.codes.permits import CodePermit, GateAttestation, InspectionReport
 from jezz.codes.polyglot_ir import InspectedUnit, PolyglotUnit, is_supported_source_path
 from jezz.codes.polyglot_rules import check_polyglot_cog_003_for_paths
 from jezz.codes.rules_cog import check_cog_003_for_paths
+from jezz.codes.rules_vrf import check_vrf_005, check_vrf_006
 from jezz.codes.taxonomy import InspectionMethod
 from jezz.guards import (
     STRICT_FROZEN_CONFIG,
@@ -333,6 +334,58 @@ def inspect_differential_rough_in(
         active_permit,
         detected,
         static_ids,
+        raw,
+        len(touched_units),
+        active_date,
+    )
+    return DifferentialInspectionReport(
+        diff_mode=scope.diff_mode,
+        base_ref=scope.base_ref,
+        reference_date=active_date,
+        total_workspace_units=len(all_units),
+        untouched_unit_count=len(all_units) - len(touched_units),
+        changed_python_paths=tuple(sorted(scope.changed_paths)),
+        inspected_unit_paths=tuple(sorted(touched_paths)),
+        report=report,
+    )
+
+
+@jezz_callable
+def inspect_differential_final(
+    inspector: GuardedInspector,
+    all_units: Annotated[Sequence[InspectedUnit], Field(max_length=100_000)],
+    scope: DifferentialScope,
+    *,
+    permit: CodePermit | None = None,
+    attestations: Annotated[Sequence[GateAttestation], Field(max_length=64)] = (),
+) -> DifferentialInspectionReport:
+    """Run differential Rough-In + Final Gate attestations for scoped brownfield occupancy."""
+    active_permit = permit or CodePermit.full_book(permit_id="PERMIT-RATCHET")
+    active_date = (
+        scope.reference_date if scope.reference_date is not None else datetime.now(UTC).date()
+    )
+    touched_units = tuple(u for u in all_units if u.file_path in scope.changed_paths)
+    touched_paths = frozenset(u.file_path for u in touched_units)
+
+    detected = detect_hazard_triggers(touched_units)
+    triggered_ids = {c.code_id for c in codes_for_triggers(detected)}
+    effective_ids = frozenset(active_permit.bound_code_ids | triggered_ids)
+    static_ids = frozenset(
+        cid
+        for cid in effective_ids
+        if CODE_BOOK[cid].inspection_method != InspectionMethod.GATE_ATTESTATION
+    )
+    raw = _collect_differential_discrepancies(
+        inspector, all_units, touched_units, touched_paths, static_ids
+    )
+    if "JBC-VRF-005" in effective_ids:
+        raw.extend(check_vrf_005(attestations))
+    if "JBC-VRF-006" in effective_ids:
+        raw.extend(check_vrf_006(attestations))
+    report = assemble_inspection_report(
+        active_permit,
+        detected,
+        effective_ids,
         raw,
         len(touched_units),
         active_date,

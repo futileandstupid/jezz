@@ -262,31 +262,37 @@ def _first_failed_gate_detail(
     kind: GateKind,
 ) -> str:
     for att in attestations:
-        if att.gate_kind == kind and (not att.passed or att.exit_code != 0) and att.summary:
-            return att.summary.strip()[:400]
+        is_bad = (
+            not _dynamic_attestation_valid(att)
+            if kind == GateKind.DYNAMIC_SUITE
+            else (not att.passed or att.exit_code != 0)
+        )
+        if att.gate_kind == kind and is_bad and att.summary:
+            return f"[{att.tool_name}] {att.summary.strip()}"[:400]
     return ""
 
 
 @jezz_callable
 def check_vrf_005(attestations: Sequence[GateAttestation]) -> list[RawDiscrepancy]:
-    """Verify JBC-VRF-005 (passing static type soundness gate attestation)."""
-    has_passing = any(
-        a.gate_kind == GateKind.STATIC_TYPES and a.passed and a.exit_code == 0 for a in attestations
-    )
-    if has_passing:
+    """Verify JBC-VRF-005 (all static type soundness gate attestations pass cleanly)."""
+    static_atts = [a for a in attestations if a.gate_kind == GateKind.STATIC_TYPES]
+    if static_atts and all(a.passed and a.exit_code == 0 for a in static_atts):
         return []
     detail = _first_failed_gate_detail(attestations, GateKind.STATIC_TYPES)
     message = (
         f"Static type-verification gate failed: {detail}"
         if detail
-        else "Missing or failed static type-verification GateAttestation (e.g., mypy)."
+        else "Missing or failed static type-verification GateAttestation (mypy/tsc/cargo/go)."
     )
     return [
         RawDiscrepancy(
             code_id="JBC-VRF-005",
             location=SourceSpan(file_path="<gate:static_types>", line=1),
             message=message,
-            remediation="Execute 'uv run mypy .' cleanly and attach passing GateAttestation.",
+            remediation=(
+                "Pass static type verification (mypy, tsc --noEmit, cargo check, go vet) "
+                "and attach passing GateAttestation."
+            ),
         )
     ]
 
@@ -304,8 +310,9 @@ def _dynamic_attestation_valid(att: GateAttestation) -> bool:
 
 @jezz_callable
 def check_vrf_006(attestations: Sequence[GateAttestation]) -> list[RawDiscrepancy]:
-    """Verify JBC-VRF-006 (passing dynamic suite within duration & memory watchdog ceilings)."""
-    if any(_dynamic_attestation_valid(a) for a in attestations):
+    """Verify JBC-VRF-006 (all dynamic suites pass within duration & memory watchdogs)."""
+    dyn_atts = [a for a in attestations if a.gate_kind == GateKind.DYNAMIC_SUITE]
+    if dyn_atts and all(_dynamic_attestation_valid(a) for a in dyn_atts):
         return []
     detail = _first_failed_gate_detail(attestations, GateKind.DYNAMIC_SUITE)
     message = (
@@ -319,7 +326,8 @@ def check_vrf_006(attestations: Sequence[GateAttestation]) -> list[RawDiscrepanc
             location=SourceSpan(file_path="<gate:dynamic_suite>", line=1),
             message=message,
             remediation=(
-                "Run 'uv run pytest' within duration/memory ceilings and attach GateAttestation."
+                "Pass dynamic suite (pytest, vitest/node --test, cargo test, go test) "
+                "within duration/memory ceilings and attach GateAttestation."
             ),
         )
     ]

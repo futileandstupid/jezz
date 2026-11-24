@@ -69,6 +69,7 @@ class EngineeringDossier(BaseModel):
     permit: CodePermit
     behavior_graph: BehaviorGraph
     mutated_files: Annotated[frozenset[IdentifierStr], Field(max_length=1024)] = frozenset()
+    ratchet_scoped: bool = False
     inspection_report: InspectionReport
     certificate: CertificateOfOccupancy | None = None
 
@@ -278,7 +279,13 @@ def _check_inspection_and_occupancy(
             )
         )
 
-    expected_digest = compute_units_digest(units)
+    sealed_paths = set(dossier.mandate.authorized_files()) | set(dossier.mutated_files)
+    digest_units = (
+        tuple(u for u in units if u.file_path in sealed_paths)
+        if dossier.ratchet_scoped
+        else tuple(units)
+    )
+    expected_digest = compute_units_digest(digest_units) if digest_units else ""
     cert = dossier.certificate
     if (
         cert is None

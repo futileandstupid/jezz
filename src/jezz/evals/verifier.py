@@ -188,7 +188,7 @@ def _count_unit_elifs(unit: SourceUnit) -> int:
 
 @jezz_callable
 def compute_structural_health(
-    units: Annotated[Sequence[SourceUnit], Field(max_length=512)],
+    units: Annotated[Sequence[SourceUnit], Field(max_length=100_000)],
 ) -> StructuralHealthSnapshot:
     """Compute AST complexity, branch-ladder, WMC, and LCOM4 metrics over ``src/`` units."""
     prod_units = [u for u in units if not u.is_test_file]

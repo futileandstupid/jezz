@@ -147,6 +147,8 @@ def canonical_provider_family(model_name: IdentifierStr) -> BoundedText:
     if model_name == "test" or ":" not in model_name:
         return ""
     prefix = model_name.split(":", maxsplit=1)[0]
+    if prefix == "antigravity":
+        return ""
     if prefix.startswith("gateway/"):
         return "gateway"
     return _PROVIDER_FAMILY_ALIASES.get(prefix, prefix)
@@ -329,6 +331,8 @@ def resolve_model_api_key(
 ) -> GuardedSecretStr | None:
     """Resolve a ``SecretStr`` API key for ``model_name`` via CLI URI or ``pyproject.toml``."""
     if model_name == "test" and explicit_pass_uri is None:
+        return None
+    if model_name.startswith("antigravity:") and explicit_pass_uri is None:
         return None
     provider_prefix = model_name.split(":", maxsplit=1)[0] if ":" in model_name else ""
     roots = tuple(search_roots) if search_roots else (Path.cwd(),)

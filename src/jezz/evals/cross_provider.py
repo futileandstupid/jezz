@@ -112,6 +112,9 @@ DEFAULT_WIRE_PROBE_MODELS: Final[tuple[str, ...]] = (
     "openai-chat:gpt-5.6-sol",
     "openai-responses:gpt-6-luna",
     "openrouter:anthropic/claude-sonnet-4.6",
+    "antigravity:claude-sonnet-5-5-medium",
+    "antigravity:claude-opus-5-5-medium",
+    "antigravity:gpt-oss-120b-medium",
 )
 
 _STATUTORY_AGENT_NAMES: Final[frozenset[str]] = frozenset(

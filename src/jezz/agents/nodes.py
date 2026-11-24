@@ -22,6 +22,11 @@ from jezz.agents.memory import (
     record_certified_mandate_memory,
     save_workspace_memory,
 )
+from jezz.agents.polyglot_prompts import (
+    code_fence_for_path,
+    detect_workspace_languages,
+    is_polyglot_test_path,
+)
 from jezz.agents.provision import (
     InProcessProvisionRunner,
     ProvisionPort,
@@ -77,6 +82,12 @@ from jezz.codes.inspector import (
     record_inspection_to_state,
 )
 from jezz.codes.permits import CodePermit, GateAttestation, InspectionReport
+from jezz.codes.polyglot_ir import SupportedLanguage
+from jezz.codes.ratchet import (
+    DifferentialScope,
+    inspect_differential_final,
+    inspect_differential_rough_in,
+)
 from jezz.guards import BudgetExceededError, ContainedPath, InstanceGuard, LoopBudget, jezz_callable
 from jezz.methodology.dossier import (
     EngineeringDossier,
@@ -195,6 +206,43 @@ def _existing_authorized_files(sandbox: WorkspaceSandbox) -> list[str]:
     ]
 
 
+def _active_languages(
+    deps: PceGraphDeps,
+    *,
+    scope: ModuleWriteScope | None = None,
+) -> frozenset[SupportedLanguage]:
+    auth = (
+        scope.owned_files
+        if scope is not None
+        else (
+            deps.mandate.authorized_files()
+            if deps.mandate is not None
+            else deps.sandbox.authorized_files
+        )
+    )
+    return frozenset(
+        detect_workspace_languages(
+            deps.repo_root,
+            units=deps.sandbox.load_units(),
+            authorized_files=auth,
+        )
+    )
+
+
+def _primary_language(deps: PceGraphDeps) -> SupportedLanguage:
+    auth = (
+        deps.mandate.authorized_files()
+        if deps.mandate is not None
+        else deps.sandbox.authorized_files
+    )
+    langs = detect_workspace_languages(
+        deps.repo_root,
+        units=deps.sandbox.load_units(),
+        authorized_files=auth,
+    )
+    return langs[0]
+
+
 def _render_inline_authorized_snapshots(
     sandbox: WorkspaceSandbox,
     existing_paths: Sequence[str],
@@ -209,7 +257,8 @@ def _render_inline_authorized_snapshots(
         content = sandbox.read_file(rel)
         if used + len(content) > max_total_chars:
             return ""
-        sections.append(f"### {rel}\n```python\n{content.rstrip()}\n```")
+        fence = code_fence_for_path(rel)
+        sections.append(f"### {rel}\n```{fence}\n{content.rstrip()}\n```")
         used += len(content)
     return "\nExisting Authorized File Snapshots:\n" + "\n".join(sections)
 
@@ -226,8 +275,10 @@ def _render_upstream_src_context(
 ) -> str:
     src_units = [
         u
-        for u in sandbox.load_units(target_dirs=("src",))
-        if u.file_path not in sandbox.authorized_files
+        for u in sandbox.load_units()
+        if not u.is_test_file
+        and not is_polyglot_test_path(u.file_path)
+        and u.file_path not in sandbox.authorized_files
     ]
     if not src_units:
         return ""
@@ -403,14 +454,14 @@ def _try_in_process_elicitation(deps: PceGraphDeps) -> bool:
 
 
 def _has_authorized_tests(mandate: EngineeringMandate) -> bool:
-    return any(rel.startswith(("tests/", "test/")) for rel in mandate.authorized_files())
+    return any(is_polyglot_test_path(rel) for rel in mandate.authorized_files())
 
 
 def _implementation_scopes(mandate: EngineeringMandate) -> tuple[ModuleWriteScope, ...]:
     return tuple(
         scope
         for scope in mandate.write_scopes
-        if any(not rel.startswith(("tests/", "test/")) for rel in scope.owned_files)
+        if any(not is_polyglot_test_path(rel) for rel in scope.owned_files)
     )
 
 
@@ -462,7 +513,10 @@ class FrameNode(AtomicBehaviorGraphNode[PceGraphDeps, PceWorkflowResult]):
     ) -> ElicitNode | BindCodesNode:
         if ctx.deps.mandate is None:
             proposal, tel = await run_bounded_agent(
-                build_frame_agent(ctx.deps.models.frame_model),
+                build_frame_agent(
+                    ctx.deps.models.frame_model,
+                    languages=_active_languages(ctx.deps),
+                ),
                 behavior_kind=BehaviorKind.FRAME,
                 prompt=_build_frame_prompt(ctx.deps),
                 deps=_make_agent_deps(ctx.deps),
@@ -562,13 +616,26 @@ def _build_deterministic_env_observation(
     missing: Sequence[DependencyRequirement],
 ) -> EnvironmentObservation:
     py_ver = f"{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}"
-    run_roots = tuple(sorted(str(r) for r in deps.inspector.manifest.runtime_roots))[:256]
-    dev_roots = tuple(sorted(str(r) for r in deps.inspector.manifest.dev_roots))[:256]
+    primary_lang = _primary_language(deps)
+    eco = deps.inspector.polyglot_manifest.for_language(primary_lang)
+    run_source = (
+        deps.inspector.manifest.runtime_roots
+        if primary_lang == SupportedLanguage.PYTHON
+        else eco.runtime_roots
+    )
+    dev_source = (
+        deps.inspector.manifest.dev_roots
+        if primary_lang == SupportedLanguage.PYTHON
+        else eco.dev_roots
+    )
+    run_roots = tuple(sorted(str(r) for r in run_source))[:256]
+    dev_roots = tuple(sorted(str(r) for r in dev_source))[:256]
     missing_specs = tuple(d.pep508_spec() for d in missing)[:64]
     prior_ids = tuple(m.mandate_id for m in deps.memory_ledger.sealed_mandates)[:128]
     summary = (
-        f"Python {py_ver}; runtime_roots={len(run_roots)}, dev_roots={len(dev_roots)}, "
-        f"missing_deps={list(missing_specs)}, prior_mandates={len(prior_ids)}"
+        f"Lang={primary_lang} (Python {py_ver}); runtime_roots={len(run_roots)}, "
+        f"dev_roots={len(dev_roots)}, missing_deps={list(missing_specs)}, "
+        f"prior_mandates={len(prior_ids)}"
     )[:240]
     return EnvironmentObservation(
         python_version=py_ver,
@@ -596,6 +663,8 @@ class InspectEnvNode(AtomicBehaviorGraphNode[PceGraphDeps, PceWorkflowResult]):
         missing = compute_missing_dependencies(
             ctx.deps.inspector.manifest,
             mandate.required_dependencies,
+            polyglot_manifest=ctx.deps.inspector.polyglot_manifest,
+            language=_primary_language(ctx.deps),
         )
         baseline = _build_deterministic_env_observation(ctx.deps, missing)
         if mandate.required_dependencies:
@@ -635,7 +704,16 @@ class InspectCodeNode(AtomicBehaviorGraphNode[PceGraphDeps, PceWorkflowResult]):
         ast_graph = build_workspace_ast_graph(units)
         ctx.deps.ast_graph_brief = ast_graph.to_compact_brief(max_modules=32)
         if ctx.deps.workflow_mode == PceWorkflowMode.RENOVATE:
-            rough = ctx.deps.inspector.inspect_rough_in(units, permit=ctx.deps.permit)
+            rough = (
+                inspect_differential_rough_in(
+                    ctx.deps.inspector,
+                    units,
+                    DifferentialScope(changed_paths=frozenset(mandate.authorized_files())),
+                    permit=ctx.deps.permit,
+                ).report
+                if ctx.deps.budget.ratchet_to_scope
+                else ctx.deps.inspector.inspect_rough_in(units, permit=ctx.deps.permit)
+            )
             ctx.deps.baseline_red_tag_summary = _format_baseline_red_tags(rough)
             ctx.state.world_model.observations.append(ctx.deps.baseline_red_tag_summary[:1000])
         raw_inspect_prompt = f"{_format_deps_prompt(ctx.deps, mandate)}\n{ctx.deps.ast_graph_brief}"
@@ -716,7 +794,7 @@ async def _maybe_refine_scopes_via_decompose(
         return mandate
     active_model = ctx.deps.models.decompose_model or ctx.deps.models.frame_model
     plan, tel = await run_bounded_agent(
-        build_decompose_agent(active_model),
+        build_decompose_agent(active_model, languages=_active_languages(ctx.deps)),
         behavior_kind=BehaviorKind.DECOMPOSE,
         prompt=_format_decompose_prompt(
             mandate,
@@ -831,6 +909,7 @@ class ProvisionNode(AtomicBehaviorGraphNode[PceGraphDeps, PceWorkflowResult]):
             ctx.deps.repo_root,
             ctx.deps.inspector,
             mandate.required_dependencies,
+            language=_primary_language(ctx.deps),
         )
         _record_pce_step(self, ctx, "provision", receipt.summary[:240])
         if ctx.deps.workflow_mode == PceWorkflowMode.GREENFIELD:
@@ -852,7 +931,10 @@ class SpecifyNode(AtomicBehaviorGraphNode[PceGraphDeps, PceWorkflowResult]):
     ) -> InstrumentNode:
         mandate = _require_mandate(ctx.deps)
         bundle, tel = await run_bounded_agent(
-            build_specify_agent(ctx.deps.models.specify_model),
+            build_specify_agent(
+                ctx.deps.models.specify_model,
+                languages=_active_languages(ctx.deps),
+            ),
             behavior_kind=BehaviorKind.SPECIFY,
             prompt=_format_deps_prompt(ctx.deps, mandate),
             deps=_make_agent_deps(ctx.deps),
@@ -866,10 +948,15 @@ class SpecifyNode(AtomicBehaviorGraphNode[PceGraphDeps, PceWorkflowResult]):
 
 def _test_owning_scopes(mandate: EngineeringMandate) -> tuple[ModuleWriteScope, ...]:
     return tuple(
-        s
-        for s in mandate.write_scopes
-        if any(p.startswith(("tests/", "test/")) for p in s.owned_files)
+        s for s in mandate.write_scopes if any(is_polyglot_test_path(p) for p in s.owned_files)
     )
+
+
+def _clean_test_stem(rel_path: str) -> str:
+    stem = Path(rel_path).stem.removeprefix("test_")
+    for suffix in ("_test", ".test", ".spec"):
+        stem = stem.removesuffix(suffix)
+    return stem
 
 
 def _scope_invariant_match_key(
@@ -886,7 +973,7 @@ def _scope_invariant_match_key(
     )
     if sym_hits > 0:
         return 1, wave_idx, sym_hits
-    stems = {Path(p).stem.removeprefix("test_") for p in scope.owned_files}
+    stems = {_clean_test_stem(p) for p in scope.owned_files}
     stem_hits = sum(1 for st in stems if st and st.lower() in inv.verification_symbol.lower())
     return 0, stem_hits, wave_idx
 
@@ -914,7 +1001,7 @@ async def _run_scoped_instrument_slice(
     scope: ModuleWriteScope,
     invariants: tuple[DomainInvariant, ...],
 ) -> tuple[InstrumentationSuiteBundle, AgentInvocationTelemetry]:
-    test_files = sorted(p for p in scope.owned_files if p.startswith(("tests/", "test/")))
+    test_files = sorted(p for p in scope.owned_files if is_polyglot_test_path(p))
     inv_list = "; ".join(f"{i.invariant_id} ({i.verification_symbol})" for i in invariants)
     footer = (
         f"\nActive Instrumentation Scope: {scope.scope_id} owning test file(s) {test_files} ONLY.\n"
@@ -928,7 +1015,10 @@ async def _run_scoped_instrument_slice(
         mode=deps.budget.prompt_cache_mode,
     )
     return await run_bounded_agent(
-        build_instrument_agent(deps.models.instrument_model),
+        build_instrument_agent(
+            deps.models.instrument_model,
+            languages=_active_languages(deps, scope=scope),
+        ),
         behavior_kind=BehaviorKind.INSTRUMENT,
         prompt=scoped_prompt,
         deps=_make_agent_deps(deps, scope=scope, scoped_invariants=invariants),
@@ -989,7 +1079,10 @@ class InstrumentNode(AtomicBehaviorGraphNode[PceGraphDeps, PceWorkflowResult]):
             )
         else:
             bundle, tel = await run_bounded_agent(
-                build_instrument_agent(ctx.deps.models.instrument_model),
+                build_instrument_agent(
+                    ctx.deps.models.instrument_model,
+                    languages=_active_languages(ctx.deps),
+                ),
                 behavior_kind=BehaviorKind.INSTRUMENT,
                 prompt=_partition_deps_prompt(
                     ctx.deps,
@@ -1041,7 +1134,10 @@ class SynthesizeNode(AtomicBehaviorGraphNode[PceGraphDeps, PceWorkflowResult]):
     ) -> VerifyStaticNode:
         mandate = _require_mandate(ctx.deps)
         bundle, tel = await run_bounded_agent(
-            build_synthesize_agent(ctx.deps.models.synthesize_model),
+            build_synthesize_agent(
+                ctx.deps.models.synthesize_model,
+                languages=_active_languages(ctx.deps),
+            ),
             behavior_kind=BehaviorKind.SYNTHESIZE,
             prompt=_partition_deps_prompt(ctx.deps, mandate, include_guidance=True),
             deps=_make_agent_deps(ctx.deps),
@@ -1072,7 +1168,7 @@ class RefactorNode(AtomicBehaviorGraphNode[PceGraphDeps, PceWorkflowResult]):
         mandate = _require_mandate(ctx.deps)
         active_model = ctx.deps.models.refactor_model or ctx.deps.models.synthesize_model
         bundle, tel = await run_bounded_agent(
-            build_refactor_agent(active_model),
+            build_refactor_agent(active_model, languages=_active_languages(ctx.deps)),
             behavior_kind=BehaviorKind.REFACTOR,
             prompt=_partition_deps_prompt(
                 ctx.deps,
@@ -1098,11 +1194,12 @@ async def _run_scoped_slice(
         f"\nActive Slice Scope: {scope.scope_id} owning {sorted(scope.owned_files)} "
         f"for symbols {list(scope.contract_symbols)}."
     )
+    scoped_langs = _active_languages(deps, scope=scope)
     if deps.workflow_mode == PceWorkflowMode.RENOVATE:
         ref_suffix = f"{_refactor_baseline_suffix(deps)}{slice_footer}"
         ref_model = deps.models.refactor_model or deps.models.synthesize_model
         ref_bundle, ref_tel = await run_bounded_agent(
-            build_refactor_agent(ref_model),
+            build_refactor_agent(ref_model, languages=scoped_langs),
             behavior_kind=BehaviorKind.DELEGATE,
             prompt=_partition_deps_prompt(
                 deps,
@@ -1119,7 +1216,7 @@ async def _run_scoped_slice(
         )
         return scope, adapted, ref_tel
     bundle, tel = await run_bounded_agent(
-        build_synthesize_agent(deps.models.synthesize_model),
+        build_synthesize_agent(deps.models.synthesize_model, languages=scoped_langs),
         behavior_kind=BehaviorKind.DELEGATE,
         prompt=_partition_deps_prompt(
             deps,
@@ -1248,6 +1345,12 @@ class ReconcileNode(AtomicBehaviorGraphNode[PceGraphDeps, PceWorkflowResult]):
         return VerifyStaticNode()
 
 
+def _active_ratchet_scope(deps: PceGraphDeps) -> DifferentialScope:
+    mandate = _require_mandate(deps)
+    scoped_paths = frozenset(set(mandate.authorized_files()) | set(deps.sandbox.modified_files))
+    return DifferentialScope(changed_paths=scoped_paths)
+
+
 @dataclass
 class VerifyStaticNode(AtomicBehaviorGraphNode[PceGraphDeps, PceWorkflowResult]):
     """Rough-In Gate (BHV-18 VERIFY_STATIC): Run JBC v1.2 static/AST/cohesion inspection."""
@@ -1259,7 +1362,16 @@ class VerifyStaticNode(AtomicBehaviorGraphNode[PceGraphDeps, PceWorkflowResult])
         ctx: GraphRunContext[AgentExecutionState, PceGraphDeps],
     ) -> VerifyDynamicNode | RevertNode:
         units = ctx.deps.sandbox.load_units()
-        report = ctx.deps.inspector.inspect_rough_in(units, permit=ctx.deps.permit)
+        report = (
+            inspect_differential_rough_in(
+                ctx.deps.inspector,
+                units,
+                _active_ratchet_scope(ctx.deps),
+                permit=ctx.deps.permit,
+            ).report
+            if ctx.deps.budget.ratchet_to_scope
+            else ctx.deps.inspector.inspect_rough_in(units, permit=ctx.deps.permit)
+        )
         ctx.deps.latest_report = report
         record_inspection_to_state(ctx.state, report, stage="rough_in")
         _record_pce_step(
@@ -1286,10 +1398,20 @@ class VerifyDynamicNode(AtomicBehaviorGraphNode[PceGraphDeps, PceWorkflowResult]
         units = ctx.deps.sandbox.load_units()
         attestations = ctx.deps.gate_runner.run_gates(ctx.deps.sandbox, units)
         ctx.deps.attestations = attestations
-        report = ctx.deps.inspector.inspect_final(
-            units,
-            permit=ctx.deps.permit,
-            attestations=attestations,
+        report = (
+            inspect_differential_final(
+                ctx.deps.inspector,
+                units,
+                _active_ratchet_scope(ctx.deps),
+                permit=ctx.deps.permit,
+                attestations=attestations,
+            ).report
+            if ctx.deps.budget.ratchet_to_scope
+            else ctx.deps.inspector.inspect_final(
+                units,
+                permit=ctx.deps.permit,
+                attestations=attestations,
+            )
         )
         ctx.deps.latest_report = report
         record_inspection_to_state(ctx.state, report, stage="final")
@@ -1321,7 +1443,7 @@ def _summarize_red_tag_findings(report: InspectionReport | None, stage: str) -> 
 def _capture_failed_src_snapshot(sandbox: WorkspaceSandbox) -> str:
     blocks: list[str] = []
     for rel in sorted(sandbox.modified_files):
-        if rel.startswith(("tests/", "test/")) or rel in {"pyproject.toml", "uv.lock"}:
+        if is_polyglot_test_path(rel) or rel in sandbox.authorized_manifests:
             continue
         try:
             content = sandbox.read_file(rel)
@@ -1332,7 +1454,7 @@ def _capture_failed_src_snapshot(sandbox: WorkspaceSandbox) -> str:
 
 
 def _finding_targets_tests_only(code_id: str, file_path: str, message: str) -> bool:
-    if file_path.startswith(("tests/", "test/")):
+    if is_polyglot_test_path(file_path):
         return True
     if code_id == "JBC-VRF-005":
         return (
@@ -1489,15 +1611,32 @@ class CertifyNode(AtomicBehaviorGraphNode[PceGraphDeps, PceWorkflowResult]):
         _record_pce_step(self, ctx, "certify", f"Certified occupancy for {mandate.mandate_id}")
 
         units = ctx.deps.sandbox.load_units()
-        final_report = ctx.deps.inspector.inspect_final(
-            units,
-            permit=ctx.deps.permit,
-            attestations=ctx.deps.attestations,
+        is_ratchet = ctx.deps.budget.ratchet_to_scope
+        ratchet_scope = _active_ratchet_scope(ctx.deps)
+        final_report = (
+            inspect_differential_final(
+                ctx.deps.inspector,
+                units,
+                ratchet_scope,
+                permit=ctx.deps.permit,
+                attestations=ctx.deps.attestations,
+            ).report
+            if is_ratchet
+            else ctx.deps.inspector.inspect_final(
+                units,
+                permit=ctx.deps.permit,
+                attestations=ctx.deps.attestations,
+            )
+        )
+        digest_units = (
+            tuple(u for u in units if u.file_path in ratchet_scope.changed_paths)
+            if is_ratchet
+            else units
         )
         cert = certify_occupancy_in_state(
             ctx.state,
             final_report,
-            artifact_digest=compute_units_digest(units),
+            artifact_digest=compute_units_digest(digest_units),
         )
         induced = trace_to_behavior_graph(ctx.state.trace, name=f"pce_{mandate.mandate_id}")
         graph_verdict = verify_behavior_graph(induced)
@@ -1506,6 +1645,7 @@ class CertifyNode(AtomicBehaviorGraphNode[PceGraphDeps, PceWorkflowResult]):
             permit=ctx.deps.permit,
             behavior_graph=induced,
             mutated_files=ctx.deps.sandbox.modified_files,
+            ratchet_scoped=is_ratchet,
             inspection_report=final_report,
             certificate=cert,
         )

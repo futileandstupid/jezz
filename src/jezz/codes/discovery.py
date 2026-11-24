@@ -1,5 +1,6 @@
 """Canonical polyglot workspace source discovery, manifest enrichment, and permit helpers."""
 
+import functools
 from collections.abc import Sequence
 from collections.abc import Set as AbstractSet
 from datetime import date
@@ -140,6 +141,11 @@ def _collect_source_files(
     return ordered
 
 
+@functools.lru_cache(maxsize=8192)
+def _parse_cached_source_unit(file_path: str, source: str) -> InspectedUnit:
+    return parse_any_source_unit(file_path, source)
+
+
 @jezz_callable
 def discover_workspace_units(
     repo_root: Path,
@@ -158,7 +164,7 @@ def discover_workspace_units(
         rel_posix = src_path.relative_to(resolved_root).as_posix()
         contained = ContainedPath.from_parts(resolved_root, rel_posix)
         source = read_bounded_text(contained)
-        units.append(parse_any_source_unit(contained.relative_posix, source))
+        units.append(_parse_cached_source_unit(contained.relative_posix, source))
     return tuple(units)
 
 

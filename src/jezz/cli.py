@@ -17,11 +17,12 @@ from pydantic_ai.exceptions import AgentRunError, ModelAPIError, UserError
 from jezz.agents.caching import PromptCacheMode
 from jezz.agents.nodes import ElicitationCallback
 from jezz.agents.orchestrator import PceWorkflowOrchestrator
+from jezz.agents.polyglot_gates import PolyglotSubprocessGateRunner
 from jezz.agents.providers import TlsResilientModel
 from jezz.agents.provision import (
     InProcessProvisionRunner,
+    PolyglotSubprocessProvisionRunner,
     ProvisionPort,
-    UvSubprocessProvisionRunner,
 )
 from jezz.agents.routing import (
     CliModelOverrides,
@@ -37,7 +38,7 @@ from jezz.agents.schemas import (
     PceWorkflowResult,
 )
 from jezz.agents.specialists import GuardedModel
-from jezz.agents.workspace import DynamicGatePort, InProcessGateRunner, UvSubprocessGateRunner
+from jezz.agents.workspace import DynamicGatePort, InProcessGateRunner
 from jezz.cli_interactive import (
     CliIoStreams,
     handle_hook_command,
@@ -384,14 +385,20 @@ def _execute_pce_run(
         raise ValueError(msg)
     routing, creds_by_model = _resolve_cli_routing(ns, (resolved_repo, Path.cwd()))
     suite = routing.build_suite(lambda m: _instantiate_cli_model(m, creds_by_model[m]))
-    is_uv = ns.gate_runner == GateRunnerChoice.SUBPROCESS
-    runner: DynamicGatePort = UvSubprocessGateRunner() if is_uv else InProcessGateRunner()
+    is_subproc = ns.gate_runner == GateRunnerChoice.SUBPROCESS
+    ratchet_flag = bool(getattr(ns, "ratchet", False))
+    runner: DynamicGatePort = (
+        PolyglotSubprocessGateRunner(ratchet_to_scope=ratchet_flag)
+        if is_subproc
+        else InProcessGateRunner()
+    )
     provisioner: ProvisionPort = (
-        UvSubprocessProvisionRunner() if is_uv else InProcessProvisionRunner()
+        PolyglotSubprocessProvisionRunner() if is_subproc else InProcessProvisionRunner()
     )
     budget = PceRuntimeBudget.production_defaults(
         agent_timeout_sec=min(480.0, timeout_sec),
         prompt_cache_mode=routing.prompt_cache,
+        ratchet_to_scope=ratchet_flag,
     )
     pre_supplied = (
         _one_shot_clarification_callback(ns.clarifications)
@@ -414,6 +421,8 @@ def _persist_run_dossier(
     resolved_repo: Path,
     rel_target: str,
     result: PceWorkflowResult,
+    *,
+    ratchet_scoped: bool = False,
 ) -> None:
     if result.inspection_report is None:
         msg = "Cannot persist EngineeringDossier: workflow halted prior to inspection."
@@ -430,6 +439,7 @@ def _persist_run_dossier(
         permit=result.permit,
         behavior_graph=result.induced_graph,
         mutated_files=present_mutated,
+        ratchet_scoped=ratchet_scoped,
         inspection_report=result.inspection_report,
         certificate=result.certificate,
     )
@@ -474,7 +484,12 @@ def _run_workflow_command(
     if ns.write_elicitation is not None:
         _persist_elicitation_ticket(ns.write_elicitation, result)
     if ns.write_dossier is not None and result.inspection_report is not None:
-        _persist_run_dossier(resolved_repo, str(ns.write_dossier), result)
+        _persist_run_dossier(
+            resolved_repo,
+            str(ns.write_dossier),
+            result,
+            ratchet_scoped=bool(getattr(ns, "ratchet", False)),
+        )
     rendered = (
         result.model_dump_json(indent=2)
         if ns.output_format == OutputFormat.JSON
@@ -716,6 +731,12 @@ def _register_workflow_subparser(
         help="File path to save ElicitationTicket JSON if halted at BHV-02 ELICIT.",
     )
     p_wf.add_argument("--permit", type=Path, default=None, help="Optional CodePermit JSON file.")
+    p_wf.add_argument(
+        "--ratchet",
+        action="store_true",
+        default=False,
+        help="Enforce Differential Occupancy Ratchet scoped to authorized/modified files.",
+    )
     p_wf.add_argument("--gate-runner", choices=("subprocess", "in-process"), default="subprocess")
     p_wf.add_argument("--timeout-sec", type=float, default=600.0)
     p_wf.add_argument("--write-dossier", default=None, help="Relative path to save dossier JSON.")
@@ -867,6 +888,17 @@ def _parse_cli_args(
             return None, code
 
 
+def _format_cli_exception(exc: BaseException) -> str:
+    if isinstance(exc, ValidationError):
+        items = [
+            f"{'.'.join(str(p) for p in err.get('loc', ()))}: {err.get('msg', '')}"
+            for err in exc.errors(include_input=False, include_context=False)[:5]
+        ]
+        joined = "; ".join(items)
+        return f"{exc.error_count()} validation error(s) ({joined})"[:1024]
+    return str(exc) or type(exc).__name__
+
+
 def _resolve_default_stdin(explicit_stdin: GuardedTextStream | None) -> io.TextIOBase:
     if explicit_stdin is not None:
         return explicit_stdin
@@ -919,7 +951,7 @@ def main(
         TimeoutError,
         OSError,
     ) as exc:
-        detail = str(exc) or type(exc).__name__
+        detail = _format_cli_exception(exc)
         _write_line(err_stream, f"jezz error: {detail}")
         return 2
 

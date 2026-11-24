@@ -116,12 +116,12 @@ class WorkspaceAstGraph(BaseModel):
     modules: Annotated[
         tuple[ModuleGraphEntry, ...],
         WIRE_TUPLE_VALIDATOR,
-        Field(max_length=4096),
+        Field(max_length=100_000),
     ] = ()
     symbols: Annotated[
         tuple[SymbolGraphEntry, ...],
         WIRE_TUPLE_VALIDATOR,
-        Field(max_length=32_768),
+        Field(max_length=200_000),
     ] = ()
     has_import_cycles: bool = False
 
@@ -512,7 +512,7 @@ def _strip_lang_prefix(graph_key: str) -> str:
 @icontract.ensure(lambda units, result: len(result.modules) == len(units))
 @jezz_callable
 def build_workspace_ast_graph(
-    units: Annotated[Sequence[InspectedUnit], Field(max_length=4096)],
+    units: Annotated[Sequence[InspectedUnit], Field(max_length=100_000)],
 ) -> WorkspaceAstGraph:
     """Build a deterministic import, call, and topological-layer graph across ``units``."""
     outgoing, incoming = _build_import_edges(units)
@@ -544,7 +544,7 @@ def build_workspace_ast_graph(
 
     return WorkspaceAstGraph(
         modules=tuple(module_entries),
-        symbols=tuple(all_symbols[:32_768]),
+        symbols=tuple(all_symbols[:200_000]),
         has_import_cycles=has_cycles,
     )
 
@@ -559,7 +559,7 @@ def _format_line_window(unit: InspectedUnit, entry: SymbolGraphEntry) -> str:
 
 @jezz_callable
 def extract_symbol_source_slice(
-    units: Annotated[Sequence[InspectedUnit], Field(max_length=4096)],
+    units: Annotated[Sequence[InspectedUnit], Field(max_length=100_000)],
     symbol_query: IdentifierStr,
     *,
     file_path: IdentifierStr | None = None,

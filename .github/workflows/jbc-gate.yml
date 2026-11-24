@@ -56,3 +56,10 @@ jobs:
 
       - name: Gate 5 — Full-Repository JBC v1.2 Rough-In Inspection
         run: uv run jezz inspect .
+
+      - name: Gate 6 — Dogfood Reusable Composite GitHub Action (action.yml)
+        uses: ./
+        with:
+          working-directory: "."
+          mode: "full"
+          language: "python"

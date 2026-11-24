@@ -40,13 +40,18 @@ _WEASEL_MODAL_RE: Final[re.Pattern[str]] = re.compile(
 _PYTHON_SYMBOL_RE: Final[re.Pattern[str]] = re.compile(
     r"^[A-Za-z_][A-Za-z0-9_]*(?:(?:\.|::)[A-Za-z_][A-Za-z0-9_]*)*$"
 )
-_PEP508_PACKAGE_RE: Final[re.Pattern[str]] = re.compile(
-    r"^[A-Za-z0-9](?:[A-Za-z0-9._-]{0,126}[A-Za-z0-9])?$"
+_SAFE_PACKAGE_NAME_RE: Final[re.Pattern[str]] = re.compile(
+    r"^(?:"
+    r"[A-Za-z0-9](?:[A-Za-z0-9._-]{0,126}[A-Za-z0-9])?|"
+    r"@[A-Za-z0-9][A-Za-z0-9._-]{0,60}/[A-Za-z0-9][A-Za-z0-9._-]{0,60}|"
+    r"[A-Za-z0-9][A-Za-z0-9.-]*\.[A-Za-z]{2,24}(?:/[A-Za-z0-9._-]+)+"
+    r")$"
 )
-_PEP440_CONSTRAINT_RE: Final[re.Pattern[str]] = re.compile(
-    r"^(?:\s*(?:===|==|~=|!=|<=|>=|<|>)\s*[A-Za-z0-9._*+-]+"
-    r"(?:\s*,\s*(?:===|==|~=|!=|<=|>=|<|>)\s*[A-Za-z0-9._*+-]+)*\s*)?$"
+_SAFE_VERSION_CONSTRAINT_RE: Final[re.Pattern[str]] = re.compile(
+    r"^(?:\s*(?:===|==|~=|!=|<=|>=|<|>|\^|~)?\s*[A-Za-z0-9][A-Za-z0-9._*+-]{0,63}"
+    r"(?:\s*,\s*(?:===|==|~=|!=|<=|>=|<|>|\^|~)?\s*[A-Za-z0-9][A-Za-z0-9._*+-]{0,63})*\s*)?$"
 )
+_PEP440_OPERATOR_PREFIXES: Final[tuple[str, ...]] = ("===", "==", "~=", "!=", "<=", ">=", "<", ">")
 _AUTHORIZED_MANIFEST_FILES: Final[frozenset[str]] = frozenset(
     {
         "pyproject.toml",
@@ -60,6 +65,20 @@ _AUTHORIZED_MANIFEST_FILES: Final[frozenset[str]] = frozenset(
         "go.sum",
     }
 )
+
+
+def _is_safe_package_token(token: str) -> bool:
+    if ".." in token or token.lower().startswith(("git+", "http:", "https:", "file:", "path:")):
+        return False
+    return _SAFE_PACKAGE_NAME_RE.fullmatch(token) is not None
+
+
+def _is_valid_import_root(import_root: str) -> bool:
+    if import_root.isidentifier():
+        return True
+    if import_root.startswith("@") or "/" in import_root:
+        return _is_safe_package_token(import_root)
+    return False
 
 
 def _validate_python_symbol_ref(symbol: str, *, field_label: str) -> None:
@@ -90,7 +109,7 @@ class DependencyScope(StrEnum):
 
 
 class DependencyRequirement(BaseModel):
-    """Permit-checked PEP 508 dependency declaration authorized for ``BHV-13 PROVISION``."""
+    """Permit-checked polyglot dependency declaration authorized for ``BHV-13 PROVISION``."""
 
     model_config = STRICT_FROZEN_CONFIG
 
@@ -101,34 +120,61 @@ class DependencyRequirement(BaseModel):
 
     @model_validator(mode="after")
     def _validate_requirement_spec(self) -> Self:
-        if _PEP508_PACKAGE_RE.fullmatch(self.package) is None:
+        if not _is_safe_package_token(self.package):
             msg = (
-                f"Invalid package name '{self.package}'; must be a pure PEP 508 distribution "
-                "identifier without flags, paths, URLs, or shell metacharacters."
+                f"Invalid package name '{self.package}'; must be a pure PEP 508, npm, Cargo, or "
+                "Go module identifier without flags, traversal, URLs, or shell metacharacters."
             )
             raise ValueError(msg)
-        if _PEP440_CONSTRAINT_RE.fullmatch(self.version_constraint) is None:
+        if _SAFE_VERSION_CONSTRAINT_RE.fullmatch(self.version_constraint) is None:
             msg = (
                 f"Invalid version_constraint '{self.version_constraint}' for '{self.package}'; "
-                "use safe PEP 440 comparators (e.g. '>=2.0,<3.0')."
+                "use safe PEP 440 or semver constraints (e.g. '>=2.0,<3.0', '^3.23.0', 'v5.1.0')."
             )
             raise ValueError(msg)
-        if self.import_root and not self.import_root.isidentifier():
-            msg = f"import_root '{self.import_root}' must be a valid Python identifier."
+        if self.import_root and not _is_valid_import_root(self.import_root):
+            msg = f"import_root '{self.import_root}' must be a valid module or package root."
             raise ValueError(msg)
         return self
 
     @jezz_callable
     def pep508_spec(self) -> IdentifierStr:
-        """Render the normalized PEP 508 specifier string passed to ``uv add``."""
+        """Render the normalized dependency specifier string."""
         compact_ver = "".join(self.version_constraint.split())
-        return f"{self.package}{compact_ver}"
+        if not compact_ver:
+            return self.package
+        if compact_ver.startswith(_PEP440_OPERATOR_PREFIXES):
+            return f"{self.package}{compact_ver}"
+        return f"{self.package}@{compact_ver}"
+
+    @jezz_callable
+    def ecosystem_spec(self, ecosystem: IdentifierStr = "python") -> IdentifierStr:
+        """Render ecosystem-native CLI install specifier for Python, TypeScript, Rust, or Go."""
+        compact_ver = "".join(self.version_constraint.split())
+        eco = ecosystem.strip().lower()
+        if eco == "python":
+            if not compact_ver or compact_ver.startswith(_PEP440_OPERATOR_PREFIXES):
+                return f"{self.package}{compact_ver}"
+            cleaned = compact_ver.lstrip("^~v")
+            return f"{self.package}>={cleaned}"
+        if eco == "go":
+            ver_tag = compact_ver.lstrip("=^~") if compact_ver else "latest"
+            if ver_tag != "latest" and not ver_tag.startswith("v"):
+                ver_tag = f"v{ver_tag}"
+            return f"{self.package}@{ver_tag}"
+        if not compact_ver:
+            return self.package
+        return f"{self.package}@{compact_ver.lstrip('=')}"
 
     @jezz_callable
     def effective_import_root(self) -> IdentifierStr:
-        """Return explicit ``import_root`` or normalized PEP 508 root module name."""
+        """Return explicit ``import_root`` or normalized ecosystem import root."""
         if self.import_root:
             return self.import_root
+        if self.package.startswith("@types/"):
+            return self.package.removeprefix("@types/")
+        if self.package.startswith("@") or "/" in self.package:
+            return self.package
         return re.sub(r"[-.]+", "_", self.package).lower()
 
 

@@ -2,6 +2,7 @@
 
 import asyncio
 from collections.abc import Mapping, Sequence
+from collections.abc import Set as AbstractSet
 from dataclasses import dataclass
 from types import MappingProxyType
 from typing import Annotated, Final, Protocol, runtime_checkable
@@ -18,6 +19,13 @@ from jezz.agents.caching import (
     resolve_cache_model_settings,
 )
 from jezz.agents.memory import validate_curated_digest_invariants
+from jezz.agents.polyglot_prompts import (
+    is_polyglot_test_path,
+    polyglot_construction_role_instructions,
+    polyglot_decompose_instructions,
+    polyglot_frame_instructions,
+    select_polyglot_brief_and_exemplar,
+)
 from jezz.agents.schemas import (
     AgentInvocationTelemetry,
     BehaviorExecutionBinding,
@@ -47,8 +55,10 @@ from jezz.agents.workspace import (
 )
 from jezz.behaviors.fibonacci import FIBONACCI_BASIS_CARDINALITY, is_fibonacci
 from jezz.behaviors.taxonomy import BEHAVIOR_BASIS, BehaviorKind, WorkspaceEffect
-from jezz.codes.ast_utils import SourceUnit, parse_source_unit
-from jezz.guards import InstanceGuard, jezz_callable
+from jezz.codes.adapters import parse_any_source_unit
+from jezz.codes.polyglot_ir import InspectedUnit, PolyglotUnit, SupportedLanguage
+from jezz.codes.ratchet import DifferentialScope, inspect_differential_rough_in
+from jezz.guards import WIRE_FROZENSET_VALIDATOR, InstanceGuard, jezz_callable
 from jezz.methodology.dossier import extract_compiled_symbols
 from jezz.methodology.mandate import DependencyScope, compute_scope_execution_waves
 
@@ -162,14 +172,14 @@ BEHAVIOR_EXECUTION_BOARD: Final[Mapping[BehaviorKind, BehaviorExecutionBinding]]
             engine_kind=ExecutionEngineKind.PYDANTIC_AI_AGENT,
             toolset_access=ToolsetAccessLevel.SCOPED_WRITE,
             specialist_role="contract_specifier",
-            rationale="Authors Phase III strict Pydantic schemas and @icontract obligations.",
+            rationale="Authors Phase III strict schemas and runtime contract obligations.",
         ),
         BehaviorKind.INSTRUMENT: BehaviorExecutionBinding(
             behavior_kind=BehaviorKind.INSTRUMENT,
             engine_kind=ExecutionEngineKind.PYDANTIC_AI_AGENT,
             toolset_access=ToolsetAccessLevel.SCOPED_WRITE,
             specialist_role="falsification_instrumenter",
-            rationale="Authors Phase III pytest and Hypothesis falsification suites.",
+            rationale="Authors Phase III property and falsification test suites.",
         ),
         BehaviorKind.SYNTHESIZE: BehaviorExecutionBinding(
             behavior_kind=BehaviorKind.SYNTHESIZE,
@@ -270,6 +280,7 @@ class PceModelSuite:
 type GuardedModel = Annotated[Model, InstanceGuard(Model)]
 type GuardedAgent[OutT] = Annotated[Agent[JezzAgentDeps, OutT], InstanceGuard(Agent)]
 type BoundedPrompt = Annotated[str, Field(min_length=1, max_length=65_536)]
+type LanguageFilter = Annotated[AbstractSet[SupportedLanguage], WIRE_FROZENSET_VALIDATOR] | None
 
 
 @jezz_callable
@@ -296,8 +307,8 @@ def uniform_model_suite(
 def _enforce_patch_scope_and_parse(
     patches: Sequence[FilePatchArtifact],
     allowed_files: frozenset[str],
-) -> tuple[SourceUnit, ...]:
-    units: list[SourceUnit] = []
+) -> tuple[InspectedUnit, ...]:
+    units: list[InspectedUnit] = []
     for patch in patches:
         if patch.file_path not in allowed_files:
             msg = (
@@ -305,7 +316,10 @@ def _enforce_patch_scope_and_parse(
                 f"{sorted(allowed_files)}."
             )
             raise ModelRetry(msg)
-        units.append(parse_source_unit(patch.file_path, patch.source_code))
+        try:
+            units.append(parse_any_source_unit(patch.file_path, patch.source_code))
+        except (SyntaxError, ValueError) as exc:
+            raise ModelRetry(f"Syntax error in '{patch.file_path}': {exc}") from exc
     return tuple(units)
 
 
@@ -313,16 +327,26 @@ def _parse_and_rough_in_check(
     deps: JezzAgentDeps,
     patches: Sequence[FilePatchArtifact],
     stage_label: str,
-) -> tuple[SourceUnit, ...]:
+) -> tuple[InspectedUnit, ...]:
     units = _enforce_patch_scope_and_parse(patches, deps.sandbox.authorized_files)
-    report = deps.inspector.inspect_rough_in(units, permit=deps.permit)
-    if not report.is_occupiable:
-        cited = " | ".join(
-            f"{f.code_id} (L{f.location.line}): {f.message} -> Fix: {f.remediation}"
-            for f in report.unwaived_violations()[:6]
-        )
-        raise ModelRetry(f"{stage_label} failed JBC rough-in: {cited}")
-    alias_err = find_type_alias_misuse(units, deps.sandbox.load_units())
+    patched_paths = frozenset(u.file_path for u in units)
+    ws_units = deps.sandbox.load_units()
+    others = [u for u in ws_units if u.file_path not in patched_paths]
+    diff_report = inspect_differential_rough_in(
+        deps.inspector,
+        (*others, *units),
+        DifferentialScope(changed_paths=patched_paths),
+        permit=deps.permit,
+    )
+    cited = [
+        f"{f.code_id} ({f.location.file_path}:L{f.location.line}): "
+        f"{f.message} -> Fix: {f.remediation}"
+        for f in diff_report.report.unwaived_violations()
+    ]
+    if cited:
+        joined = " | ".join(cited[:6])
+        raise ModelRetry(f"{stage_label} failed JBC rough-in: {joined}")
+    alias_err = find_type_alias_misuse(units, ws_units)
     if alias_err is not None:
         raise ModelRetry(f"{stage_label} failed PEP 695 type-alias check: {alias_err}")
     return units
@@ -332,6 +356,12 @@ def _validate_specify_output(
     ctx: RunContext[JezzAgentDeps],
     bundle: ContractSpecificationBundle,
 ) -> ContractSpecificationBundle:
+    for patch in bundle.contract_patches:
+        if is_polyglot_test_path(patch.file_path):
+            raise ModelRetry(
+                f"Contract patch '{patch.file_path}' targets a test file; Phase III SPECIFY "
+                "must target non-test implementation modules only."
+            )
     units = _parse_and_rough_in_check(
         ctx.deps,
         bundle.contract_patches,
@@ -353,13 +383,22 @@ def _validate_specify_output(
     return bundle
 
 
+def _is_test_unit(unit: InspectedUnit) -> bool:
+    if unit.is_test_file or is_polyglot_test_path(unit.file_path):
+        return True
+    return isinstance(unit, PolyglotUnit) and any(fn.is_test_callable for fn in unit.callables)
+
+
 def _validate_instrument_output(
     ctx: RunContext[JezzAgentDeps],
     bundle: InstrumentationSuiteBundle,
 ) -> InstrumentationSuiteBundle:
     for patch in bundle.test_patches:
-        if not patch.file_path.startswith("tests/"):
-            raise ModelRetry(f"Instrumentation file '{patch.file_path}' must reside under tests/.")
+        if not is_polyglot_test_path(patch.file_path):
+            raise ModelRetry(
+                f"Instrumentation file '{patch.file_path}' must be an authorized test file "
+                "(tests/*, *.test.ts, *.spec.ts, *_test.rs, or *_test.go)."
+            )
     test_units = _parse_and_rough_in_check(
         ctx.deps,
         bundle.test_patches,
@@ -375,7 +414,7 @@ def _validate_instrument_output(
         prior_tests = [
             u
             for u in ctx.deps.sandbox.load_units()
-            if u.is_test_file and u.file_path not in patched_paths
+            if _is_test_unit(u) and u.file_path not in patched_paths
         ]
         compiled_tests = extract_compiled_symbols((*prior_tests, *test_units))
         missing_verif = [
@@ -393,7 +432,7 @@ def _validate_instrument_output(
 
 def _combined_workspace_symbols(
     deps: JezzAgentDeps,
-    patch_units: Sequence[SourceUnit],
+    patch_units: Sequence[InspectedUnit],
 ) -> frozenset[str]:
     overridden = {u.file_path for u in patch_units}
     existing = [u for u in deps.sandbox.load_units() if u.file_path not in overridden]
@@ -409,7 +448,7 @@ def _validate_synthesize_output(
         if ctx.deps.active_scope is not None
         else ctx.deps.sandbox.authorized_files
     )
-    allowed = frozenset(p for p in raw_allowed if not p.startswith(("tests/", "test/")))
+    allowed = frozenset(p for p in raw_allowed if not is_polyglot_test_path(p))
     patch_units = _enforce_patch_scope_and_parse(bundle.implementation_patches, allowed)
     if ctx.deps.mandate is not None:
         compiled = _combined_workspace_symbols(ctx.deps, patch_units)
@@ -457,7 +496,7 @@ def _validate_refactor_output(
         if ctx.deps.active_scope is not None
         else ctx.deps.sandbox.authorized_files
     )
-    allowed = frozenset(p for p in raw_allowed if not p.startswith(("tests/", "test/")))
+    allowed = frozenset(p for p in raw_allowed if not is_polyglot_test_path(p))
     patch_units = _enforce_patch_scope_and_parse(bundle.refactored_patches, allowed)
     _parse_and_rough_in_check(ctx.deps, bundle.refactored_patches, "Phase IV brownfield refactor")
     compiled = _combined_workspace_symbols(ctx.deps, patch_units)
@@ -562,10 +601,12 @@ JBC_STATUTORY_BRIEF: Final[str] = (
     "JBC v1.2 Statutory Requirements: "
     "(1) Every BaseModel must set model_config = STRICT_FROZEN_CONFIG (from jezz.guards) or "
     "ConfigDict(frozen=True, extra='forbid', strict=True, allow_inf_nan=False), and bound every "
-    "field via jezz.guards (PositiveInt, NonNegativeInt, BoundedInt, FiniteFloat, IdentifierStr "
-    "1..256, ShortText 1..1024, BoundedText 0..65_536 — PEP 695 TypeAliasType aliases, NEVER "
-    "subscript BoundedInt[...] or call IdentifierStr('x') at runtime; pass plain literals and "
-    "use Annotated[int, Field(ge=..., le=...)] for custom ranges), "
+    "field via jezz.guards (PositiveInt 1..2**63-1, NonNegativeInt 0..2**63-1, BoundedInt, "
+    "FiniteFloat, IdentifierStr 1..256, ShortText 1..1024, BoundedText 0..65_536 — PEP 695 "
+    "TypeAliasType aliases, NEVER subscript BoundedInt[...] or call IdentifierStr('x') at "
+    "runtime; prefer NonNegativeInt / PositiveInt when only a lower bound >=0 or >0 is "
+    "specified rather than inventing narrower le= caps; use Annotated[int, Field(ge=..., "
+    "le=...)] only when an explicit upper domain bound is stated), "
     "StrEnum/Literal/BaseModel, or Annotated[..., Field(...)]. "
     "(2) Every callable requires 100% parameter and return type annotations with zero Any and no "
     "untyped dict/Mapping[str, object] parameters or returns; decorate every public non-test "
@@ -583,6 +624,103 @@ JBC_STATUTORY_BRIEF: Final[str] = (
     "guard returns), and never place else/elif after return/raise/break/continue."
 )
 
+_PY_FRAME_INSTRUCTIONS: Final[str] = (
+    "Convert the engineering request into a concise EngineeringMandate (mandate_id "
+    "matching ^MND-[A-Za-z0-9_-]+$, invariant_id matching ^INV-[0-9]{3,6}$). "
+    "Use pure Python identifiers for verification_symbol (e.g. 'test_quota_limit') and "
+    "contract_symbols (never file paths or 'file.py:sym' pytest nodeids). Every "
+    "ModuleWriteScope must own at least one non-test src/.../*.py file (place paired "
+    "tests/test_*.py files inside the same ModuleWriteScope rather than a separate "
+    "test-only scope). State invariants as strict falsifiable conditions (prefer 3..5 "
+    "cohesive DomainInvariants per module rather than fragmenting trivial field/enum "
+    "checks into separate invariants); never emit Agile user stories ('As a ..., I want "
+    "...'), Markdown checkboxes ('- [ ]'), ceremony jargon, or weasel modals "
+    "('should'/'might'/'ideally'/'maybe'/'try to'). Leave required_dependencies=() and "
+    "consultation_targets=() unless the prompt explicitly requests adding a third-party "
+    "package or consulting specific standards/docs. "
+    "Populate open_ambiguities whenever material domain constraints, bounds, failure "
+    "policies, or edge-case semantics are under-determined rather than guessing (note: "
+    "JBC v1.2 conventions are already fixed and never ambiguous — all BaseModels use "
+    "STRICT_FROZEN_CONFIG from jezz.guards, IdentifierStr is 1..256 strict str, "
+    "PositiveInt >= 1, NonNegativeInt >= 0, and public callables use @jezz_callable). When "
+    "'Authoritative Clarifications Resolving Open Ambiguities' is provided, integrate "
+    "those answers into concrete invariants/write_scopes and set open_ambiguities=() "
+    "once resolved."
+)
+
+_PY_DECOMPOSE_INSTRUCTIONS: Final[str] = (
+    "Refine the EngineeringMandate's ModuleWriteScopes using the grounded Workspace AST "
+    "Graph and epistemic observations provided in the prompt. Partition files into "
+    "pairwise-disjoint ModuleWriteScopes where each scope owns at least one non-test "
+    "src/.../*.py file (pair tests/test_*.py files inside the scope they verify). "
+    "Populate `depends_on` with upstream `scope_id`s whenever a scope imports types or "
+    "callables synthesized in an upstream scope, forming a strict DAG (zero cycles, "
+    "preventing JBC-COG-003 circular imports by design). Preserve all mandated "
+    "contract_symbols."
+)
+
+_PY_SPECIFY_ROLE: Final[str] = (
+    "Author Phase III data contracts (strict Pydantic BaseModels, StrEnums, and "
+    "bounded Annotated type aliases) in authorized non-test src/... contract "
+    "file(s). Authorized paths and existing file contents are already provided "
+    "inline in the prompt—do NOT call read/list tools on absent or "
+    "already-inlined files. Never write tests/... files and never emit "
+    "unimplemented pass/.../NotImplementedError function stubs (concrete "
+    "implementation callables belong in Phase IV SYNTHESIZE). Include only "
+    "symbols defined in contract_patches inside declared_symbols. Draft the "
+    "complete file in one pass and call _tool_preview_rough_in once on the full "
+    "candidate file before returning."
+)
+
+_PY_INSTRUMENT_ROLE: Final[str] = (
+    "Use the inline 'Existing Authorized File Snapshots' directly (do NOT call "
+    "read/list tools on already-inlined or absent files) so imports and field "
+    "names match Phase III contracts exactly; mandated callable contract_symbols "
+    "not yet present in Phase III src/... snapshots will be synthesized in Phase "
+    "IV—import them directly from their target src/... module without searching "
+    "the workspace. Author pytest and Hypothesis (@given) falsification suites "
+    "under authorized tests/... file(s) defining every mandated invariant "
+    "verification_symbol. Every test and helper callable in tests/ must have "
+    "100% parameter and '-> None' return annotations with zero Any, <= 6 "
+    "parameters (when @given needs >6 values, use '@given(st.data())' with "
+    "'data: st.DataObject' instead of >6 args or untyped @st.composite), and "
+    "<= 35 statements; name any delegated assertion helper '_assert_*', "
+    "'_verify_*', '_check_*', or '_expect_*' (JBC-VRF-001). Under mypy --strict "
+    "(strict_equality), assert StrEnum.MEMBER.value == 'literal' rather than "
+    "StrEnum.MEMBER == 'literal' ([comparison-overlap]). When testing that "
+    "invalid inputs or step-budget overruns raise an error, expect (ValueError, "
+    "TypeError, icontract.ViolationError, BudgetExceededError); never combine "
+    "@given with function-scoped fixtures like tmp_path, and guard any helper "
+    "while loop in tests/ with LoopBudget(max_steps=...). Preview each complete "
+    "test file once via _tool_preview_rough_in before returning."
+)
+
+_PY_SYNTHESIZE_ROLE: Final[str] = (
+    "Use the inline 'Existing Authorized File Snapshots' directly (do NOT call "
+    "read/list tools on already-inlined or absent files) so imports, types, and "
+    "postconditions align with locked Phase III contracts and falsification "
+    "suites. Emit complete src/... implementation patches strictly within your "
+    "authorized ModuleWriteScope without modifying locked tests/... files or "
+    "removing Phase III contract symbols; keep helper functions that do not read "
+    "'self' at module level rather than as stateless instance methods on classes "
+    "(JBC-COG-005). Preview each complete file once via _tool_preview_rough_in "
+    "before returning."
+)
+
+_PY_REFACTOR_ROLE: Final[str] = (
+    "Renovate the existing non-test src/... file(s) shown in 'Existing "
+    "Authorized File Snapshots' so every file achieves zero JBC v1.2 violations "
+    "while preserving public symbol names, call signatures compatible with locked "
+    "tests, and observable domain semantics. Do NOT modify tests/... files or "
+    "call read/list tools on already-inlined files. Remediate every cited "
+    "baseline RED_TAG finding (attach @jezz_callable, STRICT_FROZEN_CONFIG, "
+    "bounded jezz.guards / Annotated[..., Field(...)] types, falsifiable "
+    "@icontract.require/@icontract.ensure, LoopBudget on while loops, "
+    "MappingProxyType dispatch / <=1 elif, LCOM4 == 1 cohesion, narrow chained "
+    "exceptions, and ContainedPath filesystem containment). Preview each complete "
+    "candidate file once via _tool_preview_rough_in before returning."
+)
+
 
 def _validate_frame_output(
     ctx: RunContext[JezzAgentDeps],
@@ -590,18 +728,22 @@ def _validate_frame_output(
 ) -> FramedMandateProposal:
     _ = ctx
     for scope in proposal.mandate.write_scopes:
-        has_src = any(not rel.startswith(("tests/", "test/")) for rel in scope.owned_files)
+        has_src = any(not is_polyglot_test_path(rel) for rel in scope.owned_files)
         if not has_src:
             raise ModelRetry(
                 f"ModuleWriteScope '{scope.scope_id}' owns only test files "
-                f"{sorted(scope.owned_files)}. Include each tests/... file inside the same "
-                "ModuleWriteScope as the non-test src/... module it verifies."
+                f"{sorted(scope.owned_files)}. Include each test file inside the same "
+                "ModuleWriteScope as the non-test implementation module it verifies."
             )
     return proposal
 
 
 @jezz_callable
-def build_frame_agent(model: GuardedModel) -> GuardedAgent[FramedMandateProposal]:
+def build_frame_agent(
+    model: GuardedModel,
+    *,
+    languages: LanguageFilter = None,
+) -> GuardedAgent[FramedMandateProposal]:
     """Build BHV-01 FRAME specialist producing typed anti-Agile EngineeringMandates."""
     agent = Agent[JezzAgentDeps, FramedMandateProposal](
         model,
@@ -610,29 +752,7 @@ def build_frame_agent(model: GuardedModel) -> GuardedAgent[FramedMandateProposal
         name="jezz_mandate_framer",
         retries=3,
         toolsets=(build_readonly_toolset(),),
-        instructions=(
-            "Convert the engineering request into a concise EngineeringMandate (mandate_id "
-            "matching ^MND-[A-Za-z0-9_-]+$, invariant_id matching ^INV-[0-9]{3,6}$). "
-            "Use pure Python identifiers for verification_symbol (e.g. 'test_quota_limit') and "
-            "contract_symbols (never file paths or 'file.py:sym' pytest nodeids). Every "
-            "ModuleWriteScope must own at least one non-test src/.../*.py file (place paired "
-            "tests/test_*.py files inside the same ModuleWriteScope rather than a separate "
-            "test-only scope). State invariants as strict falsifiable conditions (prefer 3..5 "
-            "cohesive DomainInvariants per module rather than fragmenting trivial field/enum "
-            "checks into separate invariants); never emit Agile user stories ('As a ..., I want "
-            "...'), Markdown checkboxes ('- [ ]'), ceremony jargon, or weasel modals "
-            "('should'/'might'/'ideally'/'maybe'/'try to'). Leave required_dependencies=() and "
-            "consultation_targets=() unless the prompt explicitly requests adding a third-party "
-            "package or consulting specific standards/docs. "
-            "Populate open_ambiguities whenever material domain constraints, bounds, failure "
-            "policies, or edge-case semantics are under-determined rather than guessing (note: "
-            "JBC v1.2 conventions are already fixed and never ambiguous — all BaseModels use "
-            "STRICT_FROZEN_CONFIG from jezz.guards, IdentifierStr is 1..256 strict str, "
-            "PositiveInt >= 1, NonNegativeInt >= 0, and public callables use @jezz_callable). When "
-            "'Authoritative Clarifications Resolving Open Ambiguities' is provided, integrate "
-            "those answers into concrete invariants/write_scopes and set open_ambiguities=() "
-            "once resolved."
-        ),
+        instructions=polyglot_frame_instructions(languages, _PY_FRAME_INSTRUCTIONS),
     )
     agent.output_validator(_validate_frame_output)
     return agent
@@ -647,11 +767,11 @@ def _validate_decompose_output(
     except ValueError as exc:
         raise ModelRetry(str(exc)) from exc
     for scope in plan.write_scopes:
-        has_src = any(not rel.startswith(("tests/", "test/")) for rel in scope.owned_files)
+        has_src = any(not is_polyglot_test_path(rel) for rel in scope.owned_files)
         if not has_src:
             raise ModelRetry(
                 f"ModuleWriteScope '{scope.scope_id}' owns only test files "
-                f"{sorted(scope.owned_files)}; include at least one non-test src/.../*.py module."
+                f"{sorted(scope.owned_files)}; include at least one non-test module."
             )
     if ctx.deps.mandate is not None:
         verif_syms = {inv.verification_symbol for inv in ctx.deps.mandate.invariants}
@@ -671,8 +791,12 @@ def _validate_decompose_output(
 
 
 @jezz_callable
-def build_decompose_agent(model: GuardedModel) -> GuardedAgent[ScopeDecompositionPlan]:
-    """Build BHV-09 DECOMPOSE specialist refining scopes and DAG waves over the AST graph."""
+def build_decompose_agent(
+    model: GuardedModel,
+    *,
+    languages: LanguageFilter = None,
+) -> GuardedAgent[ScopeDecompositionPlan]:
+    """Build BHV-09 DECOMPOSE specialist refining scopes and DAG waves over the AST/CST graph."""
     agent = Agent[JezzAgentDeps, ScopeDecompositionPlan](
         model,
         output_type=ScopeDecompositionPlan,
@@ -680,16 +804,7 @@ def build_decompose_agent(model: GuardedModel) -> GuardedAgent[ScopeDecompositio
         name="jezz_scope_architect",
         retries=3,
         toolsets=(build_readonly_toolset(),),
-        instructions=(
-            "Refine the EngineeringMandate's ModuleWriteScopes using the grounded Workspace AST "
-            "Graph and epistemic observations provided in the prompt. Partition files into "
-            "pairwise-disjoint ModuleWriteScopes where each scope owns at least one non-test "
-            "src/.../*.py file (pair tests/test_*.py files inside the scope they verify). "
-            "Populate `depends_on` with upstream `scope_id`s whenever a scope imports types or "
-            "callables synthesized in an upstream scope, forming a strict DAG (zero cycles, "
-            "preventing JBC-COG-003 circular imports by design). Preserve all mandated "
-            "contract_symbols."
-        ),
+        instructions=polyglot_decompose_instructions(languages, _PY_DECOMPOSE_INSTRUCTIONS),
     )
     agent.output_validator(_validate_decompose_output)
     return agent
@@ -725,10 +840,10 @@ def build_inspect_env_agent(model: GuardedModel) -> GuardedAgent[EnvironmentObse
         retries=2,
         toolsets=(build_readonly_toolset(),),
         instructions=(
-            "Summarize the workspace Python version, declared runtime/dev dependency roots, "
+            "Summarize the workspace toolchain, declared runtime/dev dependency roots, "
             "unprovisioned required_dependencies, and prior sealed mandates provided in the "
             "substrate snapshot. Call _tool_inspect_package_api only if verifying an installed "
-            "package signature."
+            "Python package signature."
         ),
     )
 
@@ -783,7 +898,7 @@ def build_provision_agent(model: GuardedModel) -> GuardedAgent[ProvisionPlan]:
         retries=3,
         toolsets=(build_scoped_write_toolset(),),
         instructions=(
-            "Validate and emit the exact PEP 508 dependency specifiers declared in the mandate's "
+            "Validate and emit the exact dependency specifiers declared in the mandate's "
             "required_dependencies (partitioned into approved_specs for runtime and dev_specs for "
             "dev). Never add undeclared packages or omit declared requirements."
         ),
@@ -792,8 +907,30 @@ def build_provision_agent(model: GuardedModel) -> GuardedAgent[ProvisionPlan]:
     return agent
 
 
+def _build_construction_instructions(
+    role_key: str,
+    python_role: str,
+    languages: LanguageFilter,
+) -> tuple[InstructionPart, InstructionPart, InstructionPart]:
+    brief_txt, exemplar_txt = select_polyglot_brief_and_exemplar(
+        languages,
+        JBC_STATUTORY_BRIEF,
+        JBC_CANONICAL_EXEMPLAR,
+    )
+    role_txt = polyglot_construction_role_instructions(role_key, languages, python_role)
+    return (
+        InstructionPart(content=brief_txt, name="jbc_statutory_brief"),
+        InstructionPart(content=exemplar_txt, name="jbc_canonical_exemplar"),
+        InstructionPart(content=role_txt, name="specialist_role"),
+    )
+
+
 @jezz_callable
-def build_specify_agent(model: GuardedModel) -> GuardedAgent[ContractSpecificationBundle]:
+def build_specify_agent(
+    model: GuardedModel,
+    *,
+    languages: LanguageFilter = None,
+) -> GuardedAgent[ContractSpecificationBundle]:
     """Build BHV-14 SPECIFY specialist with @output_validator JBC rough-in breaker."""
     agent = Agent[JezzAgentDeps, ContractSpecificationBundle](
         model,
@@ -802,32 +939,18 @@ def build_specify_agent(model: GuardedModel) -> GuardedAgent[ContractSpecificati
         name="jezz_contract_specifier",
         retries=3,
         toolsets=(build_scoped_write_toolset(),),
-        instructions=(
-            InstructionPart(content=JBC_STATUTORY_BRIEF, name="jbc_statutory_brief"),
-            InstructionPart(content=JBC_CANONICAL_EXEMPLAR, name="jbc_canonical_exemplar"),
-            InstructionPart(
-                content=(
-                    "Author Phase III data contracts (strict Pydantic BaseModels, StrEnums, and "
-                    "bounded Annotated type aliases) in authorized non-test src/... contract "
-                    "file(s). Authorized paths and existing file contents are already provided "
-                    "inline in the prompt—do NOT call read/list tools on absent or "
-                    "already-inlined files. Never write tests/... files and never emit "
-                    "unimplemented pass/.../NotImplementedError function stubs (concrete "
-                    "implementation callables belong in Phase IV SYNTHESIZE). Include only "
-                    "symbols defined in contract_patches inside declared_symbols. Draft the "
-                    "complete file in one pass and call _tool_preview_rough_in once on the full "
-                    "candidate file before returning."
-                ),
-                name="specialist_role",
-            ),
-        ),
+        instructions=_build_construction_instructions("specify", _PY_SPECIFY_ROLE, languages),
     )
     agent.output_validator(_validate_specify_output)
     return agent
 
 
 @jezz_callable
-def build_instrument_agent(model: GuardedModel) -> GuardedAgent[InstrumentationSuiteBundle]:
+def build_instrument_agent(
+    model: GuardedModel,
+    *,
+    languages: LanguageFilter = None,
+) -> GuardedAgent[InstrumentationSuiteBundle]:
     """Build BHV-15 INSTRUMENT specialist enforcing non-tautological falsification suites."""
     agent = Agent[JezzAgentDeps, InstrumentationSuiteBundle](
         model,
@@ -836,42 +959,18 @@ def build_instrument_agent(model: GuardedModel) -> GuardedAgent[InstrumentationS
         name="jezz_falsification_instrumenter",
         retries=3,
         toolsets=(build_scoped_write_toolset(),),
-        instructions=(
-            InstructionPart(content=JBC_STATUTORY_BRIEF, name="jbc_statutory_brief"),
-            InstructionPart(content=JBC_CANONICAL_EXEMPLAR, name="jbc_canonical_exemplar"),
-            InstructionPart(
-                content=(
-                    "Use the inline 'Existing Authorized File Snapshots' directly (do NOT call "
-                    "read/list tools on already-inlined or absent files) so imports and field "
-                    "names match Phase III contracts exactly; mandated callable contract_symbols "
-                    "not yet present in Phase III src/... snapshots will be synthesized in Phase "
-                    "IV—import them directly from their target src/... module without searching "
-                    "the workspace. Author pytest and Hypothesis (@given) falsification suites "
-                    "under authorized tests/... file(s) defining every mandated invariant "
-                    "verification_symbol. Every test and helper callable in tests/ must have "
-                    "100% parameter and '-> None' return annotations with zero Any, <= 6 "
-                    "parameters (when @given needs >6 values, use '@given(st.data())' with "
-                    "'data: st.DataObject' instead of >6 args or untyped @st.composite), and "
-                    "<= 35 statements; name any delegated assertion helper '_assert_*', "
-                    "'_verify_*', '_check_*', or '_expect_*' (JBC-VRF-001). Under mypy --strict "
-                    "(strict_equality), assert StrEnum.MEMBER.value == 'literal' rather than "
-                    "StrEnum.MEMBER == 'literal' ([comparison-overlap]). When testing that "
-                    "invalid inputs or step-budget overruns raise an error, expect (ValueError, "
-                    "TypeError, icontract.ViolationError, BudgetExceededError); never combine "
-                    "@given with function-scoped fixtures like tmp_path, and guard any helper "
-                    "while loop in tests/ with LoopBudget(max_steps=...). Preview each complete "
-                    "test file once via _tool_preview_rough_in before returning."
-                ),
-                name="specialist_role",
-            ),
-        ),
+        instructions=_build_construction_instructions("instrument", _PY_INSTRUMENT_ROLE, languages),
     )
     agent.output_validator(_validate_instrument_output)
     return agent
 
 
 @jezz_callable
-def build_synthesize_agent(model: GuardedModel) -> GuardedAgent[ConstructionPatchBundle]:
+def build_synthesize_agent(
+    model: GuardedModel,
+    *,
+    languages: LanguageFilter = None,
+) -> GuardedAgent[ConstructionPatchBundle]:
     """Build BHV-16 SYNTHESIZE specialist constrained to authorized ModuleWriteScopes."""
     agent = Agent[JezzAgentDeps, ConstructionPatchBundle](
         model,
@@ -880,31 +979,18 @@ def build_synthesize_agent(model: GuardedModel) -> GuardedAgent[ConstructionPatc
         name="jezz_code_synthesizer",
         retries=3,
         toolsets=(build_scoped_write_toolset(),),
-        instructions=(
-            InstructionPart(content=JBC_STATUTORY_BRIEF, name="jbc_statutory_brief"),
-            InstructionPart(content=JBC_CANONICAL_EXEMPLAR, name="jbc_canonical_exemplar"),
-            InstructionPart(
-                content=(
-                    "Use the inline 'Existing Authorized File Snapshots' directly (do NOT call "
-                    "read/list tools on already-inlined or absent files) so imports, types, and "
-                    "postconditions align with locked Phase III contracts and falsification "
-                    "suites. Emit complete src/... implementation patches strictly within your "
-                    "authorized ModuleWriteScope without modifying locked tests/... files or "
-                    "removing Phase III contract symbols; keep helper functions that do not read "
-                    "'self' at module level rather than as stateless instance methods on classes "
-                    "(JBC-COG-005). Preview each complete file once via _tool_preview_rough_in "
-                    "before returning."
-                ),
-                name="specialist_role",
-            ),
-        ),
+        instructions=_build_construction_instructions("synthesize", _PY_SYNTHESIZE_ROLE, languages),
     )
     agent.output_validator(_validate_synthesize_output)
     return agent
 
 
 @jezz_callable
-def build_refactor_agent(model: GuardedModel) -> GuardedAgent[RefactorPatchBundle]:
+def build_refactor_agent(
+    model: GuardedModel,
+    *,
+    languages: LanguageFilter = None,
+) -> GuardedAgent[RefactorPatchBundle]:
     """Build BHV-17 REFACTOR specialist renovating brownfield modules to JBC v1.2 occupancy."""
     agent = Agent[JezzAgentDeps, RefactorPatchBundle](
         model,
@@ -913,26 +999,7 @@ def build_refactor_agent(model: GuardedModel) -> GuardedAgent[RefactorPatchBundl
         name="jezz_structural_refactorer",
         retries=3,
         toolsets=(build_scoped_write_toolset(),),
-        instructions=(
-            InstructionPart(content=JBC_STATUTORY_BRIEF, name="jbc_statutory_brief"),
-            InstructionPart(content=JBC_CANONICAL_EXEMPLAR, name="jbc_canonical_exemplar"),
-            InstructionPart(
-                content=(
-                    "Renovate the existing non-test src/... file(s) shown in 'Existing "
-                    "Authorized File Snapshots' so every file achieves zero JBC v1.2 violations "
-                    "while preserving public symbol names, call signatures compatible with locked "
-                    "tests, and observable domain semantics. Do NOT modify tests/... files or "
-                    "call read/list tools on already-inlined files. Remediate every cited "
-                    "baseline RED_TAG finding (attach @jezz_callable, STRICT_FROZEN_CONFIG, "
-                    "bounded jezz.guards / Annotated[..., Field(...)] types, falsifiable "
-                    "@icontract.require/@icontract.ensure, LoopBudget on while loops, "
-                    "MappingProxyType dispatch / <=1 elif, LCOM4 == 1 cohesion, narrow chained "
-                    "exceptions, and ContainedPath filesystem containment). Preview each complete "
-                    "candidate file once via _tool_preview_rough_in before returning."
-                ),
-                name="specialist_role",
-            ),
-        ),
+        instructions=_build_construction_instructions("refactor", _PY_REFACTOR_ROLE, languages),
     )
     agent.output_validator(_validate_refactor_output)
     return agent

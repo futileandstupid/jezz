@@ -185,21 +185,51 @@ def _collect_cfg_test_node_ids(root: ts.Node) -> set[int]:
     return test_ids
 
 
+def _enclosing_inline_mod_names(node: ts.Node) -> tuple[str, ...]:
+    names: list[str] = []
+    curr = node.parent
+    budget = LoopBudget(max_steps=64)
+    while curr is not None:
+        budget.tick()
+        name_node = curr.child_by_field_name("name") if curr.type == "mod_item" else None
+        mod_name = node_text(name_node).strip() if name_node is not None else ""
+        if mod_name:
+            names.append(mod_name)
+        curr = curr.parent
+    names.reverse()
+    return tuple(names)
+
+
+def _effective_rs_module(current_mod: str, inline_mods: tuple[str, ...]) -> str:
+    if not inline_mods:
+        return current_mod
+    prefix = () if current_mod in {"", "crate"} else tuple(current_mod.split("."))
+    return ".".join((*prefix, *inline_mods))[:256]
+
+
+def _drop_trailing_type_segment(segs: list[str]) -> list[str]:
+    if len(segs) >= 2 and segs[-1][:1].isupper():
+        return segs[:-1]
+    return segs
+
+
 def _resolve_rs_internal_module(current_mod: str, use_path: str) -> str:
     cleaned = use_path.split("::{")[0].strip()
     segs = [s for s in cleaned.split("::") if s and s != "*"]
     if not segs:
         return ""
-    head = segs[0]
-    rest = segs[1:]
-    if head == "crate":
-        candidates = rest[:-1] if len(rest) >= 2 and rest[-1][:1].isupper() else rest
-        return ".".join(candidates)[:256] or "crate"
+    if segs[0] == "crate":
+        return ".".join(_drop_trailing_type_segment(segs[1:]))[:256] or "crate"
     base = [] if current_mod in {"", "crate"} else current_mod.split(".")
-    if head == "super" and base:
-        base = base[:-1]
-    tail = rest[:-1] if len(rest) >= 2 and rest[-1][:1].isupper() else rest
-    return ".".join([*base, *tail])[:256]
+    idx = 0
+    budget = LoopBudget(max_steps=32)
+    while idx < len(segs) and segs[idx] in {"self", "super"}:
+        budget.tick()
+        if segs[idx] == "super" and base:
+            base = base[:-1]
+        idx += 1
+    tail = _drop_trailing_type_segment(segs[idx:])
+    return ".".join([*base, *tail])[:256] or "crate"
 
 
 def _extract_rs_private_use_names(use_txt: str) -> tuple[str, ...]:
@@ -226,7 +256,8 @@ def _extract_rs_imports(
             continue
         head = raw.split("::", maxsplit=1)[0].split("{", maxsplit=1)[0]
         is_internal = head in {"crate", "self", "super"}
-        resolved = _resolve_rs_internal_module(current_mod, raw) if is_internal else ""
+        lex_mod = _effective_rs_module(current_mod, _enclosing_inline_mod_names(node))
+        resolved = _resolve_rs_internal_module(lex_mod, raw) if is_internal else ""
         is_wc = any(sub.type == "use_wildcard" for sub in iter_cst_nodes(node))
         imports.append(
             PolyglotImport(

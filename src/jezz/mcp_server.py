@@ -11,6 +11,7 @@ from mcp.server.mcpserver.exceptions import ToolError
 from mcp.types import ToolAnnotations
 from pydantic import BaseModel, BeforeValidator, Field, ValidationError
 
+from jezz import __version__
 from jezz.behaviors.graph import BehaviorGraph, GraphVerificationReport, verify_behavior_graph
 from jezz.codes.adapters import parse_any_source_unit
 from jezz.codes.ast_graph import (
@@ -61,7 +62,7 @@ from jezz.guards import (
 from jezz.methodology.dossier import DossierAuditReport, EngineeringDossier, audit_pce_dossier
 
 SERVER_NAME: Final[str] = "jezz"
-SERVER_VERSION: Final[str] = "0.1.0"
+SERVER_VERSION: Final[str] = __version__
 
 _READ_ONLY_ANNOTATIONS: Final[ToolAnnotations] = ToolAnnotations(
     read_only_hint=True,

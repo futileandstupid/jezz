@@ -6,12 +6,13 @@ from types import MappingProxyType
 from typing import Annotated, Final
 
 from pydantic import Field, SecretStr
-from pydantic_ai.exceptions import UserError
+from pydantic_ai.exceptions import ModelHTTPError, UserError
 from pydantic_ai.messages import ModelMessage, ModelResponse
 from pydantic_ai.models import Model, ModelRequestParameters, infer_model
 from pydantic_ai.models.wrapper import WrapperModel
 from pydantic_ai.settings import ModelSettings
 
+from jezz.agents.agy_model import AGY_PROVIDER_PREFIX, AntigravityCliModel
 from jezz.guards import IdentifierStr, InstanceGuard, jezz_callable
 from jezz.secrets import GuardedSecretStr
 
@@ -166,6 +167,8 @@ def infer_authenticated_model(
     api_key: GuardedSecretStr | None = None,
 ) -> GuardedProviderModel:
     """Instantiate a Pydantic AI ``Model`` without mutating process ``os.environ``."""
+    if model_name.startswith(f"{AGY_PROVIDER_PREFIX}:"):
+        return AntigravityCliModel(model_name)
     if api_key is None or model_name == "test":
         return infer_model(model_name)
     active_key: SecretStr = api_key
@@ -216,6 +219,26 @@ class TlsResilientModel(WrapperModel):
         """Return the exact ``provider:model`` string supplied at instantiation."""
         return self._model_name
 
+    async def _dispatch_single_attempt(
+        self,
+        messages: list[ModelMessage],
+        model_settings: ModelSettings | None,
+        model_request_parameters: ModelRequestParameters,
+    ) -> ModelResponse:
+        if self.wrapped.system == AGY_PROVIDER_PREFIX:
+            return await self.wrapped.request(
+                messages,
+                model_settings,
+                model_request_parameters,
+            )
+        fresh = infer_authenticated_model(self._model_name, api_key=self._api_key)
+        async with fresh as active_model:
+            return await active_model.request(
+                messages,
+                model_settings,
+                model_request_parameters,
+            )
+
     @jezz_callable
     async def request(
         self,
@@ -224,21 +247,21 @@ class TlsResilientModel(WrapperModel):
         model_request_parameters: ModelRequestParameters,
     ) -> ModelResponse:
         """Execute one request inside a fresh client context, retrying transient OSErrors."""
-        last_err: OSError | None = None
+        last_err: Exception | None = None
         for attempt in range(self._max_attempts):
             try:
-                fresh = infer_authenticated_model(self._model_name, api_key=self._api_key)
-                async with fresh as active_model:
-                    return await active_model.request(
-                        messages,
-                        model_settings,
-                        model_request_parameters,
-                    )
-            except OSError as exc:
+                return await self._dispatch_single_attempt(
+                    messages,
+                    model_settings,
+                    model_request_parameters,
+                )
+            except (OSError, ModelHTTPError) as exc:
+                if isinstance(exc, ModelHTTPError) and exc.status_code < 500:
+                    raise
                 last_err = exc
                 if attempt + 1 < self._max_attempts:
                     await asyncio.sleep(float(attempt + 1))
         if last_err is not None:
             raise last_err
-        msg = "Unreachable retry exhaustion without captured OSError."
+        msg = "Unreachable retry exhaustion without captured transport exception."
         raise RuntimeError(msg)

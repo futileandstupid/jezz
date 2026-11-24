@@ -480,6 +480,7 @@ class PceRuntimeBudget(BaseModel):
     max_elicitation_rounds: Annotated[int, Field(ge=1, le=8)] = 3
     memory_compaction_threshold: Annotated[int, Field(ge=1, le=256)] = 6
     persist_workspace_memory: bool = True
+    ratchet_to_scope: bool = False
     prompt_cache_mode: CoercedPromptCacheMode = PromptCacheMode.AUTO
     agent_timeout_sec: Annotated[float, Field(gt=0.0, le=600.0, allow_inf_nan=False)] = 30.0
     request_limit_per_step: Annotated[int, Field(ge=1, le=64)] = 6
@@ -506,9 +507,11 @@ class PceRuntimeBudget(BaseModel):
         *,
         agent_timeout_sec: Annotated[float, Field(gt=0.0, le=600.0, allow_inf_nan=False)] = 240.0,
         prompt_cache_mode: PromptCacheMode = PromptCacheMode.AUTO,
+        ratchet_to_scope: bool = False,
     ) -> PceRuntimeBudget:
         """Construct phase-scoped production ceilings separating epistemic and synthesis phases."""
         return cls(
+            ratchet_to_scope=ratchet_to_scope,
             prompt_cache_mode=prompt_cache_mode,
             agent_timeout_sec=agent_timeout_sec,
             request_limit_per_step=18,

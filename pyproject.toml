@@ -4,10 +4,27 @@ build-backend = "hatchling.build"
 
 [project]
 name = "jezz"
-version = "0.1.0"
+version = "0.2.0"
 description = "Formalized agent behavior basis, enforceable software building codes, and Pydantic AI runtime."
 readme = "README.md"
 requires-python = ">=3.14"
+keywords = [
+    "coding-agents",
+    "design-by-contract",
+    "mcp",
+    "pydantic-ai",
+    "software-building-codes",
+    "static-analysis",
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.14",
+    "Topic :: Software Development :: Quality Assurance",
+    "Topic :: Software Development :: Testing",
+    "Typing :: Typed",
+]
 dependencies = [
     "icontract>=2.7.3",
     "mcp>=2.3.0",
@@ -20,6 +37,11 @@ dependencies = [
     "tree-sitter-rust>=0.24.2",
     "tree-sitter-typescript>=0.23.2",
 ]
+
+[project.urls]
+Homepage = "https://github.com/futileandstupid/jezz"
+Repository = "https://github.com/futileandstupid/jezz"
+Documentation = "https://github.com/futileandstupid/jezz/blob/main/docs/whitepaper.md"
 
 [project.scripts]
 jezz = "jezz.cli:main"

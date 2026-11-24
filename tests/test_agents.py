@@ -52,8 +52,8 @@ from jezz.codes import (
     CodePermit,
     GateAttestation,
     GateKind,
+    InspectedUnit,
     ManifestDependencies,
-    SourceUnit,
     compute_units_digest,
     issue_certificate,
     load_workspace_units,
@@ -193,7 +193,7 @@ def _load_module_from_file(mod_name: str, file_path: Path) -> ModuleType:
 
 def _execute_ledger_tests_dynamically(
     sandbox: WorkspaceSandbox,
-    units: Sequence[SourceUnit],
+    units: Sequence[InspectedUnit],
 ) -> int:
     _ = units
     src_root = sandbox.repo_root / "src" / "ledger"

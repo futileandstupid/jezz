@@ -1,0 +1,165 @@
+name: "Jezz Software Building Code (JBC v1.2) & PCE Statutory Gate"
+description: "Enforce polyglot JBC Edition 1.2 Rough-In / Differential Occupancy Ratchets (.py, .ts, .tsx, .rs, .go) and PCE Dossier seals."
+author: "jezz contributors"
+
+branding:
+  icon: "shield"
+  color: "blue"
+
+inputs:
+  working-directory:
+    description: "Target repository directory to inspect (relative to workspace root)."
+    required: false
+    default: "."
+  mode:
+    description: "Inspection mode: 'differential' (PR/commit ratchet), 'full' (whole repository), or 'both'."
+    required: false
+    default: "differential"
+  base-ref:
+    description: "Git base ref for differential mode (defaults to origin/<base_ref> on PRs or HEAD~1 on push)."
+    required: false
+    default: ""
+  language:
+    description: "Optional space- or comma-separated language filter (python, typescript, rust, go)."
+    required: false
+    default: ""
+  permit:
+    description: "Optional relative path to a CodePermit JSON file."
+    required: false
+    default: ""
+  as-of:
+    description: "Optional ISO-8601 date (YYYY-MM-DD) for CodeVariance sunset enforcement."
+    required: false
+    default: ""
+  dossier:
+    description: "Optional relative path to a 5-phase PCE EngineeringDossier JSON file to verify via 'jezz audit'."
+    required: false
+    default: ""
+  python-version:
+    description: "Python runtime version for executing jezz (>=3.14)."
+    required: false
+    default: "3.14"
+
+outputs:
+  inspect-exit-code:
+    description: "Exit code returned by 'jezz inspect' (0 = APPROVED / APPROVED_WITH_VARIANCES, 1 = RED_TAG)."
+    value: ${{ steps.run-gate.outputs.inspect_rc }}
+  audit-exit-code:
+    description: "Exit code returned by 'jezz audit' when 'dossier' is provided (0 = OCCUPANCY_SEALED, 'skipped' otherwise)."
+    value: ${{ steps.run-gate.outputs.audit_rc }}
+
+runs:
+  using: "composite"
+  steps:
+    - name: Install uv
+      uses: astral-sh/setup-uv@v10.4.0
+      with:
+        enable-cache: true
+
+    - name: Install Python runtime for jezz gate
+      shell: bash
+      env:
+        JEZZ_PYTHON_VERSION: ${{ inputs.python-version }}
+      run: uv python install "$JEZZ_PYTHON_VERSION"
+
+    - name: Execute JBC Edition 1.2 & PCE Statutory Gate
+      id: run-gate
+      shell: bash
+      env:
+        JEZZ_ACTION_PATH: ${{ github.action_path }}
+        JEZZ_PYTHON_VERSION: ${{ inputs.python-version }}
+        JEZZ_WORKDIR: ${{ inputs.working-directory }}
+        JEZZ_MODE: ${{ inputs.mode }}
+        JEZZ_BASE_REF: ${{ inputs.base-ref }}
+        JEZZ_EVENT_NAME: ${{ github.event_name }}
+        JEZZ_PR_BASE_REF: ${{ github.base_ref }}
+        JEZZ_LANGUAGES: ${{ inputs.language }}
+        JEZZ_PERMIT: ${{ inputs.permit }}
+        JEZZ_AS_OF: ${{ inputs.as-of }}
+        JEZZ_DOSSIER: ${{ inputs.dossier }}
+      run: |
+        set -euo pipefail
+
+        COMMON_ARGS=()
+        if [[ -n "$JEZZ_LANGUAGES" ]]; then
+          NORMALIZED_LANGS="${JEZZ_LANGUAGES//,/ }"
+          for lang_tok in $NORMALIZED_LANGS; do
+            COMMON_ARGS+=(--language "$lang_tok")
+          done
+        fi
+        if [[ -n "$JEZZ_PERMIT" ]]; then
+          COMMON_ARGS+=(--permit "$JEZZ_PERMIT")
+        fi
+        if [[ -n "$JEZZ_AS_OF" ]]; then
+          COMMON_ARGS+=(--as-of "$JEZZ_AS_OF")
+        fi
+
+        run_jezz() {
+          uv run --python "$JEZZ_PYTHON_VERSION" --project "$JEZZ_ACTION_PATH" jezz "$@"
+        }
+
+        INSPECT_RC=0
+        if [[ "$JEZZ_MODE" == "differential" || "$JEZZ_MODE" == "both" ]]; then
+          RESOLVED_BASE="$JEZZ_BASE_REF"
+          if [[ -z "$RESOLVED_BASE" ]]; then
+            if [[ "$JEZZ_EVENT_NAME" == "pull_request" && -n "$JEZZ_PR_BASE_REF" ]]; then
+              RESOLVED_BASE="origin/$JEZZ_PR_BASE_REF"
+            else
+              RESOLVED_BASE="HEAD~1"
+            fi
+          fi
+          set +e
+          DIFF_MD="$(run_jezz inspect "$JEZZ_WORKDIR" --changed-since "$RESOLVED_BASE" "${COMMON_ARGS[@]}")"
+          RC=$?
+          set -e
+          printf '%s\n' "$DIFF_MD"
+          if [[ -n "${GITHUB_STEP_SUMMARY:-}" ]]; then
+            printf '%s\n\n' "$DIFF_MD" >> "$GITHUB_STEP_SUMMARY"
+          fi
+          if [[ $RC -ne 0 ]]; then
+            INSPECT_RC=$RC
+          fi
+        fi
+
+        if [[ "$JEZZ_MODE" == "full" || "$JEZZ_MODE" == "both" ]]; then
+          set +e
+          FULL_MD="$(run_jezz inspect "$JEZZ_WORKDIR" "${COMMON_ARGS[@]}")"
+          RC=$?
+          set -e
+          printf '%s\n' "$FULL_MD"
+          if [[ -n "${GITHUB_STEP_SUMMARY:-}" ]]; then
+            printf '%s\n\n' "$FULL_MD" >> "$GITHUB_STEP_SUMMARY"
+          fi
+          if [[ $RC -ne 0 ]]; then
+            INSPECT_RC=$RC
+          fi
+        fi
+
+        if [[ "$JEZZ_MODE" != "differential" && "$JEZZ_MODE" != "full" && "$JEZZ_MODE" != "both" ]]; then
+          echo "jezz-action error: unsupported mode '$JEZZ_MODE' (expected differential, full, or both)." >&2
+          exit 2
+        fi
+
+        echo "inspect_rc=$INSPECT_RC" >> "$GITHUB_OUTPUT"
+
+        AUDIT_OUT="skipped"
+        AUDIT_RC=0
+        if [[ -n "$JEZZ_DOSSIER" ]]; then
+          set +e
+          AUDIT_MD="$(run_jezz audit "$JEZZ_DOSSIER" --repo "$JEZZ_WORKDIR")"
+          AUDIT_RC=$?
+          set -e
+          printf '%s\n' "$AUDIT_MD"
+          if [[ -n "${GITHUB_STEP_SUMMARY:-}" ]]; then
+            printf '%s\n\n' "$AUDIT_MD" >> "$GITHUB_STEP_SUMMARY"
+          fi
+          AUDIT_OUT="$AUDIT_RC"
+        fi
+        echo "audit_rc=$AUDIT_OUT" >> "$GITHUB_OUTPUT"
+
+        if [[ $INSPECT_RC -ne 0 ]]; then
+          exit "$INSPECT_RC"
+        fi
+        if [[ $AUDIT_RC -ne 0 ]]; then
+          exit "$AUDIT_RC"
+        fi
