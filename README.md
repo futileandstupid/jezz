@@ -86,6 +86,9 @@ prompt_cache = "auto" # auto | off | prefix-only | 5m | 30m | 1h | 12h
 # [tool.jezz.models.roles]
 # hypothesize = "antigravity:claude-opus-5-5-medium"
 
+[tool.jezz.gates]
+timeout_sec = 120.0 # (0.0, 600.0] per-subprocess gate watchdog (overridden by --gate-timeout)
+
 [tool.jezz.secrets]
 agent_reason = "jezz PCE runtime resolving model API credential"
 

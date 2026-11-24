@@ -22,6 +22,7 @@
 - **Dynamic Path Anchoring (`JBC-SEC-006`):** Never hardcode filesystem paths (nor pass string literals directly to `Path(...)` / `os.path.*(...)` in production code, nor bake host paths into generated configs/hooks). Every path must be calculated dynamically from known file, package, or injected root locations (`Path(__file__).resolve()`, `importlib.resources`, `tmp_path` / `tempfile`, `${PLUGIN_ROOT}` / `dirname -- "$0"`, or `ContainedPath.from_parts(anchor, rel)`).
 
 ## Verification Commands
-- **Tests (unit, async, & property-based):** `uv run pytest`
+- **Tests, Property-Based Suites, & Coverage Gate (`>=92%`):** `uv run pytest --cov=jezz --cov-fail-under=92`
+- **Whole-Workspace `JBC` v1.2 Inspection:** `uv run jezz inspect .`
 - **Static Type Checking:** `uv run mypy .`
 - **Lint & Format Check:** `uv run ruff check .` and `uv run ruff format --check .`

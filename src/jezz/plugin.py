@@ -86,13 +86,19 @@ specifications.
 ## Mode 2: Autonomous `jezz` CLI Delegation
 
 - **Plan & Mandate Preview (No Workspace Mutation):**
-  `uv run jezz run <repo> [--model antigravity:<slug>] --prompt "..." --plan-only`
+  `uv run jezz run <repo> [--model antigravity:<slug>] [--profile standard|strict_internal]`
+  `--prompt "..." --plan-only`
 - **Greenfield Synthesis from Prompt or Mandate:**
-  `uv run jezz run <repo> [--model antigravity:<slug>] --mandate mandate.json`
+  `uv run jezz run <repo> [--model antigravity:<slug>] [--gate-timeout 120] --mandate mandate.json`
 - **Brownfield JBC Renovation (Full or Scoped `--ratchet`):**
-  `uv run jezz renovate <repo> [--ratchet] [--permit permit.json] --prompt "..."`
+  `uv run jezz renovate <repo> [--ratchet] [--profile standard|strict_internal]`
+  `[--permit permit.json] [--gate-timeout 120] --prompt "..."`
 - **Polyglot Differential Occupancy Ratchet:**
-  `uv run jezz inspect <repo> --changed-since HEAD` (or `--staged`)
+  `uv run jezz inspect <repo> [--profile standard|strict_internal] --changed-since HEAD`
+  (or `--staged`)
+- **Polyglot Controlled SDD-vs-PCE Benchmark:**
+  `uv run jezz benchmark <work_dir> [--language python|typescript|rust|go|all]`
+  `[--model <provider:model>]`
 """
 
 
