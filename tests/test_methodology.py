@@ -4,6 +4,8 @@ import textwrap
 from pathlib import Path
 
 import pytest
+from hypothesis import given
+from hypothesis import strategies as st
 from pydantic import ValidationError
 
 from jezz.behaviors import (
@@ -475,3 +477,23 @@ def test_sdd_laundering_exhibit_is_deterministically_red_tagged_by_jezz() -> Non
         "JBC-FLT-001",
         "JBC-VRF-001",
     } <= violated_codes
+
+
+@given(
+    prefix_num=st.integers(min_value=1, max_value=999),
+    theatre_token=st.sampled_from(
+        (
+            "As a customer, I want instant refunds",
+            "- [ ] Implement endpoint",
+            "Estimated at 8 story points",
+        )
+    ),
+)
+def test_property_validate_engineering_prose_rejects_injected_theatre(
+    prefix_num: int,
+    theatre_token: str,
+) -> None:
+    clean_clause = f"Invariant {prefix_num} preserves conservation of cents."
+    assert validate_engineering_prose(clean_clause, field_label="stmt") is None
+    with pytest.raises(ValueError):
+        validate_engineering_prose(f"{theatre_token} ({prefix_num})", field_label="stmt")

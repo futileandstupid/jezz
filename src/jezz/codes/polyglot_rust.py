@@ -93,6 +93,38 @@ _RS_UNBOUNDED_TYPE_RE: Final[re.Pattern[str]] = re.compile(
 _RS_FUEL_NAMES: Final[frozenset[str]] = frozenset(
     {"max_depth", "remaining_depth", "fuel", "depth_budget", "budget"}
 )
+_RS_GUARD_MACROS: Final[frozenset[str]] = frozenset(
+    {
+        "assert",
+        "assert_eq",
+        "assert_ne",
+        "debug_assert",
+        "debug_assert_eq",
+        "debug_assert_ne",
+        "ensure",
+        "bail",
+    }
+)
+_RS_GUARD_CALL_TAILS: Final[frozenset[str]] = frozenset(
+    {
+        "validate",
+        "is_empty",
+        "is_finite",
+        "is_nan",
+        "is_infinite",
+        "checked_add",
+        "checked_sub",
+        "checked_mul",
+        "checked_div",
+        "checked_rem",
+        "saturating_add",
+        "saturating_sub",
+        "clamp",
+        "parse",
+        "try_from",
+        "from_str",
+    }
+)
 _RS_UNBOUNDED_FS_CALLS: Final[frozenset[str]] = frozenset(
     {"std::fs::read_to_string", "fs::read_to_string", "std::fs::read", "fs::read"}
 )
@@ -287,35 +319,75 @@ def _rs_callee_name(call_node: ts.Node) -> str:
     return re.sub(r"\s+", "", node_text(fn))[:256]
 
 
-def _rs_body_has_guard(body_node: ts.Node | None, has_params: bool) -> bool:
-    if not has_params or body_node is None:
-        return True
-    txt = node_text(body_node)
-    markers = (
-        "assert!",
-        "debug_assert!",
-        "ensure!",
-        ".validate(",
-        "Err(",
-        ".is_empty()",
-        ".is_finite()",
-    )
-    if any(k in txt for k in markers):
-        return True
-    return any(
-        sub.type in {"if_expression", "match_expression"}
-        for sub in iter_local_cst_nodes(body_node, _RS_SCOPE_BOUNDARIES)
-    )
+def _identifiers_in_rs_node(node: ts.Node | None) -> set[str]:
+    if node is None:
+        return set()
+    return {node_text(i) for i in iter_cst_nodes(node) if i.type == "identifier"}
 
 
-def _extract_rs_param(param_node: ts.Node, guarded_fn: bool) -> PolyglotParam | None:
+def _is_non_vacuous_rs_guard_macro(sub: ts.Node) -> bool:
+    m_node = sub.child_by_field_name("macro")
+    m_name = node_text(m_node).strip() if m_node is not None else ""
+    if m_name not in _RS_GUARD_MACROS:
+        return False
+    compact = re.sub(r"\s+", "", node_text(sub))
+    return compact not in {f"{m_name}!(true)", f"{m_name}!(false)"}
+
+
+def _record_rs_guard_node(
+    sub: ts.Node,
+    guarded: set[str],
+    deps: dict[str, set[str]],
+) -> None:
+    if sub.type in {"if_expression", "match_expression"}:
+        cond = sub.child_by_field_name("condition") or sub.child_by_field_name("value")
+        guarded |= _identifiers_in_rs_node(cond)
+        return
+    if sub.type == "try_expression" or (
+        sub.type == "macro_invocation" and _is_non_vacuous_rs_guard_macro(sub)
+    ):
+        guarded |= _identifiers_in_rs_node(sub)
+        return
+    if sub.type == "call_expression":
+        tail = _rs_callee_name(sub).rsplit(".", maxsplit=1)[-1].rsplit("::", maxsplit=1)[-1]
+        if tail in _RS_GUARD_CALL_TAILS:
+            guarded |= _identifiers_in_rs_node(sub)
+        return
+    if sub.type in {"let_declaration", "assignment_expression"}:
+        lhs_node = sub.child_by_field_name("pattern") or sub.child_by_field_name("left")
+        rhs_node = sub.child_by_field_name("value") or sub.child_by_field_name("right")
+        rhs_ids = _identifiers_in_rs_node(rhs_node)
+        for lhs in _identifiers_in_rs_node(lhs_node):
+            deps.setdefault(lhs, set()).update(rhs_ids)
+
+
+def _collect_rs_guarded_identifiers(body_node: ts.Node | None) -> frozenset[str]:
+    if body_node is None:
+        return frozenset()
+    guarded: set[str] = set()
+    deps: dict[str, set[str]] = {}
+    for sub in iter_local_cst_nodes(body_node, _RS_SCOPE_BOUNDARIES):
+        _record_rs_guard_node(sub, guarded, deps)
+    for _ in range(4):
+        extra = {src for lhs in list(guarded) for src in deps.get(lhs, ()) if src not in guarded}
+        if not extra:
+            break
+        guarded |= extra
+    return frozenset(guarded)
+
+
+def _extract_rs_param(
+    param_node: ts.Node,
+    guarded_idents: frozenset[str],
+) -> PolyglotParam | None:
     pat = param_node.child_by_field_name("pattern")
     t_node = param_node.child_by_field_name("type")
     if pat is None or t_node is None:
         return None
     p_name = node_text(pat).replace("mut ", "").strip().lstrip("&")[:256] or "arg"
     t_txt = node_text(t_node).strip()
-    unbounded = not guarded_fn and _RS_UNBOUNDED_TYPE_RE.match(t_txt) is not None
+    is_guarded = p_name in guarded_idents
+    unbounded = (not is_guarded) and _RS_UNBOUNDED_TYPE_RE.match(t_txt) is not None
     return PolyglotParam(
         name=p_name,
         has_type=True,
@@ -326,12 +398,6 @@ def _extract_rs_param(param_node: ts.Node, guarded_fn: bool) -> PolyglotParam | 
         line=max(1, param_node.start_point.row + 1),
         column=max(0, param_node.start_point.column),
     )
-
-
-def _identifiers_in_rs_node(node: ts.Node | None) -> set[str]:
-    if node is None:
-        return set()
-    return {node_text(i) for i in iter_cst_nodes(node) if i.type == "identifier"}
 
 
 def _record_rs_macro_fact(
@@ -446,14 +512,28 @@ def _rs_body_has_test_assertion(body_node: ts.Node | None, calls: tuple[str, ...
 def _extract_rs_params_and_self(
     params_node: ts.Node | None,
     body_node: ts.Node | None,
-) -> tuple[bool, bool, tuple[PolyglotParam, ...]]:
+) -> tuple[bool, frozenset[str], tuple[PolyglotParam, ...]]:
     if params_node is None:
-        return False, True, ()
+        return False, frozenset(), ()
     has_self = any(c.type == "self_parameter" for c in params_node.named_children)
     raw_params = [c for c in params_node.named_children if c.type == "parameter"]
-    guarded_fn = _rs_body_has_guard(body_node, bool(raw_params))
-    params = tuple(p for raw in raw_params if (p := _extract_rs_param(raw, guarded_fn)) is not None)
-    return has_self, guarded_fn, params
+    guarded_idents = _collect_rs_guarded_identifiers(body_node) if raw_params else frozenset()
+    params = tuple(
+        p for raw in raw_params if (p := _extract_rs_param(raw, guarded_idents)) is not None
+    )
+    return has_self, guarded_idents, params
+
+
+def _has_rs_boundary_contract(
+    params: tuple[PolyglotParam, ...],
+    guarded_idents: frozenset[str],
+) -> bool:
+    for param in params:
+        if param.is_unbounded_primitive:
+            return False
+        if (param.is_untyped_bag or param.has_any_erasure) and param.name not in guarded_idents:
+            return False
+    return True
 
 
 def _build_rs_callable(
@@ -470,7 +550,7 @@ def _build_rs_callable(
         any(c.type == "visibility_modifier" for c in fn_node.named_children) and fn_name != "main"
     )
     body_node = fn_node.child_by_field_name("body")
-    has_self, guarded_fn, params = _extract_rs_params_and_self(
+    has_self, guarded_idents, params = _extract_rs_params_and_self(
         fn_node.child_by_field_name("parameters"), body_node
     )
     param_names = frozenset(p.name for p in params)
@@ -486,7 +566,6 @@ def _build_rs_callable(
         if body_node is not None
         else (0, 0, 0)
     )
-    has_unb = any(p.is_unbounded_primitive for p in params)
     arg_sig = ", ".join(f"{p.name}: {p.type_text}" for p in params)
     has_assert = (
         has_should_panic or _rs_body_has_test_assertion(body_node, calls) if is_test_fn else True
@@ -505,7 +584,7 @@ def _build_rs_callable(
         return_type_text=ret_txt[:256],
         return_has_any_erasure=_RS_ANY_RE.search(ret_txt) is not None,
         return_is_untyped_bag=_RS_BAG_RE.search(ret_txt) is not None,
-        has_boundary_contract=guarded_fn or not has_unb,
+        has_boundary_contract=_has_rs_boundary_contract(params, guarded_idents),
         cognitive_complexity=cc,
         max_nesting_depth=depth,
         statement_count=stmts,
@@ -898,6 +977,36 @@ def _check_rs_call_err_handling(
     return out
 
 
+def _enclosing_rs_fn_body(node: ts.Node) -> ts.Node | None:
+    curr = node.parent
+    budget = LoopBudget(max_steps=128)
+    while curr is not None:
+        budget.tick()
+        if curr.type in {"function_item", "closure_expression"}:
+            return curr.child_by_field_name("body")
+        curr = curr.parent
+    return None
+
+
+def _rs_arg_is_formatted_sql_alias(call: ts.Node, args_txt: str) -> bool:
+    if "format!(" in args_txt:
+        return True
+    args_node = call.child_by_field_name("arguments")
+    if args_node is None or not args_node.named_children:
+        return False
+    first_ids = _identifiers_in_rs_node(args_node.named_children[0])
+    body = _enclosing_rs_fn_body(call)
+    if not first_ids or body is None:
+        return False
+    for sub in iter_local_cst_nodes(body, _RS_SCOPE_BOUNDARIES):
+        if sub.type == "let_declaration":
+            lhs_ids = _identifiers_in_rs_node(sub.child_by_field_name("pattern"))
+            val = sub.child_by_field_name("value")
+            if (lhs_ids & first_ids) and val is not None and "format!(" in node_text(val):
+                return True
+    return False
+
+
 def _check_rs_call_injection(
     span: SourceSpan,
     call: ts.Node,
@@ -914,7 +1023,7 @@ def _check_rs_call_injection(
                 remediation="Use safe TryFrom/From conversions or checked byte parsers.",
             )
         )
-    if callee.endswith((".execute", ".query")) and "format!(" in args_txt:
+    if callee.endswith((".execute", ".query")) and _rs_arg_is_formatted_sql_alias(call, args_txt):
         out.append(
             RawDiscrepancy(
                 code_id="JBC-SEC-001",

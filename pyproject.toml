@@ -4,9 +4,11 @@ build-backend = "hatchling.build"
 
 [project]
 name = "jezz"
-version = "0.2.0"
+version = "0.3.0"
 description = "Formalized agent behavior basis, enforceable software building codes, and Pydantic AI runtime."
 readme = "README.md"
+license = "Apache-2.0"
+license-files = ["LICENSE"]
 requires-python = ">=3.14"
 keywords = [
     "coding-agents",
@@ -52,6 +54,7 @@ dev = [
     "mypy>=2.4.1",
     "pytest>=9.2.0",
     "pytest-asyncio>=1.5.0",
+    "pytest-cov>=7.1.0",
     "ruff>=0.17.6",
 ]
 
@@ -75,6 +78,18 @@ line-length = 100
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "B", "UP", "SIM", "RUF"]
+
+[tool.coverage.run]
+source = ["jezz"]
+branch = false
+
+[tool.coverage.report]
+show_missing = true
+exclude_also = [
+    "if TYPE_CHECKING:",
+    "^\\s*\\.\\.\\.\\s*$",
+    "if __name__ == .__main__.:",
+]
 
 [tool.jezz.models]
 default = "google:gemini-3.8-flash"

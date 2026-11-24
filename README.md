@@ -27,15 +27,16 @@
 - **[Track 10 — Zero-Credential `antigravity:<model>` Adapter & Cross-Provider Empirical Benchmark](docs/track-10-cross-provider-benchmark.md):** Zero-API-key `AntigravityCliModel` (`antigravity:claude-opus-5-5-medium`, `antigravity:claude-sonnet-5-5-medium`, `antigravity:gpt-oss-120b-medium`), `640 / 640` offline cross-provider wire probes, and `19` live workspace builds (`Waves 10A & 10B`) confirming Wave 4D's "Over-Specified Prose Drift" on Anthropic Claude (`Opus 5.5` bloated SDD specs `+80.5%` and *increased* `JBC` violations `+34.3%`, `0 / 8` occupiable across all SDD builds) while `jezz` `PCE` achieved `100%` `JBC` v1.2 occupancy across Claude (`Sonnet 5.5` and `Opus 5.5 + Sonnet 5.5`), `GPT-OSS 120B`, and Gemini (`-34.0%` faster than SDD on tiered Claude with `49.6%–57.8%` cache hit ratios).
 - **[Track 11 — External Brownfield OSS Renovation Crucible (`jezz renovate --ratchet`)](docs/track-11-brownfield-renovation-crucible.md):** Differential Final Occupancy Ratchet (`inspect_differential_final`, `--ratchet`, `ratchet_scoped`), monorepo unit/preview calibrations (`Calibrations 11A–11C`), and `3 / 3` (`100%`) certified & `OCCUPANCY_SEALED` surgical renovations across external Go (`go-chi/chi`), Rust (`serde-rs/json`, `APPROVED_WITH_VARIANCES`), and Python (`github/spec-kit` — `291,626` LOC, `76.9%–79.8%` cache hit ratios).
 - **[Track 12 — Turnkey Distribution, Reusable CI Gate, & `v0.2.0` Release Packaging](docs/track-12-distribution-and-ci-gate.md):** Reusable composite GitHub Action (`action.yml`, dogfooded in `.github/workflows/jbc-gate.yml`) enforcing polyglot `jezz inspect` ratchets and `jezz audit` dossier seals with zero raw `${{ inputs.* }}` shell interpolation and zero hardcoded paths (`JBC-SEC-006`).
+- **Tracks 13–17 (`v0.2.1` Statutory Hardening & `v0.3.0` Polyglot Capability Closure — [Empirical Roadmap](docs/empirical-testing-roadmap.md)):** Unified `dep_graph.py` cycle/layer kernel, `PermitProfile` (`standard` / `strict_internal`), scoped polyglot `--ratchet` gates with `(0, 600s]` `--gate-timeout` watchdogs and $O(|\Delta|)$ overlay smoke-import staging, `>=92%` CI coverage ratchet + `RuleBasedStateMachine` / 4-language parser fuzzing, multi-ecosystem `BHV-13 PROVISION` + offline polyglot `BHV-06 CONSULT` (`py:`, `npm:`, `crate:`, `go:` + confined workspace docs), parameter-bound guard/taint precision, and 12-case 4-language `jezz benchmark --language python|typescript|rust|go|all` evaluation.
 
 ## CLI Usage
 
 ```bash
 # Run polyglot JBC v1.2 Rough-In inspection (.py, .ts, .tsx, .rs, .go; exit 0 = APPROVED, 1 = RED_TAG)
-uv run jezz inspect <repo_path> [--language python|typescript|rust|go] [--permit permit.json] [--as-of YYYY-MM-DD] [--format markdown|json]
+uv run jezz inspect <repo_path> [--language python|typescript|rust|go] [--profile standard|strict_internal] [--permit permit.json] [--as-of YYYY-MM-DD] [--format markdown|json]
 
 # Differential Occupancy Ratchet: gate only Git-modified or staged source files (plus whole-repo import cycles)
-uv run jezz inspect <repo_path> (--changed-since origin/main | --staged) [--language ...] [--permit permit.json]
+uv run jezz inspect <repo_path> (--changed-since origin/main | --staged) [--language ...] [--profile standard|strict_internal] [--permit permit.json]
 
 # Audit a 5-phase PCE EngineeringDossier against compiled workspace symbols and SHA-256 digest
 uv run jezz audit <dossier.json> [--repo <repo_path>] [--format markdown|json]
@@ -44,13 +45,13 @@ uv run jezz audit <dossier.json> [--repo <repo_path>] [--format markdown|json]
 uv run jezz init [repo_path] [--plugin-scope workspace|global|none] [--pre-commit] [--overwrite]
 
 # Execute a greenfield PCE prompt or mandate (interactive TTY ELICIT + live progress + optional --plan-only review)
-uv run jezz run <repo_path> [--model <provider:model>] [--architect-model <provider:model>] [--prompt-cache auto|off|5m|1h] (--prompt "..." | --mandate mandate.json | --resume-elicitation elicit.json --clarification "...") [--plan-only --write-mandate mandate.json] [--interactive] [--progress]
+uv run jezz run <repo_path> [--model <provider:model>] [--architect-model <provider:model>] [--profile standard|strict_internal] [--gate-timeout 120] [--prompt-cache auto|off|5m|1h] (--prompt "..." | --mandate mandate.json | --resume-elicitation elicit.json --clarification "...") [--plan-only --write-mandate mandate.json] [--interactive] [--progress]
 
 # Renovate an existing brownfield repository (or scoped slice via --ratchet) to JBC v1.2 occupancy via BHV-17 REFACTOR
-uv run jezz renovate <repo_path> [--ratchet] [--permit permit.json] [--model <provider:model>] [--builder-model <provider:model>] [--prompt-cache auto|off|5m|1h] (--prompt "..." | --mandate mandate.json) [--plan-only --write-mandate mandate.json] [--write-dossier dossier.json]
+uv run jezz renovate <repo_path> [--ratchet] [--profile standard|strict_internal] [--permit permit.json] [--gate-timeout 120] [--model <provider:model>] [--builder-model <provider:model>] [--prompt-cache auto|off|5m|1h] (--prompt "..." | --mandate mandate.json) [--plan-only --write-mandate mandate.json] [--write-dossier dossier.json]
 
-# Execute controlled pydantic-evals A/B benchmark (single suite or multi-provider / cache-ablation --suite matrix)
-uv run jezz benchmark <work_dir> [--model <provider:model> | --suite <label>=<model>[@<cache>]] [--prompt-cache auto|off|5m|1h] [--max-concurrency 2] [--write-json ab.json]
+# Execute controlled pydantic-evals A/B benchmark across Python, TypeScript, Rust, Go, or all 12 tasks
+uv run jezz benchmark <work_dir> [--language python|typescript|rust|go|all] [--model <provider:model> | --suite <label>=<model>[@<cache>]] [--prompt-cache auto|off|5m|1h] [--max-concurrency 2] [--write-json ab.json]
 
 # Launch the read-only JBC v1.2 & PCE statutory MCP server or Antigravity Stop lifecycle gate over stdio
 uv run jezz mcp [--root <repo_path>]
@@ -98,17 +99,23 @@ Models prefixed with `antigravity:<slug>` execute through the local Antigravity 
 
 ```yaml
 - name: Enforce JBC Edition 1.2 Differential Occupancy Ratchet
-  uses: futileandstupid/jezz@v0.2.0
+  uses: futileandstupid/jezz@v0.3.0
   with:
     working-directory: "."
     mode: "differential" # differential | full | both
+    profile: "standard"  # standard | strict_internal
 ```
 
 ## Verification Gates
 
 ```bash
-uv run pytest
+uv run pytest --cov=jezz --cov-fail-under=92
 uv run mypy .
 uv run ruff check .
 uv run ruff format --check .
+uv run jezz inspect .
 ```
+
+## License
+
+Licensed under the [Apache License, Version 2.0](LICENSE).

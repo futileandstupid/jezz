@@ -11,6 +11,7 @@ from jezz.methodology.dossier import (
 from jezz.methodology.mandate import (
     METHODOLOGY_ACRONYM,
     METHODOLOGY_NAME,
+    ConsultTargetStr,
     DependencyRequirement,
     DependencyScope,
     DomainInvariant,
@@ -24,6 +25,7 @@ from jezz.methodology.mandate import (
 __all__ = [
     "METHODOLOGY_ACRONYM",
     "METHODOLOGY_NAME",
+    "ConsultTargetStr",
     "DependencyRequirement",
     "DependencyScope",
     "DomainInvariant",

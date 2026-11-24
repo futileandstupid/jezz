@@ -38,7 +38,7 @@ $$\Sigma = \mathcal{P} \times \mathcal{W} \times \Omega \times \mathcal{E}$$
 | `BHV-03` | `bind_codes` | `governance` | $\mathcal{P}, \mathcal{W}$ | $\mathcal{P}$ | `none` | Applicable building codes and acceptance invariants bound to scope. |
 | `BHV-04` | `inspect_code` | `epistemic` | $\mathcal{P}, \Omega$ | $\mathcal{W}$ | `none` | Grounded lexical/AST/dependency facts recorded without mutation. |
 | `BHV-05` | `inspect_env` | `epistemic` | $\mathcal{P}, \Omega$ | $\mathcal{W}$ | `none` | Toolchain, package, VCS, log, or live schema facts recorded. |
-| `BHV-06` | `consult` | `epistemic` | $\mathcal{P}, \mathcal{W}$ | $\mathcal{W}$ | `none` | External authoritative specs/docs anchored with citations. |
+| `BHV-06` | `consult` | `epistemic` | $\mathcal{P}, \mathcal{W}$ | $\mathcal{W}$ | `none` | Authoritative JBC provisions, confined workspace docs, and local polyglot package APIs (`py:`/`npm:`/`crate:`/`go:`) anchored offline with citations. |
 | `BHV-07` | `curate_memory` | `epistemic` | $\mathcal{W}, \mathcal{E}$ | $\mathcal{W}$ | `none` | Context compacted while retaining active invariants and negations. |
 | `BHV-08` | `hypothesize` | `topology` | $\mathcal{P}, \mathcal{W}, \mathcal{E}$ | $\mathcal{W}$ | `none` | Falsifiable causal model and discriminating experiment recorded. |
 | `BHV-09` | `decompose` | `topology` | $\mathcal{P}, \mathcal{W}$ | $\mathcal{P}$ | `none` | Sub-goal DAG defined with explicit interfaces and disjoint write scopes. |

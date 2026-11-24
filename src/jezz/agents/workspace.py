@@ -2,14 +2,18 @@
 
 import ast
 import contextlib
-import hashlib
 import importlib
+import importlib.abc
+import importlib.machinery
+import importlib.util
 import shutil
 import subprocess
 import sys
+import threading
 import time
 import tracemalloc
-from collections.abc import Callable, Iterator, Sequence
+import uuid
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from collections.abc import Set as AbstractSet
 from dataclasses import dataclass
 from pathlib import Path
@@ -24,7 +28,13 @@ from jezz.agents.polyglot_prompts import is_polyglot_test_path
 from jezz.agents.schemas import FilePatchArtifact
 from jezz.codes.adapters import parse_any_source_unit
 from jezz.codes.ast_graph import build_workspace_ast_graph, extract_symbol_source_slice
-from jezz.codes.ast_utils import SourceUnit, dotted_expr_name, parse_source_unit
+from jezz.codes.ast_utils import (
+    SourceUnit,
+    dotted_expr_name,
+    infer_is_test_file,
+    infer_module_name,
+    parse_source_unit,
+)
 from jezz.codes.codebook import CODE_BOOK
 from jezz.codes.discovery import discover_workspace_units
 from jezz.codes.inspector import BuildingInspector
@@ -34,9 +44,9 @@ from jezz.codes.ratchet import DifferentialScope, inspect_differential_rough_in
 from jezz.guards import (
     BoundedText,
     ContainedPath,
+    FiniteFloat,
     IdentifierStr,
     InstanceGuard,
-    LoopBudget,
     PositiveInt,
     ShortText,
     SourceCodeText,
@@ -47,6 +57,12 @@ from jezz.methodology.dossier import extract_compiled_symbols
 from jezz.methodology.mandate import DomainInvariant, EngineeringMandate, ModuleWriteScope
 
 type DynamicCheckFn = Callable[["WorkspaceSandbox", Sequence[InspectedUnit]], PositiveInt]
+type GateTimeoutSec = Annotated[FiniteFloat, Field(gt=0.0, le=600.0)]
+type GuardedModuleSpec = Annotated[
+    importlib.machinery.ModuleSpec,
+    InstanceGuard(importlib.machinery.ModuleSpec),
+]
+_IMPORT_SMOKE_LOCK: Final[threading.Lock] = threading.Lock()
 
 
 def _write_contained_utf8(target: ContainedPath, content: str) -> None:
@@ -296,7 +312,7 @@ class UvSubprocessGateRunner:
     @jezz_callable
     def __init__(
         self,
-        timeout_sec: Annotated[float, Field(gt=0.0, le=60.0, allow_inf_nan=False)] = 30.0,
+        timeout_sec: GateTimeoutSec = 30.0,
         *,
         ratchet_to_scope: bool = False,
     ) -> None:
@@ -311,6 +327,7 @@ class UvSubprocessGateRunner:
         args: tuple[str, ...],
         fallback_checks: int,
     ) -> GateAttestation:
+        ceil_ms = max(60_000.0, self._timeout_sec * 1000.0)
         t0 = time.perf_counter()
         try:
             proc = subprocess.run(
@@ -329,6 +346,7 @@ class UvSubprocessGateRunner:
                 exit_code=124,
                 checks_executed=max(1, fallback_checks),
                 duration_ms=self._timeout_sec * 1000.0,
+                max_duration_ms=ceil_ms,
                 peak_memory_kb=1024,
                 summary=f"Gate '{tool_name}' exceeded {self._timeout_sec:.1f}s timeout.",
             )
@@ -341,6 +359,7 @@ class UvSubprocessGateRunner:
             exit_code=proc.returncode,
             checks_executed=max(1, fallback_checks),
             duration_ms=elapsed_ms,
+            max_duration_ms=ceil_ms,
             peak_memory_kb=1024,
             summary=raw_out,
         )
@@ -351,9 +370,22 @@ class UvSubprocessGateRunner:
         sandbox: WorkspaceSandbox,
         units: Sequence[InspectedUnit],
     ) -> tuple[GateAttestation, ...]:
-        """Run ``uv run pytest`` and ``uv run mypy .`` with finite timeouts."""
+        """Run ``uv run pytest`` and ``uv run mypy`` within finite watchdogs."""
         count = max(1, len(units))
-        scoped_py = tuple(sorted(p for p in sandbox.authorized_files if p.endswith(".py")))
+        scoped_py = tuple(
+            sorted(
+                p
+                for p in sandbox.authorized_files
+                if p.endswith(".py")
+                and ContainedPath.from_parts(sandbox.repo_root, p).resolved_path.is_file()
+            )
+        )
+        scoped_tests = tuple(p for p in scoped_py if infer_is_test_file(p))
+        pytest_args = (
+            ("pytest", "-q", "--tb=short", "--no-header", *scoped_tests)
+            if (self._ratchet_to_scope and scoped_tests)
+            else ("pytest", "-q", "--tb=short", "--no-header")
+        )
         mypy_args = (
             ("mypy", "--follow-imports=silent", *scoped_py)
             if (self._ratchet_to_scope and scoped_py)
@@ -364,7 +396,7 @@ class UvSubprocessGateRunner:
                 sandbox.repo_root,
                 GateKind.DYNAMIC_SUITE,
                 "pytest",
-                ("pytest", "-q", "--tb=short", "--no-header"),
+                pytest_args,
                 count,
             ),
             self._run_uv_gate(sandbox.repo_root, GateKind.STATIC_TYPES, "mypy", mypy_args, count),
@@ -434,50 +466,134 @@ _RUNTIME_IMPORT_ERRORS = (
 )
 
 
-def _ensure_pkg_inits(src_root: Path, written_file: Path) -> None:
-    curr = written_file.parent
-    budget = LoopBudget(max_steps=64)
-    while curr != src_root and curr.is_relative_to(src_root):
-        budget.tick()
-        rel_init = (curr / "__init__.py").relative_to(src_root).as_posix()
-        init_contained = ContainedPath.from_parts(src_root, rel_init)
-        if not init_contained.resolved_path.exists():
-            _write_contained_utf8(init_contained, '"""Staged package."""\n')
-        curr = curr.parent
+@dataclass(frozen=True)
+class _StagedOverlayEntry:
+    """Staged candidate module file and optional package search locations."""
+
+    staged_file: str
+    search_dirs: tuple[str, ...] = ()
+    is_package: bool = False
 
 
-def _stage_candidate_src_tree(
+class _OverlayPatchFinder(importlib.abc.MetaPathFinder):
+    """MetaPathFinder resolving staged candidate modules while delegating siblings to disk."""
+
+    def __init__(self, entries: Mapping[str, _StagedOverlayEntry]) -> None:
+        self._entries: dict[str, _StagedOverlayEntry] = dict(entries)
+
+    @jezz_callable
+    def find_spec(
+        self,
+        fullname: Annotated[str, Field(max_length=1024)],
+        path: Sequence[BoundedText] | None,
+        target: Annotated[ModuleType, InstanceGuard(ModuleType)] | None = None,
+    ) -> GuardedModuleSpec | None:
+        _ = path, target
+        entry = self._entries.get(fullname)
+        if entry is None:
+            return None
+        locs = list(entry.search_dirs) if entry.is_package else None
+        return importlib.util.spec_from_file_location(
+            fullname,
+            entry.staged_file,
+            submodule_search_locations=locs,
+        )
+
+
+def _is_importable_module_name(mod_name: str) -> bool:
+    return bool(mod_name) and all(part.isidentifier() for part in mod_name.split("."))
+
+
+def _patch_base_dirs(repo_root: Path, stage_root: Path, rel_path: str) -> tuple[Path, Path]:
+    if rel_path.startswith("src/"):
+        return (
+            ContainedPath.from_parts(stage_root, "src").resolved_path,
+            ContainedPath.from_parts(repo_root, "src").resolved_path,
+        )
+    return stage_root, repo_root.resolve()
+
+
+def _register_missing_ancestors(
+    mod_name: str,
+    stage_base: Path,
+    orig_base: Path,
+    entries: dict[str, _StagedOverlayEntry],
+) -> None:
+    parts = mod_name.split(".")[:-1]
+    for idx in range(1, len(parts) + 1):
+        anc = ".".join(parts[:idx])
+        if anc in entries:
+            continue
+        rel_dir = "/".join(parts[:idx])
+        orig_dir = ContainedPath.from_parts(orig_base, rel_dir).resolved_path
+        if ContainedPath.from_parts(orig_dir, "__init__.py").resolved_path.is_file():
+            continue
+        stage_dir = ContainedPath.from_parts(stage_base, rel_dir).resolved_path
+        stage_init = ContainedPath.from_parts(stage_dir, "__init__.py")
+        _write_contained_utf8(stage_init, '"""Staged package."""\n')
+        dirs = (str(stage_dir), str(orig_dir)) if orig_dir.is_dir() else (str(stage_dir),)
+        entries[anc] = _StagedOverlayEntry(
+            staged_file=str(stage_init.resolved_path),
+            search_dirs=dirs,
+            is_package=True,
+        )
+
+
+@dataclass(frozen=True)
+class _OverlayStagePlan:
+    """Materialized O(|patches|) staging directory and MetaPathFinder overlay map."""
+
+    stage_dir: ContainedPath
+    entries: dict[str, _StagedOverlayEntry]
+    roots: tuple[str, ...]
+    mod_pairs: tuple[tuple[str, str], ...]
+    sys_roots: tuple[str, ...]
+
+
+def _stage_overlay_patches(
     repo_root: Path,
-    src_patches: Sequence[FilePatchArtifact],
-) -> tuple[ContainedPath, tuple[str, ...], tuple[tuple[str, str], ...]]:
-    hasher = hashlib.sha256()
-    for p in src_patches:
-        hasher.update(p.file_path.encode("utf-8"))
-    stage = ContainedPath.from_parts(repo_root, f".jezz_smoke_{hasher.hexdigest()[:12]}")
+    py_patches: Sequence[FilePatchArtifact],
+) -> _OverlayStagePlan:
+    stage = ContainedPath.from_parts(repo_root, f".jezz_smoke_{uuid.uuid4().hex[:12]}")
     if stage.resolved_path.exists():
         shutil.rmtree(stage.resolved_path)
-    stage_src = ContainedPath.from_parts(stage.resolved_path, "src")
-    stage_src.resolved_path.mkdir(parents=True, exist_ok=True)
+    stage.resolved_path.mkdir(parents=True, exist_ok=True)
 
-    orig_src = ContainedPath.from_parts(repo_root, "src")
-    if orig_src.resolved_path.is_dir():
-        for existing in sorted(orig_src.resolved_path.rglob("*.py")):
-            rel = existing.relative_to(repo_root).as_posix()
-            src_contained = ContainedPath.from_parts(repo_root, rel)
-            dst_contained = ContainedPath.from_parts(stage.resolved_path, rel)
-            _write_contained_utf8(dst_contained, read_bounded_text(src_contained))
-
+    entries: dict[str, _StagedOverlayEntry] = {}
     roots: set[str] = set()
     mod_pairs: list[tuple[str, str]] = []
-    for patch in src_patches:
+    sys_roots: list[str] = []
+
+    for patch in py_patches:
+        parse_source_unit(patch.file_path, patch.source_code)
+        mod_name = infer_module_name(patch.file_path)
+        if not _is_importable_module_name(mod_name):
+            continue
         dst = ContainedPath.from_parts(stage.resolved_path, patch.file_path)
         _write_contained_utf8(dst, patch.source_code)
-        _ensure_pkg_inits(stage_src.resolved_path, dst.resolved_path)
-        unit = parse_source_unit(patch.file_path, patch.source_code)
-        if unit.module_name:
-            roots.add(unit.module_name.split(".", maxsplit=1)[0])
-            mod_pairs.append((patch.file_path, unit.module_name))
-    return stage, tuple(sorted(roots)), tuple(mod_pairs)
+        stage_base, orig_base = _patch_base_dirs(repo_root, stage.resolved_path, patch.file_path)
+        _register_missing_ancestors(mod_name, stage_base, orig_base, entries)
+        is_pkg = patch.file_path.endswith("/__init__.py") or patch.file_path == "__init__.py"
+        orig_pkg_dir = ContainedPath.from_parts(repo_root, patch.file_path).resolved_path.parent
+        dirs = (str(dst.resolved_path.parent), str(orig_pkg_dir)) if is_pkg else ()
+        entries[mod_name] = _StagedOverlayEntry(
+            staged_file=str(dst.resolved_path),
+            search_dirs=dirs,
+            is_package=is_pkg,
+        )
+        roots.add(mod_name.split(".", maxsplit=1)[0])
+        mod_pairs.append((patch.file_path, mod_name))
+        orig_str = str(orig_base)
+        if orig_base.is_dir() and orig_str not in sys_roots:
+            sys_roots.append(orig_str)
+
+    return _OverlayStagePlan(
+        stage_dir=stage,
+        entries=entries,
+        roots=tuple(sorted(roots)),
+        mod_pairs=tuple(mod_pairs),
+        sys_roots=tuple(sys_roots),
+    )
 
 
 def _evict_staged_modules(roots: Sequence[str]) -> None:
@@ -524,21 +640,61 @@ def _discover_workspace_site_packages(repo_root: Path) -> list[str]:
 def _with_workspace_sys_path(
     repo_root: Path,
     *,
-    stage_src: str | None = None,
+    extra_sys_paths: Sequence[str] = (),
+    finder: importlib.abc.MetaPathFinder | None = None,
 ) -> Iterator[None]:
-    added = _discover_workspace_site_packages(repo_root)
-    if stage_src is not None:
-        added = [stage_src, *added]
-    for item in reversed(added):
+    added_paths = [p for p in extra_sys_paths if p not in sys.path]
+    for sp in _discover_workspace_site_packages(repo_root):
+        if sp not in added_paths:
+            added_paths.append(sp)
+    for item in reversed(added_paths):
         sys.path.insert(0, item)
-    if added:
+    if finder is not None:
+        sys.meta_path.insert(0, finder)
+    if added_paths or finder is not None:
         importlib.invalidate_caches()
     try:
         yield
     finally:
-        for item in added:
+        if finder is not None and finder in sys.meta_path:
+            sys.meta_path.remove(finder)
+        for item in added_paths:
             if item in sys.path:
                 sys.path.remove(item)
+
+
+def _execute_overlay_imports(
+    repo_root: Path,
+    plan: _OverlayStagePlan,
+    *,
+    ignore_missing_local_imports: bool,
+) -> ShortText | None:
+    finder = _OverlayPatchFinder(plan.entries)
+    with _IMPORT_SMOKE_LOCK:
+        _evict_staged_modules(plan.roots)
+        try:
+            with _with_workspace_sys_path(
+                repo_root,
+                extra_sys_paths=plan.sys_roots,
+                finder=finder,
+            ):
+                for rel_path, mod_name in plan.mod_pairs:
+                    try:
+                        loaded = importlib.import_module(mod_name)
+                        _rebuild_module_models(loaded)
+                    except _RUNTIME_IMPORT_ERRORS as exc:
+                        if _is_ignorable_missing_sibling(
+                            exc, plan.roots, ignore_missing_local_imports
+                        ):
+                            continue
+                        detail = str(exc).splitlines()[0][:260] if str(exc) else type(exc).__name__
+                        return (
+                            f"Runtime import/schema error in '{rel_path}': "
+                            f"{type(exc).__name__}: {detail}"
+                        )
+        finally:
+            _evict_staged_modules(plan.roots)
+    return None
 
 
 @jezz_callable
@@ -548,34 +704,24 @@ def verify_runtime_importable_patches(
     *,
     ignore_missing_local_imports: bool = False,
 ) -> ShortText | None:
-    """Import candidate ``src/`` patches in an isolated staging dir and rebuild BaseModels."""
-    src_patches = [
-        p for p in patches if p.file_path.startswith("src/") and p.file_path.endswith(".py")
+    """Import candidate Python patches via O(|patches|) overlay staging and rebuild models."""
+    py_patches = [
+        p for p in patches if p.file_path.endswith(".py") and not infer_is_test_file(p.file_path)
     ]
-    if not src_patches:
+    if not py_patches:
         return None
-    stage, roots, mod_pairs = _stage_candidate_src_tree(sandbox.repo_root, src_patches)
-    stage_src_str = str(ContainedPath.from_parts(stage.resolved_path, "src").resolved_path)
-    _evict_staged_modules(roots)
+    plan = _stage_overlay_patches(sandbox.repo_root, py_patches)
     try:
-        with _with_workspace_sys_path(sandbox.repo_root, stage_src=stage_src_str):
-            for rel_path, mod_name in mod_pairs:
-                try:
-                    loaded = importlib.import_module(mod_name)
-                    _rebuild_module_models(loaded)
-                except _RUNTIME_IMPORT_ERRORS as exc:
-                    if _is_ignorable_missing_sibling(exc, roots, ignore_missing_local_imports):
-                        continue
-                    detail = str(exc).splitlines()[0][:260] if str(exc) else type(exc).__name__
-                    return (
-                        f"Runtime import/schema error in '{rel_path}': "
-                        f"{type(exc).__name__}: {detail}"
-                    )
+        if not plan.mod_pairs:
+            return None
+        return _execute_overlay_imports(
+            sandbox.repo_root,
+            plan,
+            ignore_missing_local_imports=ignore_missing_local_imports,
+        )
     finally:
-        _evict_staged_modules(roots)
-        if stage.resolved_path.exists():
-            shutil.rmtree(stage.resolved_path)
-    return None
+        if plan.stage_dir.resolved_path.exists():
+            shutil.rmtree(plan.stage_dir.resolved_path)
 
 
 _JEZZ_PEP695_ALIASES: Final[frozenset[str]] = frozenset(
@@ -765,7 +911,7 @@ def _preview_python_runtime_gates(
     alias_err = find_type_alias_misuse((unit,), workspace_units)
     if alias_err is not None:
         return f"RED_TAG (type alias misuse): {alias_err}"
-    if not unit.file_path.startswith("src/"):
+    if unit.is_test_file or infer_is_test_file(unit.file_path):
         return None
     probe = FilePatchArtifact(
         file_path=unit.file_path,

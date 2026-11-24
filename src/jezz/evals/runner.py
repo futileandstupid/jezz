@@ -1,4 +1,4 @@
-"""Track 4: Controlled A/B benchmark runner executing SDD Control vs. Jezz PCE Treatment."""
+"""Track 4 & 17: Controlled A/B benchmark runner executing SDD Control vs. Jezz PCE Treatment."""
 
 import time
 from collections.abc import Callable, Sequence
@@ -12,15 +12,13 @@ from pydantic_ai.exceptions import AgentRunError, ModelAPIError, UserError
 from pydantic_evals import increment_eval_metric, set_eval_attribute
 
 from jezz.agents.orchestrator import PceWorkflowOrchestrator
+from jezz.agents.polyglot_gates import PolyglotSubprocessGateRunner
 from jezz.agents.schemas import PceRunStatus, PceRuntimeBudget
 from jezz.agents.specialists import GuardedModel, PceModelSuite, uniform_model_suite
-from jezz.agents.workspace import (
-    DynamicGatePort,
-    InProcessGateRunner,
-    UvSubprocessGateRunner,
-)
+from jezz.agents.workspace import DynamicGatePort, InProcessGateRunner
 from jezz.behaviors.taxonomy import BehaviorKind
 from jezz.codes.inspector import BuildingInspector, ManifestDependencies
+from jezz.codes.polyglot_ir import EcosystemManifest, PolyglotManifest, SupportedLanguage
 from jezz.evals.evaluators import GuardedDataset, build_track4_dataset
 from jezz.evals.schemas import (
     AbBenchmarkComparison,
@@ -98,7 +96,7 @@ def default_harness_deps(
         else InProcessWorkspaceVerifier()
     )
     gate_runner: DynamicGatePort = (
-        UvSubprocessGateRunner(timeout_sec=45.0)
+        PolyglotSubprocessGateRunner(timeout_sec=45.0)
         if cfg.sync_workspace_venv
         else InProcessGateRunner()
     )
@@ -148,6 +146,7 @@ async def run_sdd_control_case(
         task.package_name,
         deps.jezz_root,
         sync_venv=deps.config.sync_workspace_venv,
+        language=task.language,
     )
     arch_model, impl_model = _resolve_sdd_arm_models(model, deps)
     t0 = time.perf_counter()
@@ -192,14 +191,48 @@ async def run_sdd_control_case(
     return outcome
 
 
-def _build_pce_inspector(ws_path: Path, package_name: str) -> BuildingInspector:
-    base = BuildingInspector.from_workspace(ws_path)
-    manifest = ManifestDependencies(
-        runtime_roots=base.manifest.runtime_roots,
-        dev_roots=base.manifest.dev_roots,
-        workspace_roots=frozenset(base.manifest.workspace_roots | {package_name, "tests"}),
+def _with_extra_workspace_root(eco: EcosystemManifest, pkg_name: str) -> EcosystemManifest:
+    return EcosystemManifest(
+        runtime_roots=eco.runtime_roots,
+        dev_roots=eco.dev_roots,
+        workspace_roots=frozenset(eco.workspace_roots | {pkg_name, "src", "tests"}),
+        module_prefix=eco.module_prefix,
     )
-    return BuildingInspector(manifest=manifest)
+
+
+def _build_pce_inspector(
+    ws_path: Path,
+    package_name: str,
+    language: SupportedLanguage = SupportedLanguage.PYTHON,
+) -> BuildingInspector:
+    base = BuildingInspector.from_workspace(ws_path)
+    if language == SupportedLanguage.PYTHON:
+        manifest = ManifestDependencies(
+            runtime_roots=base.manifest.runtime_roots,
+            dev_roots=base.manifest.dev_roots,
+            workspace_roots=frozenset(base.manifest.workspace_roots | {package_name, "tests"}),
+        )
+        return BuildingInspector(manifest=manifest)
+    poly = base.polyglot_manifest
+    enriched = PolyglotManifest(
+        python=poly.python,
+        typescript=(
+            _with_extra_workspace_root(poly.typescript, package_name)
+            if language == SupportedLanguage.TYPESCRIPT
+            else poly.typescript
+        ),
+        rust=(
+            _with_extra_workspace_root(poly.rust, package_name)
+            if language == SupportedLanguage.RUST
+            else poly.rust
+        ),
+        go=(
+            _with_extra_workspace_root(poly.go, package_name)
+            if language == SupportedLanguage.GO
+            else poly.go
+        ),
+    )
+    return BuildingInspector(manifest=base.manifest, polyglot_manifest=enriched)
 
 
 def _build_isolated_model_suite(
@@ -239,6 +272,7 @@ async def run_pce_treatment_case(
         task.package_name,
         deps.jezz_root,
         sync_venv=deps.config.sync_workspace_venv,
+        language=task.language,
     )
     mandate_lines = len(task.mandate.model_dump_json(indent=2).splitlines())
     synth_cap = (
@@ -261,7 +295,7 @@ async def run_pce_treatment_case(
     )
     orchestrator = PceWorkflowOrchestrator(
         _build_isolated_model_suite(model, deps),
-        inspector=_build_pce_inspector(ws.resolved_path, task.package_name),
+        inspector=_build_pce_inspector(ws.resolved_path, task.package_name, task.language),
         gate_runner=deps.gate_runner,
         budget=budget,
     )
@@ -425,7 +459,7 @@ def format_ab_benchmark_markdown(comparison: AbBenchmarkComparison) -> BoundedTe
         f"/ `{t.effective_billed_input_tokens:,.0f}`"
     )
     lines = [
-        f"# Track 4 Controlled A/B Benchmark — `{comparison.model_label}`",
+        f"# Controlled A/B Benchmark — `{comparison.model_label}`",
         "",
         "## Aggregate Comparison (`Control: Prose SDD` vs. `Treatment: Jezz PCE`)",
         "",
@@ -446,9 +480,9 @@ def format_ab_benchmark_markdown(comparison: AbBenchmarkComparison) -> BoundedTe
             f"`{c.total_life_safety_violations}` / `{c.total_jbc_violations}`",
             f"`{t.total_life_safety_violations}` / `{t.total_jbc_violations}`",
         ),
-        _metric_row("Held-Out `Hypothesis` Oracle Pass Rate", c_orc, t_orc),
+        _metric_row("Held-Out Property Oracle Pass Rate", c_orc, t_orc),
         _metric_row(
-            "`mypy --strict` Pass Rate",
+            "Static Typecheck Pass Rate",
             f"`{c.cases_mypy_strict_passed}/{c.cases_total}`",
             f"`{t.cases_mypy_strict_passed}/{t.cases_total}`",
         ),

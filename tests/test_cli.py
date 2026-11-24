@@ -5,6 +5,8 @@ import textwrap
 from pathlib import Path
 
 import pytest
+from hypothesis import given
+from hypothesis import strategies as st
 from pydantic_ai.exceptions import UsageLimitExceeded
 from pydantic_ai.messages import ModelMessage, ModelResponse, ToolCallPart
 from pydantic_ai.models.function import AgentInfo, FunctionModel
@@ -481,3 +483,15 @@ def test_cli_run_formats_empty_timeout_and_usage_limit_errors_cleanly(
     )
     assert code_limit == 2
     assert "Exceeded request_limit" in err_limit.getvalue()
+
+
+@given(
+    flag_suffix=st.from_regex(r"[a-z][a-z0-9]{2,10}", fullmatch=True),
+)
+def test_property_cli_unknown_flags_always_exit_two_without_crash(
+    flag_suffix: str,
+) -> None:
+    err_buf = io.StringIO()
+    exit_code = main([f"--unknown-{flag_suffix}"], stderr=err_buf)
+    assert exit_code == 2
+    assert err_buf.getvalue() != ""

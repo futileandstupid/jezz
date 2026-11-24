@@ -113,3 +113,43 @@ With Pillars 1–4 implemented, self-audited, and passing (`jezz.behaviors`, `je
 **Goal:** Package `jezz` `v0.2.0` with a reusable composite GitHub Action (`action.yml`) so external Python, TypeScript, Rust, and Go repositories can enforce `JBC` Edition `1.2` Differential Occupancy Ratchets and `PCE` Dossier seals in CI/CD with a single step.
 
 - **Report & Verification:** [track-12-distribution-and-ci-gate.md](track-12-distribution-and-ci-gate.md) — Shipped `action.yml` (dogfooded via `uses: ./` in `.github/workflows/jbc-gate.yml`), synchronized `"0.2.0"` across `pyproject.toml`, `src/jezz/__init__.py`, and `src/jezz/mcp_server.py`, and verified end-to-end composite gate execution, `$GITHUB_STEP_SUMMARY` rendering, and zero shell-interpolation / hardcoded-path hazards (`tests/test_track12_packaging_and_action.py`).
+
+---
+
+## Track 13 — Shared Graph Kernel, `PermitProfile` Thresholds, & `Apache-2.0` Release Pipeline (`v0.2.1`) — *Completed*
+
+**Goal:** Consolidate duplicated import-cycle and topological layering logic across Python and polyglot analyzers, expose configurable `JBC-COG-001` / `JBC-COG-002` complexity profiles (`PermitProfile.STANDARD` vs. `PermitProfile.STRICT_INTERNAL`), eliminate unpinned runtime `uvx` fetches inside `action.yml`, and ship tag-triggered `sdist` / `wheel` / PyPI Trusted Publisher release workflows under `Apache-2.0`.
+
+- **Verification:** Unified `src/jezz/codes/dep_graph.py` across `rules_cog.py`, `polyglot_rules.py`, and `ast_graph.py`; added `PermitProfile` (`--profile standard|strict_internal` on `jezz inspect`, `run`, `renovate`, and `action.yml`); pinned `action.yml` directly to `uv run --project "${JEZZ_ACTION_PATH}"`; and verified all invariants in `tests/test_track13_profiles_and_kernel.py`.
+
+---
+
+## Track 14 — Scoped Polyglot `--ratchet` Gates, `(0, 600s]` Watchdogs, & $O(|\Delta|)$ Overlay Smoke Staging (`v0.2.1`) — *Completed*
+
+**Goal:** Scope subprocess compiler and dynamic test invocations to authorized/modified slices during `jezz renovate --ratchet`, expand configurable gate watchdogs up to `600s` (`--gate-timeout` / `[tool.jezz.gates].timeout_sec`), and replace $O(|repo|)$ Python smoke-import copies with thread-safe $O(|\Delta|)$ `sys.meta_path` overlay staging supporting both `src/` and flat package layouts.
+
+- **Verification:** Scoped `UvSubprocessGateRunner`, `TypeScriptSubprocessGateRunner`, `CargoSubprocessGateRunner` (`-p <crate>`), and `GoSubprocessGateRunner` (`./<pkg>`) under `ratchet_to_scope=True`; added `_OverlayPatchFinder` in `src/jezz/agents/workspace.py`; and verified all invariants in `tests/test_track14_ratchet_gates_and_staging.py`.
+
+---
+
+## Track 15 — `>=92%` CI Coverage Ratchet, Adapter Harnesses, Stateful `Hypothesis`, & 4-Language Parser Fuzzing (`v0.2.1`) — *Completed*
+
+**Goal:** Enforce a hard `--cov=jezz --cov-fail-under=92` statement-coverage ratchet in CI (`>=85%` per module without `# pragma: no cover` waivers), verify subprocess/HTTP/CLI boundary adapters deterministically, and expand `Hypothesis` verification to `100%` of test modules including `RuleBasedStateMachine` suites and 4-language parser crash-fuzzing.
+
+- **Verification:** Enforced `pytest-cov` in `.github/workflows/jbc-gate.yml`, documented host-tool workspace boundaries on `AntigravityCliModel`, verified adapter contracts in `tests/test_track15_adapter_coverage.py`, and verified stateful `WorkspaceSandbox` / `CodePermit` machines plus Python/TS/Rust/Go parser fuzzing in `tests/test_track15_stateful_and_parser_fuzz.py`.
+
+---
+
+## Track 16 — Multi-Ecosystem `PROVISION`, Offline Polyglot `BHV-06 CONSULT`, & Parameter-Bound Guard / Taint Precision (`v0.3.0`) — *Completed*
+
+**Goal:** Support multi-ecosystem `DependencyRequirement` provisioning and atomic manifest rollback within a single mandate, generalize deterministic offline `BHV-06 CONSULT` across confined workspace docs and `py:`/`npm:`/`crate:`/`go:` package signatures, and tighten polyglot `JBC-DBC-004`/`005` and `JBC-SEC-001`/`005` to require parameter-referenced guards and track intra-callable taint aliases.
+
+- **Verification:** Added `DependencyRequirement.ecosystem` + `PolyglotSubprocessProvisionRunner` multi-manifest rollback, `ConsultTargetStr` + `inspect_polyglot_package_api` (`node_modules` `.d.ts`/`package.json`, `Cargo.toml`/`src/lib.rs`, `go.mod`/`.go`), backward-closed per-parameter guard sets in `polyglot_ts.py`/`polyglot_rust.py`/`polyglot_go.py`, and local SQL/shell/path taint-alias tracking in `rules_sec_obs.py` (`tests/test_track16_polyglot_consult_and_taint.py`).
+
+---
+
+## Track 17 — Polyglot Adversarial SDD vs. `PCE` Benchmark Suite (`jezz benchmark --language`, `v0.3.0`) — *Completed*
+
+**Goal:** Generalize `jezz.evals` (`BenchmarkTaskSpec`, `sdd_baseline.py`, `verifier.py`, `runner.py`, and `jezz benchmark --language <python|typescript|rust|go|all>`) across all four `SupportedLanguage`s with matched prompts, `EngineeringMandate`s, and offline held-out property/fuzz oracles (`node:test` Mulberry32 property loops, Rust SplitMix64 integration tests, and Go `testing/quick` suites) while preserving backward compatibility with the 6 canonical Python tasks.
+
+- **Verification:** Implemented 12-case polyglot benchmark dataset (`6` Python, `2` TypeScript, `2` Rust, `2` Go), CST syntax validation on non-Python held-out oracles, `PolyglotWorkspaceVerifier` + `InProcessWorkspaceVerifier` polyglot grading, and end-to-end A/B evaluation in `tests/test_track17_polyglot_benchmark.py`.

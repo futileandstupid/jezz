@@ -1,9 +1,8 @@
 """Inspectors for Article IV (COG — Complexity, Dispatch Tables & Class Duty Isolation)."""
 
 import ast
-from collections.abc import Iterator, Mapping, Sequence
+from collections.abc import Sequence
 from collections.abc import Set as AbstractSet
-from dataclasses import dataclass
 from typing import Final
 
 from jezz.codes.ast_utils import (
@@ -22,20 +21,25 @@ from jezz.codes.cohesion import (
     compute_class_cohesion,
 )
 from jezz.codes.complexity import (
-    COGNITIVE_COMPLEXITY_LIMIT,
-    MAX_NESTING_DEPTH_LIMIT,
-    MAX_PARAMETER_COUNT_LIMIT,
-    MAX_STATEMENT_COUNT_LIMIT,
+    ResolvedComplexityLimits,
     compute_callable_metrics,
 )
+from jezz.codes.dep_graph import find_tarjan_cycles
 from jezz.guards import IdentifierStr, LoopBudget, RecursionBudget, jezz_callable
 
 _MAX_ELIF_BRANCHES: Final[int] = 1
+_DEFAULT_LIMITS: Final[ResolvedComplexityLimits] = ResolvedComplexityLimits()
 
 
 @jezz_callable
-def check_cog_001(unit: GuardedSourceUnit) -> list[RawDiscrepancy]:
-    """Inspect ``unit`` for JBC-COG-001 (Cognitive Complexity <= 15)."""
+def check_cog_001(
+    unit: GuardedSourceUnit,
+    *,
+    limits: ResolvedComplexityLimits | None = None,
+) -> list[RawDiscrepancy]:
+    """Inspect ``unit`` for JBC-COG-001 (Cognitive Complexity ceiling)."""
+    eff = limits or _DEFAULT_LIMITS
+    cc_limit = eff.max_cognitive_complexity
     discrepancies: list[RawDiscrepancy] = []
     for ctx in unit.callables:
         metrics = compute_callable_metrics(
@@ -43,7 +47,7 @@ def check_cog_001(unit: GuardedSourceUnit) -> list[RawDiscrepancy]:
             qualname=ctx.qualname,
             is_method=ctx.enclosing_class is not None,
         )
-        if metrics.cognitive_complexity > COGNITIVE_COMPLEXITY_LIMIT:
+        if metrics.cognitive_complexity > cc_limit:
             discrepancies.append(
                 RawDiscrepancy(
                     code_id="JBC-COG-001",
@@ -55,7 +59,7 @@ def check_cog_001(unit: GuardedSourceUnit) -> list[RawDiscrepancy]:
                     ),
                     message=(
                         f"Callable '{ctx.qualname}' has Cognitive Complexity "
-                        f"{metrics.cognitive_complexity} (limit {COGNITIVE_COMPLEXITY_LIMIT})."
+                        f"{metrics.cognitive_complexity} (limit {cc_limit})."
                     ),
                     remediation="Decompose nested branches/loops into focused helper functions.",
                 )
@@ -64,8 +68,13 @@ def check_cog_001(unit: GuardedSourceUnit) -> list[RawDiscrepancy]:
 
 
 @jezz_callable
-def check_cog_002(unit: GuardedSourceUnit) -> list[RawDiscrepancy]:
-    """Inspect ``unit`` for JBC-COG-002 (nesting <= 4, parameters <= 6, statements <= 35)."""
+def check_cog_002(
+    unit: GuardedSourceUnit,
+    *,
+    limits: ResolvedComplexityLimits | None = None,
+) -> list[RawDiscrepancy]:
+    """Inspect ``unit`` for JBC-COG-002 (nesting, parameter arity, and statement span)."""
+    eff = limits or _DEFAULT_LIMITS
     discrepancies: list[RawDiscrepancy] = []
     for ctx in unit.callables:
         m = compute_callable_metrics(
@@ -79,38 +88,38 @@ def check_cog_002(unit: GuardedSourceUnit) -> list[RawDiscrepancy]:
             column=ctx.node.col_offset,
             symbol=ctx.qualname,
         )
-        if m.max_nesting_depth > MAX_NESTING_DEPTH_LIMIT:
+        if m.max_nesting_depth > eff.max_nesting_depth:
             discrepancies.append(
                 RawDiscrepancy(
                     code_id="JBC-COG-002",
                     location=span,
                     message=(
                         f"Callable '{ctx.qualname}' has control-flow nesting depth "
-                        f"{m.max_nesting_depth} (limit {MAX_NESTING_DEPTH_LIMIT})."
+                        f"{m.max_nesting_depth} (limit {eff.max_nesting_depth})."
                     ),
                     remediation="Use early guard clauses or extract nested control blocks.",
                 )
             )
-        if m.parameter_count > MAX_PARAMETER_COUNT_LIMIT:
+        if m.parameter_count > eff.max_parameter_count:
             discrepancies.append(
                 RawDiscrepancy(
                     code_id="JBC-COG-002",
                     location=span,
                     message=(
                         f"Callable '{ctx.qualname}' takes {m.parameter_count} parameters "
-                        f"(limit {MAX_PARAMETER_COUNT_LIMIT})."
+                        f"(limit {eff.max_parameter_count})."
                     ),
                     remediation="Group cohesive parameters into a frozen Pydantic model.",
                 )
             )
-        if m.statement_count > MAX_STATEMENT_COUNT_LIMIT:
+        if m.statement_count > eff.max_statement_count:
             discrepancies.append(
                 RawDiscrepancy(
                     code_id="JBC-COG-002",
                     location=span,
                     message=(
                         f"Callable '{ctx.qualname}' spans {m.statement_count} AST statements "
-                        f"(limit {MAX_STATEMENT_COUNT_LIMIT})."
+                        f"(limit {eff.max_statement_count})."
                     ),
                     remediation="Split multi-step procedure into single-purpose helpers.",
                 )
@@ -157,97 +166,6 @@ class _RuntimeImportVisitor(ast.NodeVisitor):
         if node.level == 0 and node.module:
             self.imported_targets.append(node.module)
         self._record_from_aliases(node)
-
-
-@dataclass
-class _TarjanState:
-    """Mutable bookkeeping state for iterative O(V + E) Tarjan SCC discovery."""
-
-    next_index: int
-    indices: dict[str, int]
-    lowlink: dict[str, int]
-    stack: list[str]
-    on_stack: set[str]
-
-
-def _enter_tarjan_vertex(
-    vertex: str,
-    graph: Mapping[str, frozenset[str]],
-    state: _TarjanState,
-    frames: list[tuple[str, Iterator[str]]],
-) -> None:
-    state.indices[vertex] = state.next_index
-    state.lowlink[vertex] = state.next_index
-    state.next_index += 1
-    state.stack.append(vertex)
-    state.on_stack.add(vertex)
-    frames.append((vertex, iter(sorted(graph.get(vertex, frozenset())))))
-
-
-def _pop_tarjan_scc(root: str, state: _TarjanState) -> tuple[str, ...]:
-    members: list[str] = []
-    pop_budget = LoopBudget(max_steps=max(16, len(state.stack) + 4))
-    while state.stack:
-        pop_budget.tick()
-        member = state.stack.pop()
-        state.on_stack.discard(member)
-        members.append(member)
-        if member == root:
-            break
-    return tuple(sorted(members))
-
-
-def _finish_tarjan_vertex(
-    curr: str,
-    state: _TarjanState,
-    frames: list[tuple[str, Iterator[str]]],
-    cycles: list[tuple[str, ...]],
-) -> None:
-    if frames:
-        parent = frames[-1][0]
-        state.lowlink[parent] = min(state.lowlink[parent], state.lowlink[curr])
-    if state.lowlink[curr] == state.indices[curr]:
-        scc = _pop_tarjan_scc(curr, state)
-        if len(scc) >= 2:
-            cycles.append(scc)
-
-
-def _step_tarjan_edge(
-    curr: str,
-    nxt: str,
-    graph: Mapping[str, frozenset[str]],
-    state: _TarjanState,
-    frames: list[tuple[str, Iterator[str]]],
-) -> None:
-    if nxt not in state.indices:
-        _enter_tarjan_vertex(nxt, graph, state, frames)
-        return
-    if nxt in state.on_stack:
-        state.lowlink[curr] = min(state.lowlink[curr], state.indices[nxt])
-
-
-def _find_module_cycles(graph: Mapping[str, frozenset[str]]) -> list[tuple[str, ...]]:
-    """Return canonical sorted module cycles in O(V + E) time without recursion."""
-    state = _TarjanState(next_index=0, indices={}, lowlink={}, stack=[], on_stack=set())
-    cycles: list[tuple[str, ...]] = []
-    edge_total = sum(len(targets) for targets in graph.values())
-    dfs_budget = LoopBudget(max_steps=max(64, len(graph) * 4 + edge_total * 4))
-
-    for seed in sorted(graph):
-        if seed in state.indices:
-            continue
-        frames: list[tuple[str, Iterator[str]]] = []
-        _enter_tarjan_vertex(seed, graph, state, frames)
-        while frames:
-            dfs_budget.tick()
-            curr, neighbors = frames[-1]
-            nxt = next(neighbors, None)
-            if nxt is None:
-                frames.pop()
-                _finish_tarjan_vertex(curr, state, frames, cycles)
-                continue
-            _step_tarjan_edge(curr, nxt, graph, state, frames)
-    return sorted(cycles)
 
 
 def _format_bounded_list(items: Sequence[str], *, limit: int = 6, sep: str = ", ") -> str:
@@ -346,7 +264,7 @@ def _scan_cog_003_units(
 def check_cog_003(units: Sequence[GuardedSourceUnit]) -> list[RawDiscrepancy]:
     """Inspect ``units`` for JBC-COG-003 (acyclic graph, no wildcards, no _private imports)."""
     discrepancies, units_by_mod, graph = _scan_cog_003_units(units)
-    for cycle in _find_module_cycles(graph):
+    for cycle in find_tarjan_cycles(graph):
         anchor_unit = units_by_mod[cycle[0]]
         cycle_text = _format_bounded_list(cycle, limit=8, sep=" <-> ")
         discrepancies.append(
@@ -368,7 +286,7 @@ def check_cog_003_for_paths(
     """Run whole-graph JBC-COG-003 over ``units`` and filter findings touching ``target_paths``."""
     per_unit, units_by_mod, graph = _scan_cog_003_units(units)
     discrepancies = [d for d in per_unit if d.location.file_path in target_paths]
-    for cycle in _find_module_cycles(graph):
+    for cycle in find_tarjan_cycles(graph):
         touched_mods = [mod for mod in cycle if units_by_mod[mod].file_path in target_paths]
         if not touched_mods:
             continue

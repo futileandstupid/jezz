@@ -18,6 +18,7 @@ from jezz.behaviors.runtime import AgentExecutionState
 from jezz.codes.adapters import detect_unit_triggers
 from jezz.codes.ast_utils import RawDiscrepancy, SourceUnit, parse_source_unit
 from jezz.codes.codebook import CODE_BOOK, codes_for_triggers
+from jezz.codes.complexity import ResolvedComplexityLimits
 from jezz.codes.permits import (
     CertificateOfOccupancy,
     CodePermit,
@@ -495,7 +496,12 @@ def _run_python_per_unit_code(
     manifest: ManifestDependencies,
     code_id: str,
     units: Sequence[SourceUnit],
+    limits: ResolvedComplexityLimits | None = None,
 ) -> list[RawDiscrepancy]:
+    if code_id == "JBC-COG-001":
+        return [item for unit in units for item in check_cog_001(unit, limits=limits)]
+    if code_id == "JBC-COG-002":
+        return [item for unit in units for item in check_cog_002(unit, limits=limits)]
     rule_fn = _PER_UNIT_RULES.get(code_id)
     if rule_fn is not None:
         return [item for unit in units for item in rule_fn(unit)]
@@ -523,6 +529,7 @@ def _run_polyglot_per_unit_code(
     poly_manifest: PolyglotManifest,
     code_id: str,
     units: Sequence[PolyglotUnit],
+    limits: ResolvedComplexityLimits | None = None,
 ) -> list[RawDiscrepancy]:
     if not units:
         return []
@@ -539,6 +546,7 @@ def _run_polyglot_per_unit_code(
             unit,
             poly_manifest,
             local_roots=local_roots,
+            limits=limits,
         )
     ]
 
@@ -550,6 +558,7 @@ def collect_per_unit_discrepancies(
     active_code_ids: AbstractSet[IdentifierStr],
     *,
     polyglot_manifest: PolyglotManifest | None = None,
+    limits: ResolvedComplexityLimits | None = None,
 ) -> list[RawDiscrepancy]:
     """Run all per-unit static AST/CST/lexical/cohesion codes across ``units``."""
     py_units, poly_units = _partition_inspected_units(units)
@@ -557,9 +566,9 @@ def collect_per_unit_discrepancies(
     discrepancies: list[RawDiscrepancy] = []
     for code_id in sorted(active_code_ids):
         if py_units:
-            discrepancies.extend(_run_python_per_unit_code(manifest, code_id, py_units))
+            discrepancies.extend(_run_python_per_unit_code(manifest, code_id, py_units, limits))
         if poly_units:
-            discrepancies.extend(_run_polyglot_per_unit_code(eff_poly, code_id, poly_units))
+            discrepancies.extend(_run_polyglot_per_unit_code(eff_poly, code_id, poly_units, limits))
     return discrepancies
 
 
@@ -627,6 +636,7 @@ class BuildingInspector:
         self,
         units: Sequence[InspectedUnit],
         active_code_ids: AbstractSet[str],
+        limits: ResolvedComplexityLimits | None = None,
     ) -> list[RawDiscrepancy]:
         py_units, poly_units = _partition_inspected_units(units)
         discrepancies: list[RawDiscrepancy] = []
@@ -638,10 +648,12 @@ class BuildingInspector:
                     discrepancies.extend(check_polyglot_cog_003(poly_units))
                 continue
             if py_units:
-                discrepancies.extend(_run_python_per_unit_code(self.manifest, code_id, py_units))
+                discrepancies.extend(
+                    _run_python_per_unit_code(self.manifest, code_id, py_units, limits)
+                )
             if poly_units:
                 discrepancies.extend(
-                    _run_polyglot_per_unit_code(self.polyglot_manifest, code_id, poly_units)
+                    _run_polyglot_per_unit_code(self.polyglot_manifest, code_id, poly_units, limits)
                 )
         return discrepancies
 
@@ -664,7 +676,11 @@ class BuildingInspector:
             for cid in candidate_ids
             if CODE_BOOK[cid].inspection_method != InspectionMethod.GATE_ATTESTATION
         )
-        raw = self._collect_static_discrepancies(units, static_ids)
+        raw = self._collect_static_discrepancies(
+            units,
+            static_ids,
+            limits=active_permit.effective_complexity_limits(),
+        )
         return assemble_inspection_report(
             active_permit, detected, static_ids, raw, len(units), active_date
         )
@@ -685,7 +701,11 @@ class BuildingInspector:
         triggered_ids = {c.code_id for c in codes_for_triggers(detected)}
         effective_ids = frozenset(active_permit.bound_code_ids | triggered_ids)
 
-        raw = self._collect_static_discrepancies(units, effective_ids)
+        raw = self._collect_static_discrepancies(
+            units,
+            effective_ids,
+            limits=active_permit.effective_complexity_limits(),
+        )
         if "JBC-VRF-005" in effective_ids:
             raw.extend(check_vrf_005(attestations))
         if "JBC-VRF-006" in effective_ids:

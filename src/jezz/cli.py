@@ -27,7 +27,9 @@ from jezz.agents.provision import (
 from jezz.agents.routing import (
     CliModelOverrides,
     ResolvedModelRouting,
+    discover_gates_config,
     discover_models_config,
+    resolve_gate_timeout_sec,
     resolve_specialist_routing,
 )
 from jezz.agents.schemas import (
@@ -49,6 +51,7 @@ from jezz.cli_interactive import (
     register_interactive_workflow_flags,
     resolve_workflow_interaction_hooks,
 )
+from jezz.codes.complexity import PermitProfile
 from jezz.codes.discovery import (
     build_workspace_inspector,
     discover_workspace_units,
@@ -72,14 +75,14 @@ from jezz.evals.cross_provider import (
     parse_provider_suite_spec,
     run_provider_matrix_benchmark,
 )
-from jezz.evals.evaluators import GuardedDataset, build_track4_dataset
+from jezz.evals.evaluators import GuardedDataset, build_polyglot_dataset, build_track4_dataset
 from jezz.evals.runner import (
     default_harness_deps,
     format_ab_benchmark_markdown,
     run_ab_benchmark,
 )
 from jezz.evals.schemas import AbBenchmarkComparison, BenchmarkRunConfig
-from jezz.evals.tasks import build_track4_benchmark_cases
+from jezz.evals.tasks import BenchmarkLanguageSelector, build_polyglot_benchmark_cases
 from jezz.guards import (
     BoundedText,
     BudgetExceededError,
@@ -179,10 +182,20 @@ def _write_line(stream: io.TextIOBase, text: str) -> None:
     stream.flush()
 
 
-def _load_optional_permit(permit_path: Path | None) -> CodePermit | None:
-    if permit_path is None:
+def _resolve_cli_permit(
+    permit_path: Path | None,
+    raw_profile: str | None,
+    *,
+    default_id: str,
+) -> CodePermit | None:
+    if permit_path is None and raw_profile is None:
         return None
-    return CodePermit.model_validate_json(_read_json_file(permit_path))
+    if permit_path is not None:
+        loaded = CodePermit.model_validate_json(_read_json_file(permit_path))
+        if raw_profile is None:
+            return loaded
+        return loaded.model_copy(update={"profile": PermitProfile(raw_profile)})
+    return CodePermit.full_book(permit_id=default_id, profile=PermitProfile(str(raw_profile)))
 
 
 def _require_units(
@@ -228,9 +241,11 @@ def _handle_differential_inspect(
 
 def _handle_inspect(ns: argparse.Namespace, streams: CliIoStreams) -> CliExitCode:
     resolved_repo, units = _require_units(ns.repo_path, ns.target_dirs, ns.languages)
-    permit = _load_optional_permit(ns.permit)
+    is_diff = ns.changed_since is not None or bool(ns.staged)
+    default_id = "PERMIT-RATCHET" if is_diff else "PERMIT-ROUGH-IN"
+    permit = _resolve_cli_permit(ns.permit, getattr(ns, "profile", None), default_id=default_id)
     inspector = build_workspace_inspector(resolved_repo, units)
-    if ns.changed_since is not None or bool(ns.staged):
+    if is_diff:
         return _handle_differential_inspect(
             ns, resolved_repo, units, inspector, permit, streams.stdout
         )
@@ -384,6 +399,22 @@ def _resolve_cli_routing(
     return routing, by_model
 
 
+def _build_cli_gate_and_provision_runners(
+    ns: argparse.Namespace,
+    search_roots: Sequence[Path],
+    ratchet_flag: bool,
+) -> tuple[DynamicGatePort, ProvisionPort]:
+    raw_gate_timeout = getattr(ns, "gate_timeout", None)
+    gates_cfg = discover_gates_config(tuple(search_roots))
+    gate_timeout = resolve_gate_timeout_sec(raw_gate_timeout, project_config=gates_cfg)
+    if ns.gate_runner != GateRunnerChoice.SUBPROCESS:
+        return InProcessGateRunner(), InProcessProvisionRunner()
+    return (
+        PolyglotSubprocessGateRunner(timeout_sec=gate_timeout, ratchet_to_scope=ratchet_flag),
+        PolyglotSubprocessProvisionRunner(),
+    )
+
+
 def _execute_pce_run(
     ns: argparse.Namespace,
     resolved_repo: Path,
@@ -397,18 +428,11 @@ def _execute_pce_run(
         msg = f"Invalid --timeout-sec={timeout_sec}; expected (0, 3600]."
         raise ValueError(msg)
     loaded = _load_workflow_inputs(ns)
-    routing, creds_by_model = _resolve_cli_routing(ns, (resolved_repo, Path.cwd()))
-    suite = routing.build_suite(lambda m: _instantiate_cli_model(m, creds_by_model[m]))
-    is_subproc = ns.gate_runner == GateRunnerChoice.SUBPROCESS
     ratchet_flag = bool(getattr(ns, "ratchet", False))
-    runner: DynamicGatePort = (
-        PolyglotSubprocessGateRunner(ratchet_to_scope=ratchet_flag)
-        if is_subproc
-        else InProcessGateRunner()
-    )
-    provisioner: ProvisionPort = (
-        PolyglotSubprocessProvisionRunner() if is_subproc else InProcessProvisionRunner()
-    )
+    roots = (resolved_repo, Path.cwd())
+    runner, provisioner = _build_cli_gate_and_provision_runners(ns, roots, ratchet_flag)
+    routing, creds_by_model = _resolve_cli_routing(ns, roots)
+    suite = routing.build_suite(lambda m: _instantiate_cli_model(m, creds_by_model[m]))
     budget = PceRuntimeBudget.production_defaults(
         agent_timeout_sec=min(480.0, timeout_sec),
         prompt_cache_mode=routing.prompt_cache,
@@ -487,7 +511,11 @@ def _run_workflow_command(
     if not resolved_repo.is_dir():
         msg = f"Workspace directory does not exist: '{ns.repo_path}'."
         raise FileNotFoundError(msg)
-    permit = _load_optional_permit(ns.permit)
+    permit = _resolve_cli_permit(
+        ns.permit,
+        getattr(ns, "profile", None),
+        default_id="PERMIT-CLI-PROFILE",
+    )
     result = (
         _execute_pce_run(ns, resolved_repo, permit, streams)
         if mode == PceWorkflowMode.GREENFIELD
@@ -521,17 +549,37 @@ def _handle_renovate(ns: argparse.Namespace, streams: CliIoStreams) -> CliExitCo
     return _run_workflow_command(ns, streams, PceWorkflowMode.RENOVATE)
 
 
-def _select_benchmark_dataset(case_ids: Sequence[str] | None) -> GuardedDataset:
+def _normalize_benchmark_language(raw_language: str | None) -> BenchmarkLanguageSelector:
+    if raw_language is None or raw_language == "python":
+        return SupportedLanguage.PYTHON
+    if raw_language == "all":
+        return "all"
+    return SupportedLanguage(raw_language)
+
+
+def _select_benchmark_dataset(
+    case_ids: Sequence[str] | None,
+    raw_language: str | None = None,
+) -> GuardedDataset:
     if not case_ids:
-        return build_track4_dataset()
+        lang = _normalize_benchmark_language(raw_language)
+        if lang == SupportedLanguage.PYTHON:
+            return build_track4_dataset()
+        return build_polyglot_dataset(lang)
+    pool_lang = _normalize_benchmark_language(raw_language) if raw_language is not None else "all"
     wanted = set(case_ids)
-    filtered = tuple(pair for pair in build_track4_benchmark_cases() if pair[0].case_id in wanted)
+    filtered = tuple(
+        pair for pair in build_polyglot_benchmark_cases(pool_lang) if pair[0].case_id in wanted
+    )
     if len(filtered) != len(wanted):
         found = {pair[0].case_id for pair in filtered}
         missing = sorted(wanted - found)
         msg = f"Unknown benchmark --case-id value(s): {missing}."
         raise ValueError(msg)
-    return build_track4_dataset(filtered)
+    if raw_language is None and all(p[0].language == SupportedLanguage.PYTHON for p in filtered):
+        return build_track4_dataset(filtered)
+    ds_lang = _normalize_benchmark_language(raw_language) if raw_language is not None else "all"
+    return build_polyglot_dataset(ds_lang, cases=filtered)
 
 
 def _validate_benchmark_timeout(raw_timeout: float) -> float:
@@ -561,7 +609,7 @@ def _execute_cli_benchmark(ns: argparse.Namespace, work_dir: Path) -> AbBenchmar
             lambda m: _instantiate_cli_model(m, creds_by_model[m])
         ),
     )
-    ds = _select_benchmark_dataset(ns.case_ids)
+    ds = _select_benchmark_dataset(ns.case_ids, getattr(ns, "benchmark_language", None))
     coro = run_ab_benchmark(ctrl_model, deps, model_label=routing.summary_label(), dataset=ds)
     return asyncio.run(_await_with_deadline(coro, timeout_sec))
 
@@ -590,7 +638,7 @@ def _execute_cli_matrix_benchmark(
         agent_timeout_sec=min(480.0, timeout_sec),
         sync_workspace_venv=(ns.gate_runner == GateRunnerChoice.SUBPROCESS),
     )
-    ds = _select_benchmark_dataset(ns.case_ids)
+    ds = _select_benchmark_dataset(ns.case_ids, getattr(ns, "benchmark_language", None))
     coro = run_provider_matrix_benchmark(
         suites,
         work_dir,
@@ -746,12 +794,25 @@ def _register_workflow_subparser(
     )
     p_wf.add_argument("--permit", type=Path, default=None, help="Optional CodePermit JSON file.")
     p_wf.add_argument(
+        "--profile",
+        choices=tuple(p.value for p in PermitProfile),
+        default=None,
+        help="Optional JBC threshold profile ('standard' or 'strict_internal').",
+    )
+    p_wf.add_argument(
         "--ratchet",
         action="store_true",
         default=False,
         help="Enforce Differential Occupancy Ratchet scoped to authorized/modified files.",
     )
     p_wf.add_argument("--gate-runner", choices=("subprocess", "in-process"), default="subprocess")
+    p_wf.add_argument(
+        "--gate-timeout",
+        dest="gate_timeout",
+        type=float,
+        default=None,
+        help="Per-subprocess gate timeout in seconds ((0, 600], overrides [tool.jezz.gates]).",
+    )
     p_wf.add_argument("--timeout-sec", type=float, default=600.0)
     p_wf.add_argument("--write-dossier", default=None, help="Relative path to save dossier JSON.")
     register_interactive_workflow_flags(p_wf)
@@ -778,6 +839,13 @@ def _register_benchmark_subparser(
         help="Repeatable matrix suite (<label>=<provider:model>[@<cache>] or arch:...,build:...).",
     )
     p_bmk.add_argument("--max-concurrency", type=int, default=2)
+    p_bmk.add_argument(
+        "--language",
+        dest="benchmark_language",
+        choices=(*(lang.value for lang in SupportedLanguage), "all"),
+        default=None,
+        help="Target benchmark language ('python', 'typescript', 'rust', 'go', or 'all').",
+    )
     p_bmk.add_argument("--case-id", dest="case_ids", action="append", default=None)
     p_bmk.add_argument("--gate-runner", choices=("subprocess", "in-process"), default="subprocess")
     p_bmk.add_argument("--timeout-sec", type=float, default=3600.0)
@@ -806,6 +874,12 @@ def _register_inspect_subparser(
         help="Restrict inspection to specific language(s) (repeatable).",
     )
     p_ins.add_argument("--permit", type=Path, default=None, help="Optional CodePermit JSON file.")
+    p_ins.add_argument(
+        "--profile",
+        choices=tuple(p.value for p in PermitProfile),
+        default=None,
+        help="Optional JBC threshold profile ('standard' or 'strict_internal').",
+    )
     diff_grp = p_ins.add_mutually_exclusive_group()
     diff_grp.add_argument(
         "--changed-since",

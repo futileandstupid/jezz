@@ -1,9 +1,8 @@
 """Universal JBC v1.2 rule evaluators over normalized PolyglotUnits (TS, Rust, Go)."""
 
 from collections import deque
-from collections.abc import Callable, Iterator, Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from collections.abc import Set as AbstractSet
-from dataclasses import dataclass
 from types import MappingProxyType
 from typing import Annotated, Final
 
@@ -16,12 +15,8 @@ from jezz.codes.cohesion import (
     MAX_LCOM4_COMPONENTS,
     MAX_PUBLIC_METHODS_LIMIT,
 )
-from jezz.codes.complexity import (
-    COGNITIVE_COMPLEXITY_LIMIT,
-    MAX_NESTING_DEPTH_LIMIT,
-    MAX_PARAMETER_COUNT_LIMIT,
-    MAX_STATEMENT_COUNT_LIMIT,
-)
+from jezz.codes.complexity import ResolvedComplexityLimits
+from jezz.codes.dep_graph import find_tarjan_cycles, resolve_polyglot_import_target
 from jezz.codes.polyglot_ir import (
     EcosystemManifest,
     GuardedPolyglotUnit,
@@ -40,6 +35,8 @@ from jezz.codes.polyglot_manifests import (
 from jezz.guards import WIRE_FROZENSET_VALIDATOR, IdentifierStr, LoopBudget, jezz_callable
 
 type _UnitRuleFn = Callable[[PolyglotUnit], list[RawDiscrepancy]]
+
+_DEFAULT_POLY_LIMITS: Final[ResolvedComplexityLimits] = ResolvedComplexityLimits()
 
 
 def _callable_span(unit: PolyglotUnit, fn: PolyglotCallable) -> SourceSpan:
@@ -320,65 +317,80 @@ def _check_poly_sec_004(unit: PolyglotUnit) -> list[RawDiscrepancy]:
     return out
 
 
-def _check_poly_cog_001(unit: PolyglotUnit) -> list[RawDiscrepancy]:
+def _check_poly_cog_001_with_limits(
+    unit: PolyglotUnit,
+    limits: ResolvedComplexityLimits,
+) -> list[RawDiscrepancy]:
+    cc_limit = limits.max_cognitive_complexity
     return [
         RawDiscrepancy(
             code_id="JBC-COG-001",
             location=_callable_span(unit, fn),
             message=(
                 f"Callable '{fn.qualname}' has Cognitive Complexity "
-                f"{fn.cognitive_complexity} (limit {COGNITIVE_COMPLEXITY_LIMIT})."
+                f"{fn.cognitive_complexity} (limit {cc_limit})."
             ),
             remediation="Decompose nested branches/loops into focused helper functions.",
         )
         for fn in unit.callables
-        if fn.cognitive_complexity > COGNITIVE_COMPLEXITY_LIMIT
+        if fn.cognitive_complexity > cc_limit
     ]
 
 
-def _check_poly_cog_002(unit: PolyglotUnit) -> list[RawDiscrepancy]:
+def _check_poly_cog_001(unit: PolyglotUnit) -> list[RawDiscrepancy]:
+    return _check_poly_cog_001_with_limits(unit, _DEFAULT_POLY_LIMITS)
+
+
+def _check_poly_cog_002_with_limits(
+    unit: PolyglotUnit,
+    limits: ResolvedComplexityLimits,
+) -> list[RawDiscrepancy]:
     out: list[RawDiscrepancy] = []
     for fn in unit.callables:
         span = _callable_span(unit, fn)
-        if fn.max_nesting_depth > MAX_NESTING_DEPTH_LIMIT:
+        if fn.max_nesting_depth > limits.max_nesting_depth:
             out.append(
                 RawDiscrepancy(
                     code_id="JBC-COG-002",
                     location=span,
                     message=(
                         f"Callable '{fn.qualname}' has control-flow nesting depth "
-                        f"{fn.max_nesting_depth} (limit {MAX_NESTING_DEPTH_LIMIT})."
+                        f"{fn.max_nesting_depth} (limit {limits.max_nesting_depth})."
                     ),
                     remediation="Use early guard clauses or extract nested control blocks.",
                 )
             )
-        if len(fn.params) > MAX_PARAMETER_COUNT_LIMIT:
+        if len(fn.params) > limits.max_parameter_count:
             out.append(
                 RawDiscrepancy(
                     code_id="JBC-COG-002",
                     location=span,
                     message=(
                         f"Callable '{fn.qualname}' takes {len(fn.params)} parameters "
-                        f"(limit {MAX_PARAMETER_COUNT_LIMIT})."
+                        f"(limit {limits.max_parameter_count})."
                     ),
                     remediation=(
                         "Group cohesive parameters into an immutable options/config struct."
                     ),
                 )
             )
-        if fn.statement_count > MAX_STATEMENT_COUNT_LIMIT:
+        if fn.statement_count > limits.max_statement_count:
             out.append(
                 RawDiscrepancy(
                     code_id="JBC-COG-002",
                     location=span,
                     message=(
                         f"Callable '{fn.qualname}' spans {fn.statement_count} statements "
-                        f"(limit {MAX_STATEMENT_COUNT_LIMIT})."
+                        f"(limit {limits.max_statement_count})."
                     ),
                     remediation="Split multi-step procedure into single-purpose helpers.",
                 )
             )
     return out
+
+
+def _check_poly_cog_002(unit: PolyglotUnit) -> list[RawDiscrepancy]:
+    return _check_poly_cog_002_with_limits(unit, _DEFAULT_POLY_LIMITS)
 
 
 def _compute_polyglot_lcom4(
@@ -658,136 +670,21 @@ def check_polyglot_unit_code(
     manifest: PolyglotManifest,
     *,
     local_roots: Annotated[AbstractSet[IdentifierStr], WIRE_FROZENSET_VALIDATOR] = frozenset(),
+    limits: ResolvedComplexityLimits | None = None,
 ) -> list[RawDiscrepancy]:
     """Evaluate a single per-unit JBC v1.2 provision on ``unit``."""
     direct = [h for h in unit.hazards if h.code_id == code_id]
     if code_id == "JBC-VRF-003":
         return [*direct, *_check_poly_vrf_003(unit, manifest, local_roots)]
+    eff = limits or _DEFAULT_POLY_LIMITS
+    if code_id == "JBC-COG-001":
+        return [*direct, *_check_poly_cog_001_with_limits(unit, eff)]
+    if code_id == "JBC-COG-002":
+        return [*direct, *_check_poly_cog_002_with_limits(unit, eff)]
     evaluator = _POLYGLOT_RULE_DISPATCH.get(code_id)
     if evaluator is None:
         return direct
     return [*direct, *evaluator(unit)]
-
-
-@dataclass
-class _TarjanCursor:
-    """Iterative Tarjan strongly-connected-component state."""
-
-    next_index: int
-    indices: dict[str, int]
-    lowlink: dict[str, int]
-    stack: list[str]
-    on_stack: set[str]
-
-
-def _pop_scc_component(root: str, state: _TarjanCursor) -> tuple[str, ...]:
-    members: list[str] = []
-    budget = LoopBudget(max_steps=max(16, len(state.stack) + 4))
-    while state.stack:
-        budget.tick()
-        member = state.stack.pop()
-        state.on_stack.discard(member)
-        members.append(member)
-        if member == root:
-            break
-    return tuple(sorted(members))
-
-
-def _push_tarjan_node(
-    vertex: str,
-    graph: Mapping[str, frozenset[str]],
-    state: _TarjanCursor,
-    frames: list[tuple[str, Iterator[str]]],
-) -> None:
-    state.indices[vertex] = state.next_index
-    state.lowlink[vertex] = state.next_index
-    state.next_index += 1
-    state.stack.append(vertex)
-    state.on_stack.add(vertex)
-    frames.append((vertex, iter(sorted(graph.get(vertex, frozenset())))))
-
-
-def _finish_tarjan_frame(
-    curr: str,
-    state: _TarjanCursor,
-    frames: list[tuple[str, Iterator[str]]],
-    cycles: list[tuple[str, ...]],
-) -> None:
-    if frames:
-        parent = frames[-1][0]
-        state.lowlink[parent] = min(state.lowlink[parent], state.lowlink[curr])
-    if state.lowlink[curr] == state.indices[curr]:
-        scc = _pop_scc_component(curr, state)
-        if len(scc) >= 2:
-            cycles.append(scc)
-
-
-def _advance_tarjan_edge(
-    curr: str,
-    nxt: str,
-    graph: Mapping[str, frozenset[str]],
-    state: _TarjanCursor,
-    frames: list[tuple[str, Iterator[str]]],
-) -> None:
-    if nxt not in state.indices:
-        _push_tarjan_node(nxt, graph, state, frames)
-        return
-    if nxt in state.on_stack:
-        state.lowlink[curr] = min(state.lowlink[curr], state.indices[nxt])
-
-
-def _find_tarjan_cycles(graph: Mapping[str, frozenset[str]]) -> list[tuple[str, ...]]:
-    state = _TarjanCursor(next_index=0, indices={}, lowlink={}, stack=[], on_stack=set())
-    cycles: list[tuple[str, ...]] = []
-    edge_total = sum(len(targets) for targets in graph.values())
-    budget = LoopBudget(max_steps=max(64, len(graph) * 4 + edge_total * 4))
-    for seed in sorted(graph):
-        if seed in state.indices:
-            continue
-        frames: list[tuple[str, Iterator[str]]] = []
-        _push_tarjan_node(seed, graph, state, frames)
-        while frames:
-            budget.tick()
-            curr, neighbors = frames[-1]
-            nxt = next(neighbors, None)
-            if nxt is None:
-                frames.pop()
-                _finish_tarjan_frame(curr, state, frames, cycles)
-                continue
-            _advance_tarjan_edge(curr, nxt, graph, state, frames)
-    return sorted(cycles)
-
-
-def _match_dotted_known_mod(candidate: str, known_mods: AbstractSet[str]) -> str:
-    probe = candidate
-    budget = LoopBudget(max_steps=32)
-    while probe:
-        budget.tick()
-        if probe in known_mods:
-            return probe
-        if "." not in probe:
-            return ""
-        probe = probe.rsplit(".", maxsplit=1)[0]
-    return ""
-
-
-def _resolve_import_target_mod(
-    unit: PolyglotUnit,
-    imp: PolyglotImport,
-    known_mods: AbstractSet[str],
-) -> str:
-    dotted_hit = _match_dotted_known_mod(imp.resolved_module, known_mods)
-    if dotted_hit:
-        return dotted_hit
-    if unit.language != SupportedLanguage.GO:
-        return ""
-    matches = [
-        cand for cand in known_mods if imp.raw_target == cand or imp.raw_target.endswith(f"/{cand}")
-    ]
-    if not matches:
-        return ""
-    matches.sort(key=len, reverse=True)
-    return matches[0]
 
 
 def _scan_unit_cog_003_imports(
@@ -819,7 +716,7 @@ def _scan_unit_cog_003_imports(
                     remediation="Promote symbol to an explicit public contract or keep local.",
                 )
             )
-        target_mod = _resolve_import_target_mod(unit, imp, known_mods)
+        target_mod = resolve_polyglot_import_target(unit.language, imp, known_mods)
         if unit.module_name and target_mod and target_mod != unit.module_name:
             deps.add(target_mod)
     return discrepancies, frozenset(deps)
@@ -877,7 +774,7 @@ def check_polyglot_cog_003_for_paths(
     for lang in sorted(by_lang, key=str):
         per_unit, units_by_mod, graph = _scan_language_cog_003(by_lang[lang])
         findings.extend(d for d in per_unit if d.location.file_path in target_paths)
-        for cycle in _find_tarjan_cycles(graph):
+        for cycle in find_tarjan_cycles(graph):
             touched = [mod for mod in cycle if units_by_mod[mod].file_path in target_paths]
             if not touched:
                 continue

@@ -7,6 +7,9 @@ import textwrap
 import tomllib
 from pathlib import Path
 
+from hypothesis import given
+from hypothesis import strategies as st
+
 from jezz import __version__
 from jezz.behaviors import BehaviorGraph, build_greenfield_contract_first_graph
 from jezz.codes import (
@@ -179,8 +182,8 @@ def test_release_version_and_pyproject_metadata_parity() -> None:
     pyproject = tomllib.loads(read_bounded_text(ContainedPath.from_parts(root, "pyproject.toml")))
     project = pyproject["project"]
     assert project["name"] == "jezz"
-    assert project["version"] == "0.2.0"
-    assert __version__ == "0.2.0"
+    assert project["version"] == __version__
+    assert __version__ in {"0.2.1", "0.3.0"}
     assert __version__ == SERVER_VERSION
     assert project["requires-python"] == ">=3.14"
     assert project["scripts"]["jezz"] == "jezz.cli:main"
@@ -261,3 +264,14 @@ def test_composite_action_gate_script_end_to_end_differential_and_dossier(
     assert "inspect_rc=0" in out_kv
     assert "audit_rc=0" in out_kv
     assert "OCCUPANCY_SEALED" in summary_md
+
+
+@given(
+    salt=st.from_regex(r"[A-Za-z0-9_]{1,16}", fullmatch=True),
+)
+def test_property_units_digest_changes_under_any_source_mutation(salt: str) -> None:
+    from jezz.codes import parse_go_unit
+
+    baseline = parse_go_unit("calc.go", _SAMPLE_CALC_GO)
+    mutated = parse_go_unit("calc.go", f"{_SAMPLE_CALC_GO}\n// {salt}\n")
+    assert compute_units_digest((baseline,)) != compute_units_digest((mutated,))

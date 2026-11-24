@@ -45,8 +45,8 @@ jobs:
       - name: Gate 2 — Mypy strict static soundness (JBC-VRF-005)
         run: uv run mypy .
 
-      - name: Gate 3 — Pytest & Hypothesis falsification suite (JBC-VRF-006)
-        run: uv run pytest
+      - name: Gate 3 — Pytest, Hypothesis & 92% Coverage Ratchet (JBC-VRF-006)
+        run: uv run pytest --cov=jezz --cov-fail-under=92
 
       - name: Gate 4 — Differential Occupancy Ratchet (PR diff)
         if: github.event_name == 'pull_request'

@@ -1,4 +1,4 @@
-"""Track 4 & 7: Controlled pydantic-evals A/B & cross-provider benchmark suite."""
+"""Track 4, 7, & 17: Controlled pydantic-evals polyglot A/B & cross-provider benchmark suite."""
 
 from jezz.evals.cross_provider import (
     DEFAULT_WIRE_PROBE_MODELS,
@@ -13,12 +13,14 @@ from jezz.evals.cross_provider import (
 )
 from jezz.evals.evaluators import (
     BenchmarkDataset,
+    build_polyglot_dataset,
     build_track4_dataset,
     evaluate_jbc_safety,
     evaluate_oracle_falsification,
     evaluate_spec_and_cost,
     evaluate_structural_maintainability,
 )
+from jezz.evals.polyglot_tasks import build_non_python_benchmark_cases
 from jezz.evals.runner import (
     BenchmarkHarnessDeps,
     default_harness_deps,
@@ -52,12 +54,19 @@ from jezz.evals.sdd_baseline import (
     build_sdd_specify_agent,
     build_sdd_tasks_agent,
     execute_sdd_prose_pipeline,
+    render_sdd_constitution,
     validate_sdd_markdown_compliance,
 )
-from jezz.evals.tasks import build_track4_benchmark_cases
+from jezz.evals.tasks import (
+    BenchmarkLanguageSelector,
+    build_polyglot_benchmark_cases,
+    build_track4_benchmark_cases,
+)
 from jezz.evals.verifier import (
     ArmExecutionMetrics,
     InProcessWorkspaceVerifier,
+    PolyglotOracleHook,
+    PolyglotWorkspaceVerifier,
     UvWorkspaceVerifier,
     WorkspaceVerifierPort,
     compute_structural_health,
@@ -76,12 +85,15 @@ __all__ = (
     "BenchmarkCaseMetadata",
     "BenchmarkDataset",
     "BenchmarkHarnessDeps",
+    "BenchmarkLanguageSelector",
     "BenchmarkRunConfig",
     "BenchmarkTaskSpec",
     "CrossProviderCompatibilityReport",
     "GuardedSddAgent",
     "InProcessWorkspaceVerifier",
     "OracleSuiteVerdict",
+    "PolyglotOracleHook",
+    "PolyglotWorkspaceVerifier",
     "ProviderMatrixComparison",
     "ProviderSuiteSpec",
     "ProviderWireCheck",
@@ -93,6 +105,9 @@ __all__ = (
     "StructuralHealthSnapshot",
     "UvWorkspaceVerifier",
     "WorkspaceVerifierPort",
+    "build_non_python_benchmark_cases",
+    "build_polyglot_benchmark_cases",
+    "build_polyglot_dataset",
     "build_sdd_design_agent",
     "build_sdd_implement_agent",
     "build_sdd_specify_agent",
@@ -111,6 +126,7 @@ __all__ = (
     "grade_workspace_artifacts",
     "parse_provider_suite_spec",
     "provision_scratch_workspace",
+    "render_sdd_constitution",
     "run_ab_benchmark",
     "run_pce_treatment_case",
     "run_provider_matrix_benchmark",

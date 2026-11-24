@@ -1,5 +1,8 @@
-"""Track 4: Canonical 6-task adversarial benchmark suite with matched prompts and mandates."""
+"""Track 4 & 17: Canonical adversarial benchmark suite with matched prompts and mandates."""
 
+from typing import Literal
+
+from jezz.codes.polyglot_ir import SupportedLanguage
 from jezz.evals.oracles import (
     ORACLE_01_BPS_SPLIT,
     ORACLE_02_SQL_LEDGER,
@@ -8,9 +11,14 @@ from jezz.evals.oracles import (
     ORACLE_05_MARGIN_ENGINE,
     ORACLE_06_ESCROW_MACHINE,
 )
+from jezz.evals.polyglot_tasks import build_non_python_benchmark_cases
 from jezz.evals.schemas import BenchmarkCaseMetadata, BenchmarkTaskSpec
 from jezz.guards import jezz_callable
 from jezz.methodology.mandate import DomainInvariant, EngineeringMandate, ModuleWriteScope
+
+type BenchmarkLanguageSelector = (
+    SupportedLanguage | Literal["python", "typescript", "rust", "go", "all"]
+)
 
 
 def _case_01_bps_split() -> tuple[BenchmarkTaskSpec, BenchmarkCaseMetadata]:
@@ -496,3 +504,15 @@ def build_track4_benchmark_cases() -> tuple[tuple[BenchmarkTaskSpec, BenchmarkCa
         _case_05_margin_engine(),
         _case_06_escrow_machine(),
     )
+
+
+@jezz_callable
+def build_polyglot_benchmark_cases(
+    language: BenchmarkLanguageSelector = "all",
+) -> tuple[tuple[BenchmarkTaskSpec, BenchmarkCaseMetadata], ...]:
+    """Construct benchmark cases filtered by ``language`` (``python|typescript|rust|go|all``)."""
+    all_cases = (*build_track4_benchmark_cases(), *build_non_python_benchmark_cases())
+    if str(language) == "all":
+        return all_cases
+    target_lang = SupportedLanguage(str(language))
+    return tuple(pair for pair in all_cases if pair[0].language == target_lang)

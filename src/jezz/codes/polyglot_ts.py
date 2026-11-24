@@ -36,7 +36,7 @@ from jezz.codes.polyglot_ir import (
     parse_cst_root,
 )
 from jezz.codes.polyglot_manifests import extract_npm_package_root
-from jezz.guards import IdentifierStr, SourceCodeText, jezz_callable
+from jezz.guards import IdentifierStr, LoopBudget, SourceCodeText, jezz_callable
 
 _TS_LANGUAGE: Final[ts.Language] = ts.Language(tree_sitter_typescript.language_typescript())
 _TSX_LANGUAGE: Final[ts.Language] = ts.Language(tree_sitter_typescript.language_tsx())
@@ -112,6 +112,17 @@ _TS_UNBOUNDED_TYPE_RE: Final[re.Pattern[str]] = re.compile(
 _TS_FUEL_NAMES: Final[frozenset[str]] = frozenset(
     {"maxDepth", "remainingDepth", "fuel", "depthBudget", "budget", "max_depth"}
 )
+_TS_GUARD_CALLEES: Final[frozenset[str]] = frozenset(
+    {
+        "assert",
+        "invariant",
+        "Array.isArray",
+        "Number.isFinite",
+        "Number.isInteger",
+        "Number.isSafeInteger",
+    }
+)
+_TS_GUARD_TAILS: Final[frozenset[str]] = frozenset({"parse", "safeParse", "validate"})
 _TS_SQL_METHODS: Final[frozenset[str]] = frozenset({"query", "execute", "raw", "exec"})
 _TS_RAW_FS_SINKS: Final[frozenset[str]] = frozenset(
     {
@@ -305,7 +316,78 @@ def _is_ts_mutable_default(val_node: ts.Node | None) -> bool:
     )
 
 
-def _extract_ts_param(param_node: ts.Node, is_guarded_fn: bool) -> PolyglotParam | None:
+def _ts_callee_name(call_node: ts.Node) -> str:
+    fn = call_node.child_by_field_name("function")
+    if fn is None:
+        return ""
+    return re.sub(r"\s+", "", node_text(fn))[:256]
+
+
+def _collect_identifiers_in_node(node: ts.Node | None) -> set[str]:
+    if node is None:
+        return set()
+    return {node_text(i) for i in iter_cst_nodes(node) if i.type == "identifier"}
+
+
+def _is_ts_guard_call(sub: ts.Node) -> bool:
+    callee = _ts_callee_name(sub)
+    tail = callee.rsplit(".", maxsplit=1)[-1]
+    if callee not in _TS_GUARD_CALLEES and tail not in _TS_GUARD_TAILS:
+        return False
+    args = sub.child_by_field_name("arguments")
+    return args is None or node_text(args).strip() not in {"(true)", "(false)"}
+
+
+def _is_ts_typeof_or_instanceof(sub: ts.Node) -> bool:
+    if sub.type == "unary_expression":
+        return node_text(sub).lstrip().startswith("typeof ")
+    if sub.type == "binary_expression":
+        op = sub.child_by_field_name("operator")
+        return op is not None and node_text(op).strip() == "instanceof"
+    return False
+
+
+def _record_ts_guard_node(
+    sub: ts.Node,
+    guarded: set[str],
+    deps: dict[str, set[str]],
+) -> None:
+    if sub.type in {"if_statement", "ternary_expression", "switch_statement"}:
+        cond = sub.child_by_field_name("condition") or sub.child_by_field_name("value")
+        guarded |= _collect_identifiers_in_node(cond)
+        return
+    if _is_ts_typeof_or_instanceof(sub) or (
+        sub.type == "call_expression" and _is_ts_guard_call(sub)
+    ):
+        guarded |= _collect_identifiers_in_node(sub)
+        return
+    if sub.type in {"variable_declarator", "assignment_expression"}:
+        lhs_node = sub.child_by_field_name("name") or sub.child_by_field_name("left")
+        rhs_node = sub.child_by_field_name("value") or sub.child_by_field_name("right")
+        rhs_ids = _collect_identifiers_in_node(rhs_node)
+        for lhs in _collect_identifiers_in_node(lhs_node):
+            deps.setdefault(lhs, set()).update(rhs_ids)
+
+
+def _collect_ts_guarded_identifiers(body_node: ts.Node | None) -> frozenset[str]:
+    if body_node is None:
+        return frozenset()
+    guarded: set[str] = set()
+    deps: dict[str, set[str]] = {}
+    for sub in iter_local_cst_nodes(body_node, _TS_SCOPE_BOUNDARIES):
+        _record_ts_guard_node(sub, guarded, deps)
+    for _ in range(4):
+        extra = {src for lhs in list(guarded) for src in deps.get(lhs, ()) if src not in guarded}
+        if not extra:
+            break
+        guarded |= extra
+    return frozenset(guarded)
+
+
+def _extract_ts_param(
+    param_node: ts.Node,
+    guarded_idents: frozenset[str],
+) -> PolyglotParam | None:
     pattern = param_node.child_by_field_name("pattern")
     ident_node = (
         pattern
@@ -317,8 +399,9 @@ def _extract_ts_param(param_node: ts.Node, is_guarded_fn: bool) -> PolyglotParam
     raw_name = node_text(ident_node).strip().lstrip(".")[:256] or "arg"
     type_ann = param_node.child_by_field_name("type")
     clean_type = node_text(type_ann).lstrip(":").strip() if type_ann is not None else ""
+    is_guarded = raw_name in guarded_idents
     unbounded = (
-        not is_guarded_fn
+        (not is_guarded)
         and bool(clean_type)
         and _TS_UNBOUNDED_TYPE_RE.match(clean_type) is not None
     )
@@ -335,41 +418,16 @@ def _extract_ts_param(param_node: ts.Node, is_guarded_fn: bool) -> PolyglotParam
     )
 
 
-def _ts_body_has_boundary_guard(body_node: ts.Node | None, has_params: bool) -> bool:
-    if not has_params or body_node is None:
-        return True
-    txt = node_text(body_node)
-    guard_markers = (
-        "typeof ",
-        "instanceof ",
-        "Array.isArray",
-        "Number.isFinite",
-        "Number.isInteger",
-        "Number.isSafeInteger",
-        ".parse(",
-        ".safeParse(",
-        "assert(",
-        "invariant(",
-    )
-    if any(m in txt for m in guard_markers):
-        return True
-    return any(
-        sub.type == "throw_statement"
-        for sub in iter_local_cst_nodes(body_node, _TS_SCOPE_BOUNDARIES)
-    )
-
-
-def _ts_callee_name(call_node: ts.Node) -> str:
-    fn = call_node.child_by_field_name("function")
-    if fn is None:
-        return ""
-    return re.sub(r"\s+", "", node_text(fn))[:256]
-
-
-def _collect_identifiers_in_node(node: ts.Node | None) -> set[str]:
-    if node is None:
-        return set()
-    return {node_text(i) for i in iter_cst_nodes(node) if i.type == "identifier"}
+def _has_ts_boundary_contract(
+    params: tuple[PolyglotParam, ...],
+    guarded_idents: frozenset[str],
+) -> bool:
+    for param in params:
+        if not param.has_type or param.is_unbounded_primitive:
+            return False
+        if (param.is_untyped_bag or param.has_any_erasure) and param.name not in guarded_idents:
+            return False
+    return True
 
 
 def _record_ts_call_fact(
@@ -492,14 +550,6 @@ def _ts_has_mixed_or_missing_return(
     return not has_val
 
 
-def _has_domain_typed_param(raw_param_nodes: list[ts.Node]) -> bool:
-    for param in raw_param_nodes:
-        t_node = param.child_by_field_name("type")
-        if t_node is not None and any(c.type != "predefined_type" for c in t_node.named_children):
-            return True
-    return False
-
-
 def _build_ts_callable(
     fn_node: ts.Node,
     name: str,
@@ -520,11 +570,9 @@ def _build_ts_callable(
         if params_node is not None
         else []
     )
-    guarded_fn = _ts_body_has_boundary_guard(body_node, bool(raw_param_nodes)) or (
-        _has_domain_typed_param(raw_param_nodes)
-    )
+    guarded_idents = _collect_ts_guarded_identifiers(body_node) if raw_param_nodes else frozenset()
     params = tuple(
-        p for raw in raw_param_nodes if (p := _extract_ts_param(raw, guarded_fn)) is not None
+        p for raw in raw_param_nodes if (p := _extract_ts_param(raw, guarded_idents)) is not None
     )
     param_names = frozenset(p.name for p in params)
     ret_node = fn_node.child_by_field_name("return_type")
@@ -555,7 +603,7 @@ def _build_ts_callable(
         return_type_text=ret_text[:256],
         return_has_any_erasure=_type_node_has_any(ret_node),
         return_is_untyped_bag=bool(ret_text and _TS_BAG_RE.search(ret_text)),
-        has_boundary_contract=guarded_fn,
+        has_boundary_contract=_has_ts_boundary_contract(params, guarded_idents),
         cognitive_complexity=cc,
         max_nesting_depth=depth,
         statement_count=stmts,
@@ -1037,8 +1085,50 @@ def _first_named_arg(args_node: ts.Node | None) -> ts.Node | None:
     return args_node.named_children[0]
 
 
+def _is_ts_dynamic_sql_expr(expr: ts.Node) -> bool:
+    txt = node_text(expr)
+    return (expr.type == "template_string" and "${" in txt) or (
+        expr.type == "binary_expression" and "+" in txt
+    )
+
+
+def _enclosing_ts_block(node: ts.Node) -> ts.Node | None:
+    curr = node.parent
+    budget = LoopBudget(max_steps=128)
+    while curr is not None:
+        budget.tick()
+        if curr.type in {"statement_block", "program"}:
+            return curr
+        curr = curr.parent
+    return None
+
+
+def _is_ts_sql_alias_interpolated(call: ts.Node, first_arg: ts.Node) -> bool:
+    if _is_ts_dynamic_sql_expr(first_arg):
+        return True
+    if first_arg.type != "identifier":
+        return False
+    ident = node_text(first_arg).strip()
+    block = _enclosing_ts_block(call)
+    if not ident or block is None:
+        return False
+    for sub in iter_local_cst_nodes(block, _TS_SCOPE_BOUNDARIES):
+        if sub.type == "variable_declarator":
+            n_node = sub.child_by_field_name("name")
+            v_node = sub.child_by_field_name("value")
+            if (
+                n_node is not None
+                and v_node is not None
+                and node_text(n_node).strip() == ident
+                and _is_ts_dynamic_sql_expr(v_node)
+            ):
+                return True
+    return False
+
+
 def _check_ts_sql_or_exec_call(
     span: SourceSpan,
+    call: ts.Node,
     callee: str,
     first_arg: ts.Node | None,
 ) -> list[RawDiscrepancy]:
@@ -1053,20 +1143,19 @@ def _check_ts_sql_or_exec_call(
             )
         )
     tail = callee.rsplit(".", maxsplit=1)[-1]
-    if tail in _TS_SQL_METHODS and first_arg is not None:
-        arg_txt = node_text(first_arg)
-        is_interp = (first_arg.type == "template_string" and "${" in arg_txt) or (
-            first_arg.type == "binary_expression" and "+" in arg_txt
-        )
-        if is_interp:
-            out.append(
-                RawDiscrepancy(
-                    code_id="JBC-SEC-001",
-                    location=span,
-                    message=f"SQL sink '.{tail}()' receives a dynamically interpolated query.",
-                    remediation="Use parameterized query placeholders with bound parameter arrays.",
-                )
+    if (
+        tail in _TS_SQL_METHODS
+        and first_arg is not None
+        and _is_ts_sql_alias_interpolated(call, first_arg)
+    ):
+        out.append(
+            RawDiscrepancy(
+                code_id="JBC-SEC-001",
+                location=span,
+                message=f"SQL sink '.{tail}()' receives a dynamically interpolated query.",
+                remediation="Use parameterized query placeholders with bound parameter arrays.",
             )
+        )
     return out
 
 
@@ -1224,7 +1313,7 @@ def _check_ts_call_node(file_path: str, call: ts.Node, is_test: bool) -> list[Ra
     first_arg = _first_named_arg(args_node)
     span = node_span(file_path, call)
     return [
-        *_check_ts_sql_or_exec_call(span, callee, first_arg),
+        *_check_ts_sql_or_exec_call(span, call, callee, first_arg),
         *_check_ts_io_and_fetch_call(span, callee, args_txt, first_arg, is_test),
         *_check_ts_json_or_path_call(span, call, callee, first_arg, is_test),
         *_check_ts_obs_vrf_call(span, callee, first_arg, is_test),

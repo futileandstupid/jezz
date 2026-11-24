@@ -1,6 +1,15 @@
-"""Track 4: Held-out adversarial Hypothesis + boundary oracle test suites (unseen by both arms)."""
+"""Track 4 & 17: Held-out adversarial property/fuzz oracle test suites across 4 languages."""
 
 from typing import Final
+
+from jezz.evals.polyglot_oracles import (
+    ORACLE_GO_01_BPS_SPLIT,
+    ORACLE_GO_02_STRICT_RECEIPT,
+    ORACLE_RS_01_BPS_SPLIT,
+    ORACLE_RS_02_ESCROW_FSM,
+    ORACLE_TS_01_BPS_SPLIT,
+    ORACLE_TS_02_ESCROW_VAULT,
+)
 
 ORACLE_01_BPS_SPLIT: Final[str] = '''\
 """Held-out adversarial Hypothesis oracle for case_01_bps_split."""
@@ -706,3 +715,18 @@ def test_oracle_hypothesis_state_machine_conservation(
         assert led.held_cents + led.released_cents + led.refunded_cents == principal
         assert (led.state == EscrowState.CLOSED) == (led.held_cents == 0)
 '''
+
+__all__ = (
+    "ORACLE_01_BPS_SPLIT",
+    "ORACLE_02_SQL_LEDGER",
+    "ORACLE_03_ARTIFACT_LOADER",
+    "ORACLE_04_WORKFLOW_TOPO",
+    "ORACLE_05_MARGIN_ENGINE",
+    "ORACLE_06_ESCROW_MACHINE",
+    "ORACLE_GO_01_BPS_SPLIT",
+    "ORACLE_GO_02_STRICT_RECEIPT",
+    "ORACLE_RS_01_BPS_SPLIT",
+    "ORACLE_RS_02_ESCROW_FSM",
+    "ORACLE_TS_01_BPS_SPLIT",
+    "ORACLE_TS_02_ESCROW_VAULT",
+)

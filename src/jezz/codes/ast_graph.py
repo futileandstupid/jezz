@@ -16,6 +16,7 @@ from jezz.codes.ast_utils import (
     is_type_checking_guard,
     iter_local_scope_nodes,
 )
+from jezz.codes.dep_graph import match_known_module, resolve_polyglot_import_target
 from jezz.codes.polyglot_ir import InspectedUnit, PolyglotUnit, SupportedLanguage
 from jezz.guards import (
     STRICT_FROZEN_CONFIG,
@@ -371,39 +372,15 @@ def _iter_runtime_import_candidates(unit: SourceUnit) -> list[str]:
     return candidates
 
 
-def _match_known_module(candidate: str, known_modules: frozenset[str]) -> str:
-    probe = candidate
-    budget = LoopBudget(max_steps=32)
-    while probe:
-        budget.tick()
-        if probe in known_modules:
-            return probe
-        if "." not in probe:
-            return ""
-        probe = probe.rsplit(".", maxsplit=1)[0]
-    return ""
-
-
 def _resolve_polyglot_import_edge(
     unit: PolyglotUnit,
     known_same_lang: frozenset[str],
 ) -> set[str]:
-    matched: set[str] = set()
-    for imp in unit.imports:
-        dotted_hit = _match_known_module(imp.resolved_module, known_same_lang)
-        if dotted_hit:
-            matched.add(dotted_hit)
-            continue
-        if unit.language == SupportedLanguage.GO:
-            go_hits = [
-                cand
-                for cand in known_same_lang
-                if imp.raw_target == cand or imp.raw_target.endswith(f"/{cand}")
-            ]
-            if go_hits:
-                go_hits.sort(key=len, reverse=True)
-                matched.add(go_hits[0])
-    return matched
+    return {
+        hit
+        for imp in unit.imports
+        if (hit := resolve_polyglot_import_target(unit.language, imp, known_same_lang))
+    }
 
 
 def _unit_graph_key(unit: InspectedUnit) -> str:
@@ -449,7 +426,7 @@ def _record_python_unit_edges(
         return
     src_key = _unit_graph_key(unit)
     for raw in _iter_runtime_import_candidates(unit):
-        hit = _match_known_module(raw, py_known)
+        hit = match_known_module(raw, py_known)
         if hit and hit != unit.module_name:
             _record_edge(outgoing, incoming, src_key, f"py:{hit}")
 

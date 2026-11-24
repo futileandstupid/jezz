@@ -6,8 +6,9 @@ from enum import StrEnum
 from typing import Annotated, Final, Self
 
 import icontract
-from pydantic import BaseModel, Field, model_validator
+from pydantic import AfterValidator, BaseModel, Field, model_validator
 
+from jezz.codes.polyglot_ir import SupportedLanguage
 from jezz.guards import (
     STRICT_FROZEN_CONFIG,
     WIRE_FROZENSET_VALIDATOR,
@@ -51,6 +52,7 @@ _SAFE_VERSION_CONSTRAINT_RE: Final[re.Pattern[str]] = re.compile(
     r"^(?:\s*(?:===|==|~=|!=|<=|>=|<|>|\^|~)?\s*[A-Za-z0-9][A-Za-z0-9._*+-]{0,63}"
     r"(?:\s*,\s*(?:===|==|~=|!=|<=|>=|<|>|\^|~)?\s*[A-Za-z0-9][A-Za-z0-9._*+-]{0,63})*\s*)?$"
 )
+_WINDOWS_DRIVE_RE: Final[re.Pattern[str]] = re.compile(r"^[A-Za-z]:")
 _PEP440_OPERATOR_PREFIXES: Final[tuple[str, ...]] = ("===", "==", "~=", "!=", "<=", ">=", "<", ">")
 _AUTHORIZED_MANIFEST_FILES: Final[frozenset[str]] = frozenset(
     {
@@ -65,6 +67,35 @@ _AUTHORIZED_MANIFEST_FILES: Final[frozenset[str]] = frozenset(
         "go.sum",
     }
 )
+
+
+def _validate_consult_target(raw: str) -> str:
+    cleaned = raw.strip()
+    if not cleaned or any(ord(ch) < 32 or ord(ch) == 127 for ch in cleaned):
+        msg = "Consultation target must be a non-empty printable string."
+        raise ValueError(msg)
+    low = cleaned.lower()
+    if "://" in low or low.startswith(("http:", "https:", "file:", "git+")):
+        msg = (
+            f"Remote or URL consultation target '{cleaned}' is prohibited; "
+            "BHV-06 CONSULT resolves offline local specs, docs, and package APIs."
+        )
+        raise ValueError(msg)
+    if cleaned.startswith(("/", "\\", "~")) or _WINDOWS_DRIVE_RE.match(cleaned) is not None:
+        msg = f"Consultation target '{cleaned}' must not be an absolute or host-anchored path."
+        raise ValueError(msg)
+    segments = cleaned.replace("\\", "/").split("/")
+    if ".." in segments:
+        msg = f"Path traversal blocked in consultation target '{cleaned}'."
+        raise ValueError(msg)
+    return cleaned
+
+
+type ConsultTargetStr = Annotated[
+    str,
+    Field(min_length=1, max_length=256),
+    AfterValidator(_validate_consult_target),
+]
 
 
 def _is_safe_package_token(token: str) -> bool:
@@ -117,6 +148,7 @@ class DependencyRequirement(BaseModel):
     version_constraint: Annotated[str, Field(max_length=128)] = ""
     scope: DependencyScope = DependencyScope.RUNTIME
     import_root: Annotated[str, Field(max_length=128)] = ""
+    ecosystem: SupportedLanguage | None = None
 
     @model_validator(mode="after")
     def _validate_requirement_spec(self) -> Self:
@@ -138,6 +170,20 @@ class DependencyRequirement(BaseModel):
         return self
 
     @jezz_callable
+    def infer_ecosystem(
+        self,
+        fallback: SupportedLanguage = SupportedLanguage.PYTHON,
+    ) -> SupportedLanguage:
+        """Return explicit ``ecosystem`` or infer Go/npm from unambiguous package syntax."""
+        if self.ecosystem is not None:
+            return self.ecosystem
+        if self.package.startswith("@"):
+            return SupportedLanguage.TYPESCRIPT
+        if "/" in self.package and "." in self.package.split("/", maxsplit=1)[0]:
+            return SupportedLanguage.GO
+        return fallback
+
+    @jezz_callable
     def pep508_spec(self) -> IdentifierStr:
         """Render the normalized dependency specifier string."""
         compact_ver = "".join(self.version_constraint.split())
@@ -151,7 +197,7 @@ class DependencyRequirement(BaseModel):
     def ecosystem_spec(self, ecosystem: IdentifierStr = "python") -> IdentifierStr:
         """Render ecosystem-native CLI install specifier for Python, TypeScript, Rust, or Go."""
         compact_ver = "".join(self.version_constraint.split())
-        eco = ecosystem.strip().lower()
+        eco = (str(self.ecosystem) if self.ecosystem is not None else ecosystem).strip().lower()
         if eco == "python":
             if not compact_ver or compact_ver.startswith(_PEP440_OPERATOR_PREFIXES):
                 return f"{self.package}{compact_ver}"
@@ -319,9 +365,9 @@ def compute_scope_execution_waves(
 
 
 def _verify_unique_dependencies(deps: Sequence[DependencyRequirement], mandate_id: str) -> None:
-    seen: set[tuple[str, DependencyScope]] = set()
+    seen: set[tuple[SupportedLanguage | None, str, DependencyScope]] = set()
     for dep in deps:
-        key = (dep.package.lower(), dep.scope)
+        key = (dep.ecosystem, dep.package.lower(), dep.scope)
         if key in seen:
             msg = (
                 f"Duplicate DependencyRequirement '{dep.package}' ({dep.scope}) in '{mandate_id}'."
@@ -357,7 +403,7 @@ class EngineeringMandate(BaseModel):
         Field(max_length=32),
     ] = ()
     consultation_targets: Annotated[
-        tuple[IdentifierStr, ...],
+        tuple[ConsultTargetStr, ...],
         WIRE_TUPLE_VALIDATOR,
         Field(max_length=32),
     ] = ()

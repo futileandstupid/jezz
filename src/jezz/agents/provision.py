@@ -51,6 +51,12 @@ _MANIFEST_FILES_BY_LANG: Final[Mapping[SupportedLanguage, tuple[str, ...]]] = Ma
         SupportedLanguage.GO: ("go.mod", "go.sum"),
     }
 )
+_ECOSYSTEM_ORDER: Final[tuple[SupportedLanguage, ...]] = (
+    SupportedLanguage.PYTHON,
+    SupportedLanguage.TYPESCRIPT,
+    SupportedLanguage.RUST,
+    SupportedLanguage.GO,
+)
 
 
 def _spec_pkg_key(spec: str) -> str:
@@ -79,6 +85,20 @@ def _is_dep_present_in_ecosystem(
 
 
 @jezz_callable
+def group_requirements_by_ecosystem(
+    requirements: Annotated[Sequence[DependencyRequirement], Field(max_length=32)],
+    *,
+    fallback_language: SupportedLanguage = SupportedLanguage.PYTHON,
+) -> dict[SupportedLanguage, tuple[DependencyRequirement, ...]]:
+    """Group ``requirements`` by resolved ``SupportedLanguage`` in canonical ecosystem order."""
+    buckets: dict[SupportedLanguage, list[DependencyRequirement]] = {}
+    for dep in requirements:
+        lang = dep.infer_ecosystem(fallback=fallback_language)
+        buckets.setdefault(lang, []).append(dep)
+    return {lang: tuple(buckets[lang]) for lang in _ECOSYSTEM_ORDER if lang in buckets}
+
+
+@jezz_callable
 def compute_missing_dependencies(
     manifest: ManifestDependencies,
     requirements: Annotated[Sequence[DependencyRequirement], Field(max_length=32)],
@@ -87,21 +107,22 @@ def compute_missing_dependencies(
     language: SupportedLanguage = SupportedLanguage.PYTHON,
 ) -> tuple[DependencyRequirement, ...]:
     """Return declared ``requirements`` whose import roots are absent from workspace manifests."""
-    if language != SupportedLanguage.PYTHON and polyglot_manifest is not None:
-        eco = polyglot_manifest.for_language(language)
-        return tuple(
-            dep for dep in requirements if not _is_dep_present_in_ecosystem(eco, dep, language)
-        )
     py_eco = EcosystemManifest(
         runtime_roots=manifest.runtime_roots,
         dev_roots=manifest.dev_roots,
         workspace_roots=manifest.workspace_roots,
     )
-    return tuple(
-        dep
-        for dep in requirements
-        if not _is_dep_present_in_ecosystem(py_eco, dep, SupportedLanguage.PYTHON)
-    )
+    missing: list[DependencyRequirement] = []
+    for dep in requirements:
+        dep_lang = dep.infer_ecosystem(fallback=language)
+        if dep_lang != SupportedLanguage.PYTHON and polyglot_manifest is not None:
+            eco = polyglot_manifest.for_language(dep_lang)
+            if not _is_dep_present_in_ecosystem(eco, dep, dep_lang):
+                missing.append(dep)
+            continue
+        if not _is_dep_present_in_ecosystem(py_eco, dep, SupportedLanguage.PYTHON):
+            missing.append(dep)
+    return tuple(missing)
 
 
 def _merge_ecosystem_manifest(
@@ -118,6 +139,25 @@ def _merge_ecosystem_manifest(
     )
 
 
+def _roots_by_ecosystem(
+    requirements: Sequence[DependencyRequirement],
+    fallback_lang: SupportedLanguage,
+) -> tuple[dict[SupportedLanguage, set[str]], dict[SupportedLanguage, set[str]]]:
+    run_by_lang: dict[SupportedLanguage, set[str]] = {k: set() for k in _ECOSYSTEM_ORDER}
+    dev_by_lang: dict[SupportedLanguage, set[str]] = {k: set() for k in _ECOSYSTEM_ORDER}
+    for dep in requirements:
+        dep_lang = dep.infer_ecosystem(fallback=fallback_lang)
+        roots = {dep.effective_import_root(), dep.package}
+        if dep_lang == SupportedLanguage.PYTHON:
+            roots.add(normalize_pep508_to_import_root(dep.pep508_spec()))
+        clean = {r for r in roots if r}
+        target = (
+            run_by_lang[dep_lang] if dep.scope == DependencyScope.RUNTIME else dev_by_lang[dep_lang]
+        )
+        target |= clean
+    return run_by_lang, dev_by_lang
+
+
 @icontract.ensure(lambda requirements, result: isinstance(result, BuildingInspector))
 @jezz_callable
 def refresh_inspector_after_provision(
@@ -130,21 +170,11 @@ def refresh_inspector_after_provision(
     """Reload ``BuildingInspector`` across Python, npm, Cargo, and Go manifests after PROVISION."""
     importlib.invalidate_caches()
     fresh = BuildingInspector.from_workspace(repo_root.resolve())
-    extra_run: set[str] = set()
-    extra_dev: set[str] = set()
-    for dep in requirements:
-        roots = {dep.effective_import_root(), dep.package}
-        if language == SupportedLanguage.PYTHON:
-            roots.add(normalize_pep508_to_import_root(dep.pep508_spec()))
-        clean_roots = {r for r in roots if r}
-        if dep.scope == DependencyScope.RUNTIME:
-            extra_run |= clean_roots
-        else:
-            extra_dev |= clean_roots
+    run_by_lang, dev_by_lang = _roots_by_ecosystem(requirements, language)
 
     prior_py = prior_inspector.manifest
-    py_run = extra_run if language == SupportedLanguage.PYTHON else set()
-    py_dev = extra_dev if language == SupportedLanguage.PYTHON else set()
+    py_run = run_by_lang[SupportedLanguage.PYTHON]
+    py_dev = dev_by_lang[SupportedLanguage.PYTHON]
     merged_py = ManifestDependencies(
         runtime_roots=frozenset(prior_py.runtime_roots | fresh.manifest.runtime_roots | py_run),
         dev_roots=frozenset(prior_py.dev_roots | fresh.manifest.dev_roots | py_dev),
@@ -157,20 +187,20 @@ def refresh_inspector_after_provision(
         typescript=_merge_ecosystem_manifest(
             p_prior.typescript,
             p_fresh.typescript,
-            extra_run if language == SupportedLanguage.TYPESCRIPT else set(),
-            extra_dev if language == SupportedLanguage.TYPESCRIPT else set(),
+            run_by_lang[SupportedLanguage.TYPESCRIPT],
+            dev_by_lang[SupportedLanguage.TYPESCRIPT],
         ),
         rust=_merge_ecosystem_manifest(
             p_prior.rust,
             p_fresh.rust,
-            extra_run if language == SupportedLanguage.RUST else set(),
-            extra_dev if language == SupportedLanguage.RUST else set(),
+            run_by_lang[SupportedLanguage.RUST],
+            dev_by_lang[SupportedLanguage.RUST],
         ),
         go=_merge_ecosystem_manifest(
             p_prior.go,
             p_fresh.go,
-            extra_run if language == SupportedLanguage.GO else set(),
-            extra_dev if language == SupportedLanguage.GO else set(),
+            run_by_lang[SupportedLanguage.GO],
+            dev_by_lang[SupportedLanguage.GO],
         ),
     )
     return BuildingInspector(manifest=merged_py, polyglot_manifest=merged_poly)
@@ -374,12 +404,51 @@ def _provision_go_in_process(
     )
 
 
+def _merge_receipts(receipts: Sequence[ProvisionReceipt]) -> ProvisionReceipt:
+    if len(receipts) == 1:
+        return receipts[0]
+    specs: list[str] = []
+    files: list[str] = []
+    summaries: list[str] = []
+    for rec in receipts:
+        specs.extend(rec.provisioned_specs)
+        for f_rel in rec.updated_files:
+            if f_rel not in files:
+                files.append(f_rel)
+        summaries.append(rec.summary)
+    return ProvisionReceipt(
+        provisioned_specs=tuple(specs[:64]),
+        updated_files=tuple(files[:32]),
+        summary=" | ".join(summaries)[:512],
+    )
+
+
 class InProcessProvisionRunner:
-    """Deterministic offline provisioner updating Python, npm, Cargo, or Go manifests."""
+    """Deterministic offline provisioner updating Python, npm, Cargo, and/or Go manifests."""
 
     @jezz_callable
     def __init__(self, *, touch_lockfile: bool = False) -> None:
         self._touch_lockfile = touch_lockfile
+
+    def _provision_single_ecosystem(
+        self,
+        sandbox: WorkspaceSandbox,
+        lang: SupportedLanguage,
+        reqs: Sequence[DependencyRequirement],
+    ) -> ProvisionReceipt:
+        match lang:
+            case SupportedLanguage.TYPESCRIPT:
+                return _provision_npm_in_process(sandbox, reqs)
+            case SupportedLanguage.RUST:
+                return _provision_cargo_in_process(sandbox, reqs)
+            case SupportedLanguage.GO:
+                return _provision_go_in_process(sandbox, reqs)
+            case _:
+                return _provision_python_in_process(
+                    sandbox,
+                    reqs,
+                    touch_lockfile=self._touch_lockfile,
+                )
 
     @jezz_callable
     def provision_dependencies(
@@ -390,25 +459,16 @@ class InProcessProvisionRunner:
             Field(min_length=1, max_length=32),
         ],
     ) -> ProvisionReceipt:
-        """Update the active ecosystem manifest deterministically via authorized sandbox writes."""
+        """Update all targeted ecosystem manifests deterministically via authorized writes."""
         langs = detect_workspace_languages(
             sandbox.repo_root,
             authorized_files=sandbox.authorized_files,
         )
-        primary = langs[0]
-        match primary:
-            case SupportedLanguage.TYPESCRIPT:
-                return _provision_npm_in_process(sandbox, requirements)
-            case SupportedLanguage.RUST:
-                return _provision_cargo_in_process(sandbox, requirements)
-            case SupportedLanguage.GO:
-                return _provision_go_in_process(sandbox, requirements)
-            case _:
-                return _provision_python_in_process(
-                    sandbox,
-                    requirements,
-                    touch_lockfile=self._touch_lockfile,
-                )
+        grouped = group_requirements_by_ecosystem(requirements, fallback_language=langs[0])
+        receipts = [
+            self._provision_single_ecosystem(sandbox, lang, reqs) for lang, reqs in grouped.items()
+        ]
+        return _merge_receipts(receipts)
 
 
 def _run_checked_cmd(repo_root: Path, argv: tuple[str, ...], timeout_sec: float) -> None:
@@ -437,6 +497,18 @@ def _snapshot_manifest_files(repo_root: Path, rel_paths: Sequence[str]) -> dict[
             else None
         )
     return before
+
+
+def _restore_manifest_snapshot(repo_root: Path, snapshot: Mapping[str, str | None]) -> None:
+    for rel, prior in snapshot.items():
+        c_path = ContainedPath.from_parts(repo_root, rel)
+        if prior is None:
+            if c_path.resolved_path.is_file():
+                c_path.resolved_path.unlink()
+            continue
+        c_path.resolved_path.parent.mkdir(parents=True, exist_ok=True)
+        with c_path.resolved_path.open("wb") as fh:
+            fh.write(prior.encode("utf-8"))
 
 
 def _sync_manifest_mutations_to_sandbox(
@@ -485,12 +557,16 @@ class UvSubprocessProvisionRunner:
             r.pep508_spec() for r in requirements if r.scope == DependencyScope.RUNTIME
         )
         dev_specs = tuple(r.pep508_spec() for r in requirements if r.scope == DependencyScope.DEV)
-        if run_specs:
-            _run_checked_cmd(sandbox.repo_root, ("uv", "add", *run_specs), self._timeout_sec)
-        if dev_specs:
-            _run_checked_cmd(
-                sandbox.repo_root, ("uv", "add", "--dev", *dev_specs), self._timeout_sec
-            )
+        try:
+            if run_specs:
+                _run_checked_cmd(sandbox.repo_root, ("uv", "add", *run_specs), self._timeout_sec)
+            if dev_specs:
+                _run_checked_cmd(
+                    sandbox.repo_root, ("uv", "add", "--dev", *dev_specs), self._timeout_sec
+                )
+        except Exception:
+            _restore_manifest_snapshot(sandbox.repo_root, before)
+            raise
         updated_files = _sync_manifest_mutations_to_sandbox(sandbox, before, tracked)
         all_specs = (*run_specs, *dev_specs)
         return ProvisionReceipt(
@@ -542,6 +618,27 @@ class PolyglotSubprocessProvisionRunner:
     ) -> None:
         self._timeout_sec = timeout_sec
 
+    def _provision_non_python_group(
+        self,
+        sandbox: WorkspaceSandbox,
+        lang: SupportedLanguage,
+        reqs: Sequence[DependencyRequirement],
+    ) -> ProvisionReceipt:
+        tracked = _MANIFEST_FILES_BY_LANG[lang]
+        before = _snapshot_manifest_files(sandbox.repo_root, tracked)
+        all_specs = _execute_ecosystem_provision_cmds(
+            sandbox.repo_root,
+            lang,
+            reqs,
+            self._timeout_sec,
+        )
+        updated_files = _sync_manifest_mutations_to_sandbox(sandbox, before, tracked)
+        return ProvisionReceipt(
+            provisioned_specs=all_specs,
+            updated_files=updated_files,
+            summary=f"Provisioned {len(all_specs)} {lang} dependency spec(s).",
+        )
+
     @jezz_callable
     def provision_dependencies(
         self,
@@ -551,31 +648,36 @@ class PolyglotSubprocessProvisionRunner:
             Field(min_length=1, max_length=32),
         ],
     ) -> ProvisionReceipt:
-        """Provision ``requirements`` using the active workspace ecosystem's package manager."""
+        """Provision ``requirements`` across all targeted workspace ecosystems atomically."""
         langs = detect_workspace_languages(
             sandbox.repo_root,
             authorized_files=sandbox.authorized_files,
         )
-        primary = langs[0]
-        if primary == SupportedLanguage.PYTHON:
-            return UvSubprocessProvisionRunner(
-                timeout_sec=self._timeout_sec
-            ).provision_dependencies(sandbox, requirements)
-        tracked = _MANIFEST_FILES_BY_LANG[primary]
-        primary_manifest = tracked[0]
-        if primary_manifest not in sandbox.authorized_manifests:
-            msg = f"Provisioning denied: '{primary_manifest}' is not authorized by active mandate."
-            raise PermissionError(msg)
-        before = _snapshot_manifest_files(sandbox.repo_root, tracked)
-        all_specs = _execute_ecosystem_provision_cmds(
-            sandbox.repo_root,
-            primary,
-            requirements,
-            self._timeout_sec,
-        )
-        updated_files = _sync_manifest_mutations_to_sandbox(sandbox, before, tracked)
-        return ProvisionReceipt(
-            provisioned_specs=all_specs,
-            updated_files=updated_files,
-            summary=f"Provisioned {len(all_specs)} {primary} dependency spec(s).",
-        )
+        grouped = group_requirements_by_ecosystem(requirements, fallback_language=langs[0])
+        all_tracked: list[str] = []
+        for lang in grouped:
+            primary_manifest = _MANIFEST_FILES_BY_LANG[lang][0]
+            if primary_manifest not in sandbox.authorized_manifests:
+                msg = (
+                    f"Provisioning denied: '{primary_manifest}' is not authorized by active "
+                    "mandate."
+                )
+                raise PermissionError(msg)
+            all_tracked.extend(_MANIFEST_FILES_BY_LANG[lang])
+
+        before_all = _snapshot_manifest_files(sandbox.repo_root, all_tracked)
+        receipts: list[ProvisionReceipt] = []
+        try:
+            for lang, reqs in grouped.items():
+                if lang == SupportedLanguage.PYTHON:
+                    receipts.append(
+                        UvSubprocessProvisionRunner(
+                            timeout_sec=self._timeout_sec
+                        ).provision_dependencies(sandbox, reqs)
+                    )
+                else:
+                    receipts.append(self._provision_non_python_group(sandbox, lang, reqs))
+        except Exception:
+            _restore_manifest_snapshot(sandbox.repo_root, before_all)
+            raise
+        return _merge_receipts(receipts)

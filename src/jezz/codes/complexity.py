@@ -2,10 +2,11 @@
 
 import ast
 from collections.abc import Sequence
-from typing import Final
+from enum import StrEnum
+from typing import Annotated, Final
 
 import icontract
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from jezz.guards import (
     STRICT_FROZEN_CONFIG,
@@ -18,12 +19,79 @@ from jezz.guards import (
 )
 
 COGNITIVE_COMPLEXITY_LIMIT: Final[int] = 15
+STRICT_COGNITIVE_COMPLEXITY_LIMIT: Final[int] = 10
 MAX_NESTING_DEPTH_LIMIT: Final[int] = 4
 MAX_PARAMETER_COUNT_LIMIT: Final[int] = 6
 MAX_STATEMENT_COUNT_LIMIT: Final[int] = 35
+STRICT_STATEMENT_COUNT_LIMIT: Final[int] = 30
 
 _MAX_AST_STATEMENT_WALK: Final[int] = 50_000
 _MAX_VISITOR_DEPTH: Final[int] = 200
+
+
+class PermitProfile(StrEnum):
+    """Named JBC threshold profiles controlling workmanship and structural ceilings."""
+
+    STANDARD = "standard"
+    STRICT_INTERNAL = "strict_internal"
+
+
+class CodeThresholdOverrides(BaseModel):
+    """Optional per-permit numeric overrides for JBC complexity and span limits."""
+
+    model_config = STRICT_FROZEN_CONFIG
+
+    max_cognitive_complexity: Annotated[int, Field(ge=1, le=100)] | None = None
+    max_nesting_depth: Annotated[int, Field(ge=1, le=20)] | None = None
+    max_parameter_count: Annotated[int, Field(ge=1, le=32)] | None = None
+    max_statement_count: Annotated[int, Field(ge=1, le=250)] | None = None
+
+
+class ResolvedComplexityLimits(BaseModel):
+    """Effective JBC-COG-001/002 numeric thresholds after profile and override resolution."""
+
+    model_config = STRICT_FROZEN_CONFIG
+
+    max_cognitive_complexity: Annotated[int, Field(ge=1, le=100)] = COGNITIVE_COMPLEXITY_LIMIT
+    max_nesting_depth: Annotated[int, Field(ge=1, le=20)] = MAX_NESTING_DEPTH_LIMIT
+    max_parameter_count: Annotated[int, Field(ge=1, le=32)] = MAX_PARAMETER_COUNT_LIMIT
+    max_statement_count: Annotated[int, Field(ge=1, le=250)] = MAX_STATEMENT_COUNT_LIMIT
+
+
+@icontract.ensure(lambda result: result.max_cognitive_complexity >= 1)
+@jezz_callable
+def resolve_complexity_limits(
+    profile: PermitProfile = PermitProfile.STANDARD,
+    overrides: CodeThresholdOverrides | None = None,
+) -> ResolvedComplexityLimits:
+    """Resolve effective JBC-COG-001/002 thresholds from ``profile`` and ``overrides``."""
+    base_cc = (
+        STRICT_COGNITIVE_COMPLEXITY_LIMIT
+        if profile == PermitProfile.STRICT_INTERNAL
+        else COGNITIVE_COMPLEXITY_LIMIT
+    )
+    base_stmts = (
+        STRICT_STATEMENT_COUNT_LIMIT
+        if profile == PermitProfile.STRICT_INTERNAL
+        else MAX_STATEMENT_COUNT_LIMIT
+    )
+    eff = overrides or CodeThresholdOverrides()
+    return ResolvedComplexityLimits(
+        max_cognitive_complexity=(
+            eff.max_cognitive_complexity if eff.max_cognitive_complexity is not None else base_cc
+        ),
+        max_nesting_depth=(
+            eff.max_nesting_depth if eff.max_nesting_depth is not None else MAX_NESTING_DEPTH_LIMIT
+        ),
+        max_parameter_count=(
+            eff.max_parameter_count
+            if eff.max_parameter_count is not None
+            else MAX_PARAMETER_COUNT_LIMIT
+        ),
+        max_statement_count=(
+            eff.max_statement_count if eff.max_statement_count is not None else base_stmts
+        ),
+    )
 
 
 class CallableMetrics(BaseModel):

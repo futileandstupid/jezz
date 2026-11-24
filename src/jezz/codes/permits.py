@@ -12,6 +12,12 @@ from pydantic import BaseModel, Field, model_validator
 
 from jezz.codes.ast_utils import SourceSpan
 from jezz.codes.codebook import CODE_BOOK, codes_for_triggers
+from jezz.codes.complexity import (
+    CodeThresholdOverrides,
+    PermitProfile,
+    ResolvedComplexityLimits,
+    resolve_complexity_limits,
+)
 from jezz.codes.taxonomy import CodeSeverity, CodeTrigger
 from jezz.guards import (
     STRICT_FROZEN_CONFIG,
@@ -92,6 +98,8 @@ class CodePermit(BaseModel):
     active_triggers: Annotated[frozenset[CodeTrigger], Field(min_length=1, max_length=5)]
     bound_code_ids: Annotated[frozenset[IdentifierStr], Field(min_length=1, max_length=256)]
     variances: Annotated[tuple[CodeVariance, ...], Field(max_length=256)] = ()
+    profile: PermitProfile = PermitProfile.STANDARD
+    thresholds: CodeThresholdOverrides = CodeThresholdOverrides()
 
     @model_validator(mode="after")
     def _enforce_permit_completeness(self) -> Self:
@@ -127,6 +135,8 @@ class CodePermit(BaseModel):
         *,
         extra_code_ids: AbstractSet[IdentifierStr] = frozenset(),
         variances: Sequence[CodeVariance] = (),
+        profile: PermitProfile = PermitProfile.STANDARD,
+        thresholds: CodeThresholdOverrides | None = None,
     ) -> CodePermit:
         """Construct a valid ``CodePermit`` binding all codes mandated by ``triggers``."""
         effective_triggers = frozenset(triggers) | {CodeTrigger.UNIVERSAL}
@@ -136,6 +146,8 @@ class CodePermit(BaseModel):
             active_triggers=effective_triggers,
             bound_code_ids=frozenset(mandated | set(extra_code_ids)),
             variances=tuple(variances),
+            profile=profile,
+            thresholds=thresholds or CodeThresholdOverrides(),
         )
 
     @classmethod
@@ -145,6 +157,8 @@ class CodePermit(BaseModel):
         permit_id: PermitIdStr = "PERMIT-FULL",
         *,
         variances: Sequence[CodeVariance] = (),
+        profile: PermitProfile = PermitProfile.STANDARD,
+        thresholds: CodeThresholdOverrides | None = None,
     ) -> CodePermit:
         """Construct a ``CodePermit`` binding every provision in ``CODE_BOOK``."""
         return CodePermit(
@@ -152,7 +166,14 @@ class CodePermit(BaseModel):
             active_triggers=frozenset(CodeTrigger),
             bound_code_ids=frozenset(CODE_BOOK),
             variances=tuple(variances),
+            profile=profile,
+            thresholds=thresholds or CodeThresholdOverrides(),
         )
+
+    @jezz_callable
+    def effective_complexity_limits(self) -> ResolvedComplexityLimits:
+        """Return effective JBC-COG-001/002 numeric thresholds for this permit."""
+        return resolve_complexity_limits(self.profile, self.thresholds)
 
     @jezz_callable
     def find_variance(
@@ -289,7 +310,7 @@ def _expected_ruling(
 
 
 class InspectionReport(BaseModel):
-    """Complete Building Inspector ledger across all bound and auto-triggered codes."""
+    """Complete Building Inspection ledger across all bound and auto-triggered codes."""
 
     model_config = STRICT_FROZEN_CONFIG
 

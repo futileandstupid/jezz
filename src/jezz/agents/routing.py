@@ -12,6 +12,7 @@ from pydantic import BaseModel, BeforeValidator, Field, model_validator
 
 from jezz.agents.caching import CoercedPromptCacheMode, PromptCacheMode
 from jezz.agents.specialists import GuardedModel, PceModelSuite
+from jezz.agents.workspace import GateTimeoutSec
 from jezz.guards import (
     STRICT_FROZEN_CONFIG,
     ContainedPath,
@@ -161,6 +162,14 @@ class JezzModelsConfig(BaseModel):
             return role_override
         tier_val = self._tier_model(ROLE_TIER_MAP[slot])
         return tier_val if tier_val is not None else self.default
+
+
+class JezzGatesConfig(BaseModel):
+    """Project-level ``[tool.jezz.gates]`` subprocess watchdog configuration."""
+
+    model_config = STRICT_FROZEN_CONFIG
+
+    timeout_sec: GateTimeoutSec = 45.0
 
 
 class CliModelOverrides(BaseModel):
@@ -319,6 +328,13 @@ def load_pyproject_models_config(pyproject_target: ContainedPath) -> JezzModelsC
 
 
 @jezz_callable
+def load_pyproject_gates_config(pyproject_target: ContainedPath) -> JezzGatesConfig | None:
+    """Load ``[tool.jezz.gates]`` from ``pyproject_target``, or return ``None`` if absent."""
+    gates_tbl = read_pyproject_jezz_table(pyproject_target, "gates")
+    return JezzGatesConfig.model_validate(gates_tbl) if gates_tbl is not None else None
+
+
+@jezz_callable
 def discover_models_config(
     search_roots: Annotated[Sequence[Path], Field(min_length=1, max_length=16)],
 ) -> JezzModelsConfig | None:
@@ -336,6 +352,42 @@ def discover_models_config(
         if cfg is not None:
             return cfg
     return None
+
+
+@jezz_callable
+def discover_gates_config(
+    search_roots: Annotated[Sequence[Path], Field(min_length=1, max_length=16)],
+) -> JezzGatesConfig | None:
+    """Search ``pyproject.toml`` files across ``search_roots`` for ``[tool.jezz.gates]``."""
+    seen: set[Path] = set()
+    for raw_root in search_roots:
+        resolved = raw_root.resolve()
+        if resolved in seen or not resolved.is_dir():
+            continue
+        seen.add(resolved)
+        pyproject = ContainedPath.from_parts(resolved, "pyproject.toml")
+        if not pyproject.resolved_path.is_file():
+            continue
+        cfg = load_pyproject_gates_config(pyproject)
+        if cfg is not None:
+            return cfg
+    return None
+
+
+@icontract.ensure(lambda result: 0.0 < result <= 600.0)
+@jezz_callable
+def resolve_gate_timeout_sec(
+    cli_timeout_sec: GateTimeoutSec | None = None,
+    *,
+    project_config: JezzGatesConfig | None = None,
+    default_sec: GateTimeoutSec = 45.0,
+) -> GateTimeoutSec:
+    """Resolve subprocess gate timeout via ``--gate-timeout -> [tool.jezz.gates] -> default``."""
+    if cli_timeout_sec is not None:
+        return cli_timeout_sec
+    if project_config is not None:
+        return project_config.timeout_sec
+    return default_sec
 
 
 def _resolve_single_slot(

@@ -6,6 +6,8 @@ from datetime import date
 from pathlib import Path
 
 import pytest
+from hypothesis import given
+from hypothesis import strategies as st
 from pydantic import BaseModel
 from pydantic_ai.messages import ModelMessage, ModelResponse, ToolCallPart
 from pydantic_ai.models.function import AgentInfo, FunctionModel
@@ -417,3 +419,30 @@ def test_rust_inline_mod_super_import_avoids_false_module_cycle(tmp_path: Path) 
     )
     assert diff.is_occupiable
     assert diff.report.unwaived_violations() == ()
+
+
+@given(
+    alias_name=st.sampled_from(
+        ("IdentifierStr", "PositiveInt", "NonNegativeInt", "BoundedText", "FiniteFloat")
+    ),
+)
+def test_property_find_type_alias_misuse_catches_calls_and_subscripts(
+    alias_name: str,
+) -> None:
+    clean_unit = parse_source_unit(
+        "src/pkg/ok.py",
+        f"from jezz.guards import {alias_name}\nVAL: {alias_name}\n",
+    )
+    assert find_type_alias_misuse((clean_unit,)) is None
+
+    call_unit = parse_source_unit(
+        "src/pkg/bad_call.py",
+        f"from jezz.guards import {alias_name}\nX = {alias_name}(1)\n",
+    )
+    assert find_type_alias_misuse((call_unit,)) is not None
+
+    sub_unit = parse_source_unit(
+        "src/pkg/bad_sub.py",
+        f"from jezz.guards import {alias_name}\ntype T = {alias_name}[0, 10]\n",
+    )
+    assert find_type_alias_misuse((sub_unit,)) is not None

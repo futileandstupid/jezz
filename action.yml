@@ -27,6 +27,10 @@ inputs:
     description: "Optional relative path to a CodePermit JSON file."
     required: false
     default: ""
+  profile:
+    description: "Optional JBC threshold profile ('standard' or 'strict_internal')."
+    required: false
+    default: ""
   as-of:
     description: "Optional ISO-8601 date (YYYY-MM-DD) for CodeVariance sunset enforcement."
     required: false
@@ -79,6 +83,7 @@ runs:
         JEZZ_PR_BASE_REF: ${{ github.base_ref }}
         JEZZ_LANGUAGES: ${{ inputs.language }}
         JEZZ_PERMIT: ${{ inputs.permit }}
+        JEZZ_PROFILE: ${{ inputs.profile }}
         JEZZ_AS_OF: ${{ inputs.as-of }}
         JEZZ_DOSSIER: ${{ inputs.dossier }}
       run: |
@@ -94,12 +99,15 @@ runs:
         if [[ -n "$JEZZ_PERMIT" ]]; then
           COMMON_ARGS+=(--permit "$JEZZ_PERMIT")
         fi
+        if [[ -n "${JEZZ_PROFILE:-}" ]]; then
+          COMMON_ARGS+=(--profile "$JEZZ_PROFILE")
+        fi
         if [[ -n "$JEZZ_AS_OF" ]]; then
           COMMON_ARGS+=(--as-of "$JEZZ_AS_OF")
         fi
 
         run_jezz() {
-          uv run --python "$JEZZ_PYTHON_VERSION" --project "$JEZZ_ACTION_PATH" jezz "$@"
+          uv run --no-dev --python "$JEZZ_PYTHON_VERSION" --project "$JEZZ_ACTION_PATH" jezz "$@"
         }
 
         INSPECT_RC=0

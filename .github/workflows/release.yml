@@ -1,0 +1,77 @@
+name: Release Package & PyPI Publish
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+
+permissions:
+  contents: read
+
+jobs:
+  build-dist:
+    name: Verify Version Parity & Build Distributions
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout repository with full Git graph
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v10.4.0
+        with:
+          enable-cache: true
+
+      - name: Install pinned Python runtime (.python-version)
+        run: uv python install
+
+      - name: Sync locked environment
+        run: uv sync --locked --all-groups
+
+      - name: Verify Git tag matches package version
+        env:
+          RELEASE_REF_NAME: ${{ github.ref_name }}
+        run: |
+          EXPECTED_VER="${RELEASE_REF_NAME#v}"
+          ACTUAL_VER="$(uv run --no-sync python -c 'import jezz; print(jezz.__version__)')"
+          if [[ "$EXPECTED_VER" != "$ACTUAL_VER" ]]; then
+            echo "Tag version '$EXPECTED_VER' mismatches jezz.__version__ '$ACTUAL_VER'." >&2
+            exit 1
+          fi
+
+      - name: Enforce JBC Edition 1.2 & Dynamic Suite Gates
+        run: |
+          uv run jezz inspect .
+          uv run mypy .
+          uv run ruff check .
+          uv run pytest -q --cov=jezz --cov-fail-under=92
+
+      - name: Build sdist and wheel
+        run: |
+          uv build
+          ls -lh dist/*.whl dist/*.tar.gz
+
+  publish-pypi:
+    name: Publish to PyPI (Trusted Publisher)
+    needs: build-dist
+    if: vars.ENABLE_PYPI_PUBLISH == 'true'
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/p/jezz
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v10.4.0
+
+      - name: Build and publish distributions via Trusted Publishing
+        run: |
+          uv build
+          uv publish --trusted-publishing always

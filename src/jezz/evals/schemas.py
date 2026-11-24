@@ -1,4 +1,4 @@
-"""Track 4 & 7: Strict frozen schemas for controlled SDD vs. PCE evaluation via pydantic-evals."""
+"""Track 4, 7, & 17: Strict frozen schemas for polyglot SDD vs. PCE evaluation."""
 
 import ast
 from enum import StrEnum
@@ -14,6 +14,8 @@ from jezz.agents.caching import (
     compute_input_cost_savings_ratio,
 )
 from jezz.agents.schemas import FilePatchArtifact
+from jezz.codes.adapters import parse_any_source_unit
+from jezz.codes.polyglot_ir import SupportedLanguage
 from jezz.guards import (
     STRICT_FROZEN_CONFIG,
     WIRE_TUPLE_VALIDATOR,
@@ -34,8 +36,22 @@ class BenchmarkArm(StrEnum):
     JEZZ_PCE = "jezz_pce"
 
 
+def _oracle_probe_path(
+    case_id: str,
+    package_name: str,
+    language: SupportedLanguage,
+) -> str:
+    table: dict[SupportedLanguage, str] = {
+        SupportedLanguage.PYTHON: f"oracle_{case_id}.py",
+        SupportedLanguage.TYPESCRIPT: f"tests/oracle_{case_id}.test.ts",
+        SupportedLanguage.RUST: f"tests/oracle_{case_id}.rs",
+        SupportedLanguage.GO: f"{package_name}/oracle_{case_id}_test.go",
+    }
+    return table[language]
+
+
 class BenchmarkCaseMetadata(BaseModel):
-    """Hazard and topology annotations attached to a Track 4 benchmark Case."""
+    """Hazard, language, and topology annotations attached to a benchmark Case."""
 
     model_config = STRICT_FROZEN_CONFIG
 
@@ -50,10 +66,11 @@ class BenchmarkCaseMetadata(BaseModel):
         Field(min_length=1, max_length=16),
     ]
     scope_count: Annotated[int, Field(ge=1, le=16)]
+    language: SupportedLanguage = SupportedLanguage.PYTHON
 
 
 class BenchmarkTaskSpec(BaseModel):
-    """Matched task specification and held-out adversarial Hypothesis oracle for one Case."""
+    """Matched task specification and held-out adversarial property oracle for one Case."""
 
     model_config = STRICT_FROZEN_CONFIG
 
@@ -62,11 +79,16 @@ class BenchmarkTaskSpec(BaseModel):
     prompt: NonEmptyStr
     mandate: EngineeringMandate
     oracle_test_source: SourceCodeText
+    language: SupportedLanguage = SupportedLanguage.PYTHON
 
     @model_validator(mode="after")
     def _enforce_valid_oracle_syntax(self) -> Self:
+        probe_path = _oracle_probe_path(self.case_id, self.package_name, self.language)
         try:
-            ast.parse(self.oracle_test_source, filename=f"oracle_{self.case_id}.py")
+            if self.language == SupportedLanguage.PYTHON:
+                ast.parse(self.oracle_test_source, filename=probe_path)
+            else:
+                parse_any_source_unit(probe_path, self.oracle_test_source)
         except SyntaxError as exc:
             msg = f"Held-out oracle for '{self.case_id}' has invalid syntax: {exc.msg}."
             raise ValueError(msg) from exc
@@ -111,7 +133,7 @@ class SddImplementationBundle(BaseModel):
 
 
 class StructuralHealthSnapshot(BaseModel):
-    """Deterministic AST complexity, branch-ladder, and class-cohesion telemetry."""
+    """Deterministic AST/CST complexity, branch-ladder, and class-cohesion telemetry."""
 
     model_config = STRICT_FROZEN_CONFIG
 
@@ -123,9 +145,14 @@ class StructuralHealthSnapshot(BaseModel):
     max_class_lcom4: NonNegativeInt
     stateless_method_count: NonNegativeInt
 
+    @property
+    def unit_count(self) -> int:
+        """Return total inspected source unit count across the workspace."""
+        return self.python_unit_count
+
 
 class OracleSuiteVerdict(BaseModel):
-    """Outcome of independent held-out Hypothesis oracle, self-tests, and mypy --strict."""
+    """Outcome of independent held-out property oracle, self-tests, and static typecheck."""
 
     model_config = STRICT_FROZEN_CONFIG
 

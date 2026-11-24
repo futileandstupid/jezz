@@ -13,6 +13,7 @@ from pydantic import BaseModel, Field, model_validator
 
 from jezz.codes.ast_utils import RawDiscrepancy, SourceUnit
 from jezz.codes.codebook import CODE_BOOK, codes_for_triggers
+from jezz.codes.complexity import ResolvedComplexityLimits
 from jezz.codes.inspector import (
     BuildingInspector,
     assemble_inspection_report,
@@ -281,6 +282,7 @@ def _collect_differential_discrepancies(
     touched_units: Sequence[InspectedUnit],
     touched_paths: frozenset[str],
     static_ids: frozenset[str],
+    limits: ResolvedComplexityLimits | None = None,
 ) -> list[RawDiscrepancy]:
     if not touched_units:
         return []
@@ -289,6 +291,7 @@ def _collect_differential_discrepancies(
         touched_units,
         static_ids,
         polyglot_manifest=inspector.polyglot_manifest,
+        limits=limits,
     )
     if "JBC-COG-003" not in static_ids:
         return per_unit
@@ -303,16 +306,15 @@ def _collect_differential_discrepancies(
     return combined
 
 
-@jezz_callable
-def inspect_differential_rough_in(
-    inspector: GuardedInspector,
-    all_units: Annotated[Sequence[InspectedUnit], Field(max_length=100_000)],
+def _run_differential_inspection(
+    inspector: BuildingInspector,
+    all_units: Sequence[InspectedUnit],
     scope: DifferentialScope,
+    active_permit: CodePermit,
     *,
-    permit: CodePermit | None = None,
+    include_gates: bool,
+    attestations: Sequence[GateAttestation] = (),
 ) -> DifferentialInspectionReport:
-    """Gate touched units under JBC v1.2 while preserving whole-workspace cycle analysis."""
-    active_permit = permit or CodePermit.full_book(permit_id="PERMIT-RATCHET")
     active_date = (
         scope.reference_date if scope.reference_date is not None else datetime.now(UTC).date()
     )
@@ -321,66 +323,24 @@ def inspect_differential_rough_in(
 
     detected = detect_hazard_triggers(touched_units)
     triggered_ids = {c.code_id for c in codes_for_triggers(detected)}
-    candidate_ids = active_permit.bound_code_ids | triggered_ids
+    candidate_ids = frozenset(active_permit.bound_code_ids | triggered_ids)
     static_ids = frozenset(
         cid
         for cid in candidate_ids
         if CODE_BOOK[cid].inspection_method != InspectionMethod.GATE_ATTESTATION
     )
     raw = _collect_differential_discrepancies(
-        inspector, all_units, touched_units, touched_paths, static_ids
-    )
-    report = assemble_inspection_report(
-        active_permit,
-        detected,
+        inspector,
+        all_units,
+        touched_units,
+        touched_paths,
         static_ids,
-        raw,
-        len(touched_units),
-        active_date,
+        limits=active_permit.effective_complexity_limits(),
     )
-    return DifferentialInspectionReport(
-        diff_mode=scope.diff_mode,
-        base_ref=scope.base_ref,
-        reference_date=active_date,
-        total_workspace_units=len(all_units),
-        untouched_unit_count=len(all_units) - len(touched_units),
-        changed_python_paths=tuple(sorted(scope.changed_paths)),
-        inspected_unit_paths=tuple(sorted(touched_paths)),
-        report=report,
-    )
-
-
-@jezz_callable
-def inspect_differential_final(
-    inspector: GuardedInspector,
-    all_units: Annotated[Sequence[InspectedUnit], Field(max_length=100_000)],
-    scope: DifferentialScope,
-    *,
-    permit: CodePermit | None = None,
-    attestations: Annotated[Sequence[GateAttestation], Field(max_length=64)] = (),
-) -> DifferentialInspectionReport:
-    """Run differential Rough-In + Final Gate attestations for scoped brownfield occupancy."""
-    active_permit = permit or CodePermit.full_book(permit_id="PERMIT-RATCHET")
-    active_date = (
-        scope.reference_date if scope.reference_date is not None else datetime.now(UTC).date()
-    )
-    touched_units = tuple(u for u in all_units if u.file_path in scope.changed_paths)
-    touched_paths = frozenset(u.file_path for u in touched_units)
-
-    detected = detect_hazard_triggers(touched_units)
-    triggered_ids = {c.code_id for c in codes_for_triggers(detected)}
-    effective_ids = frozenset(active_permit.bound_code_ids | triggered_ids)
-    static_ids = frozenset(
-        cid
-        for cid in effective_ids
-        if CODE_BOOK[cid].inspection_method != InspectionMethod.GATE_ATTESTATION
-    )
-    raw = _collect_differential_discrepancies(
-        inspector, all_units, touched_units, touched_paths, static_ids
-    )
-    if "JBC-VRF-005" in effective_ids:
+    effective_ids = candidate_ids if include_gates else static_ids
+    if include_gates and "JBC-VRF-005" in effective_ids:
         raw.extend(check_vrf_005(attestations))
-    if "JBC-VRF-006" in effective_ids:
+    if include_gates and "JBC-VRF-006" in effective_ids:
         raw.extend(check_vrf_006(attestations))
     report = assemble_inspection_report(
         active_permit,
@@ -399,4 +359,44 @@ def inspect_differential_final(
         changed_python_paths=tuple(sorted(scope.changed_paths)),
         inspected_unit_paths=tuple(sorted(touched_paths)),
         report=report,
+    )
+
+
+@jezz_callable
+def inspect_differential_rough_in(
+    inspector: GuardedInspector,
+    all_units: Annotated[Sequence[InspectedUnit], Field(max_length=100_000)],
+    scope: DifferentialScope,
+    *,
+    permit: CodePermit | None = None,
+) -> DifferentialInspectionReport:
+    """Gate touched units under JBC v1.2 while preserving whole-workspace cycle analysis."""
+    active_permit = permit or CodePermit.full_book(permit_id="PERMIT-RATCHET")
+    return _run_differential_inspection(
+        inspector,
+        all_units,
+        scope,
+        active_permit,
+        include_gates=False,
+    )
+
+
+@jezz_callable
+def inspect_differential_final(
+    inspector: GuardedInspector,
+    all_units: Annotated[Sequence[InspectedUnit], Field(max_length=100_000)],
+    scope: DifferentialScope,
+    *,
+    permit: CodePermit | None = None,
+    attestations: Annotated[Sequence[GateAttestation], Field(max_length=64)] = (),
+) -> DifferentialInspectionReport:
+    """Run differential Rough-In + Final Gate attestations for scoped brownfield occupancy."""
+    active_permit = permit or CodePermit.full_book(permit_id="PERMIT-RATCHET")
+    return _run_differential_inspection(
+        inspector,
+        all_units,
+        scope,
+        active_permit,
+        include_gates=True,
+        attestations=attestations,
     )

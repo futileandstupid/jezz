@@ -23,7 +23,11 @@ from jezz.agents.caching import (
     partition_cached_user_prompt,
     resolve_cache_model_settings,
 )
-from jezz.agents.env_introspect import PackageApiSummary, inspect_installed_package_api
+from jezz.agents.env_introspect import (
+    PackageApiSummary,
+    inspect_installed_package_api,
+    inspect_polyglot_package_api,
+)
 from jezz.agents.memory import (
     WORKSPACE_MEMORY_REL_PATH,
     apply_curated_digest_to_state,
@@ -91,17 +95,22 @@ from jezz.agents.provision import (
     ProvisionPort,
     UvSubprocessProvisionRunner,
     compute_missing_dependencies,
+    group_requirements_by_ecosystem,
     refresh_inspector_after_provision,
 )
 from jezz.agents.routing import (
     ROLE_TIER_MAP,
     CliModelOverrides,
+    JezzGatesConfig,
     JezzModelsConfig,
     ResolvedModelRouting,
     SpecialistRoleSlot,
     SpecialistTier,
+    discover_gates_config,
     discover_models_config,
+    load_pyproject_gates_config,
     load_pyproject_models_config,
+    resolve_gate_timeout_sec,
     resolve_specialist_routing,
 )
 from jezz.agents.schemas import (
@@ -156,6 +165,7 @@ from jezz.agents.specialists import (
 from jezz.agents.workspace import (
     DynamicCheckFn,
     DynamicGatePort,
+    GateTimeoutSec,
     InProcessGateRunner,
     JezzAgentDeps,
     UvSubprocessGateRunner,
@@ -214,6 +224,7 @@ __all__ = [
     "FilePatchArtifact",
     "FrameNode",
     "FramedMandateProposal",
+    "GateTimeoutSec",
     "GoSubprocessGateRunner",
     "HypothesizeNode",
     "InProcessGateRunner",
@@ -223,6 +234,7 @@ __all__ = [
     "InstrumentNode",
     "InstrumentationSuiteBundle",
     "JezzAgentDeps",
+    "JezzGatesConfig",
     "JezzModelsConfig",
     "PackageApiSummary",
     "PceGraphDeps",
@@ -288,12 +300,16 @@ __all__ = [
     "compute_input_cost_savings_ratio",
     "compute_missing_dependencies",
     "detect_workspace_languages",
+    "discover_gates_config",
     "discover_models_config",
     "find_type_alias_misuse",
     "format_memory_prompt_context",
+    "group_requirements_by_ecosystem",
     "infer_authenticated_model",
     "inspect_installed_package_api",
+    "inspect_polyglot_package_api",
     "is_polyglot_test_path",
+    "load_pyproject_gates_config",
     "load_pyproject_models_config",
     "load_workspace_memory",
     "model_supports_inline_cache_points",
@@ -304,6 +320,7 @@ __all__ = [
     "record_certified_mandate_memory",
     "refresh_inspector_after_provision",
     "resolve_cache_model_settings",
+    "resolve_gate_timeout_sec",
     "resolve_specialist_routing",
     "run_bounded_agent",
     "save_workspace_memory",

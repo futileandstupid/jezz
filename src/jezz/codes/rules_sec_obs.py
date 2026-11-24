@@ -2,6 +2,7 @@
 
 import ast
 import re
+from collections.abc import Iterator
 from typing import Final
 
 from jezz.codes.ast_utils import (
@@ -14,7 +15,7 @@ from jezz.codes.ast_utils import (
     is_enum_class,
     is_pydantic_model_class,
 )
-from jezz.guards import jezz_callable
+from jezz.guards import LoopBudget, jezz_callable
 
 _BANNED_EXEC_CALLS: Final[frozenset[str]] = frozenset(
     {
@@ -32,6 +33,15 @@ _SQL_SINK_METHODS: Final[frozenset[str]] = frozenset(
     {"execute", "executemany", "executescript", "raw"}
 )
 _SAFE_YAML_LOADERS: Final[frozenset[str]] = frozenset({"SafeLoader", "CSafeLoader"})
+_SHELL_BINARIES: Final[frozenset[str]] = frozenset(
+    {"sh", "/bin/sh", "bash", "/bin/bash", "zsh", "/bin/zsh"}
+)
+_SAFE_ANCHOR_TYPES: Final[frozenset[str]] = frozenset(
+    {"Path", "PurePath", "PurePosixPath", "ContainedPath", "HttpUrl", "AnyHttpUrl"}
+)
+_PATH_METHOD_SINKS: Final[frozenset[str]] = frozenset(
+    {"open", "read_text", "read_bytes", "write_text", "write_bytes", "unlink", "rmdir"}
+)
 
 _SENSITIVE_NAME_RE: Final[re.Pattern[str]] = re.compile(
     r"(?:^|_)(?:password|passwd|secret|api_key|apikey|access_token|"
@@ -108,7 +118,73 @@ def _is_dynamic_sql_query(expr: ast.expr) -> bool:
     )
 
 
-def _inspect_sec_001_call(unit: SourceUnit, call: ast.Call) -> RawDiscrepancy | None:
+def _extract_assign_pair(stmt: ast.AST) -> tuple[str, ast.expr | None]:
+    if (
+        isinstance(stmt, ast.Assign)
+        and len(stmt.targets) == 1
+        and isinstance(stmt.targets[0], ast.Name)
+    ):
+        return stmt.targets[0].id, stmt.value
+    if isinstance(stmt, ast.AnnAssign) and isinstance(stmt.target, ast.Name):
+        return stmt.target.id, stmt.value
+    return "", None
+
+
+def _step_sec_001_pair(
+    lhs: str,
+    rhs: ast.expr,
+    sql_vars: set[str],
+    true_vars: set[str],
+) -> None:
+    if _is_dynamic_sql_query(rhs) or (isinstance(rhs, ast.Name) and rhs.id in sql_vars):
+        sql_vars.add(lhs)
+    if (isinstance(rhs, ast.Constant) and rhs.value is True) or (
+        isinstance(rhs, ast.Name) and rhs.id in true_vars
+    ):
+        true_vars.add(lhs)
+
+
+def _collect_sec_001_aliases(root: ast.AST) -> tuple[frozenset[str], frozenset[str]]:
+    sql_vars: set[str] = set()
+    true_vars: set[str] = set()
+    pairs = [
+        (lhs, rhs)
+        for n in ast.walk(root)
+        if (rhs := (p := _extract_assign_pair(n))[1]) is not None and (lhs := p[0])
+    ]
+    for _ in range(4):
+        for lhs, rhs in pairs:
+            _step_sec_001_pair(lhs, rhs, sql_vars, true_vars)
+    return frozenset(sql_vars), frozenset(true_vars)
+
+
+def _is_subprocess_shell_hazard(
+    call: ast.Call,
+    true_vars: frozenset[str],
+    is_test: bool,
+) -> bool:
+    for kw in call.keywords:
+        if kw.arg == "shell" and (
+            (isinstance(kw.value, ast.Constant) and kw.value.value is True)
+            or (isinstance(kw.value, ast.Name) and kw.value.id in true_vars)
+        ):
+            return True
+    if is_test or not call.args or not isinstance(call.args[0], ast.List | ast.Tuple):
+        return False
+    elts = call.args[0].elts
+    if len(elts) < 3:
+        return False
+    bin_ok = isinstance(elts[0], ast.Constant) and elts[0].value in _SHELL_BINARIES
+    flag_ok = isinstance(elts[1], ast.Constant) and elts[1].value == "-c"
+    return bin_ok and flag_ok and not isinstance(elts[2], ast.Constant)
+
+
+def _inspect_sec_001_call(
+    unit: SourceUnit,
+    call: ast.Call,
+    sql_vars: frozenset[str],
+    true_vars: frozenset[str],
+) -> RawDiscrepancy | None:
     callee = dotted_expr_name(call.func)
     span = SourceSpan(file_path=unit.file_path, line=call.lineno, column=call.col_offset)
 
@@ -132,21 +208,23 @@ def _inspect_sec_001_call(unit: SourceUnit, call: ast.Call) -> RawDiscrepancy | 
                 message="yaml.load() invoked without SafeLoader/CSafeLoader.",
                 remediation="Use yaml.safe_load() or pass Loader=yaml.SafeLoader.",
             )
-    if callee.startswith("subprocess.") and any(
-        kw.arg == "shell" and isinstance(kw.value, ast.Constant) and kw.value.value is True
-        for kw in call.keywords
+    if callee.startswith("subprocess.") and _is_subprocess_shell_hazard(
+        call, true_vars, unit.is_test_file
     ):
         return RawDiscrepancy(
             code_id="JBC-SEC-001",
             location=span,
-            message=f"'{callee}()' invoked with shell=True command-injection hazard.",
+            message=f"'{callee}()' invoked with shell=True or '-c' command-injection hazard.",
             remediation="Pass an explicit argument sequence with shell=False.",
         )
     if (
         isinstance(call.func, ast.Attribute)
         and call.func.attr in _SQL_SINK_METHODS
         and call.args
-        and _is_dynamic_sql_query(call.args[0])
+        and (
+            _is_dynamic_sql_query(call.args[0])
+            or (isinstance(call.args[0], ast.Name) and call.args[0].id in sql_vars)
+        )
     ):
         return RawDiscrepancy(
             code_id="JBC-SEC-001",
@@ -160,10 +238,11 @@ def _inspect_sec_001_call(unit: SourceUnit, call: ast.Call) -> RawDiscrepancy | 
 @jezz_callable
 def check_sec_001(unit: GuardedSourceUnit) -> list[RawDiscrepancy]:
     """Inspect ``unit`` for JBC-SEC-001 (injection immunity & eval/deserialization ban)."""
+    sql_vars, true_vars = _collect_sec_001_aliases(unit.tree)
     discrepancies: list[RawDiscrepancy] = []
     for node in ast.walk(unit.tree):
         if isinstance(node, ast.Call):
-            finding = _inspect_sec_001_call(unit, node)
+            finding = _inspect_sec_001_call(unit, node, sql_vars, true_vars)
             if finding is not None:
                 discrepancies.append(finding)
     return discrepancies
@@ -514,6 +593,139 @@ def check_sec_004(unit: GuardedSourceUnit) -> list[RawDiscrepancy]:
     return discrepancies
 
 
+def _iter_local_ast_nodes(fn_node: ast.FunctionDef | ast.AsyncFunctionDef) -> Iterator[ast.AST]:
+    stack: list[ast.AST] = list(reversed(fn_node.body))
+    budget = LoopBudget(max_steps=100_000)
+    while stack:
+        budget.tick()
+        curr = stack.pop()
+        if isinstance(curr, ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef):
+            continue
+        yield curr
+        stack.extend(reversed(list(ast.iter_child_nodes(curr))))
+
+
+def _names_in_expr(expr: ast.expr) -> set[str]:
+    return {sub.id for sub in ast.walk(expr) if isinstance(sub, ast.Name)}
+
+
+def _is_sanitizer_call(expr: ast.expr) -> bool:
+    if not isinstance(expr, ast.Call):
+        return False
+    callee = dotted_expr_name(expr.func)
+    return callee.endswith(("ContainedPath.from_parts", "HttpUrl", "AnyHttpUrl"))
+
+
+def _is_path_wrap_expr(expr: ast.expr) -> bool:
+    if isinstance(expr, ast.BinOp) and isinstance(expr.op, ast.Div):
+        return True
+    if not isinstance(expr, ast.Call):
+        return False
+    callee = dotted_expr_name(expr.func)
+    return callee in _UNANCHORED_PATH_CTORS or callee.endswith((".joinpath", ".resolve", "join"))
+
+
+def _seed_untrusted_param_names(ctx: CallableContext) -> set[str]:
+    args = [*ctx.node.args.posonlyargs, *ctx.node.args.args, *ctx.node.args.kwonlyargs]
+    tainted: set[str] = set()
+    for arg in args:
+        if arg.arg in {"self", "cls"}:
+            continue
+        ann_names = _names_in_expr(arg.annotation) if arg.annotation is not None else set()
+        if not (ann_names & _SAFE_ANCHOR_TYPES):
+            tainted.add(arg.arg)
+    return tainted
+
+
+def _step_path_taint_pair(
+    lhs: str,
+    rhs: ast.expr,
+    tainted_strs: set[str],
+    uncontained_paths: set[str],
+) -> None:
+    if _is_sanitizer_call(rhs) or ".resolved_path" in ast.unparse(rhs):
+        return
+    refs = _names_in_expr(rhs)
+    if _is_path_wrap_expr(rhs) and (refs & (tainted_strs | uncontained_paths)):
+        uncontained_paths.add(lhs)
+    elif refs & tainted_strs:
+        tainted_strs.add(lhs)
+
+
+def _collect_callable_path_taint(ctx: CallableContext) -> tuple[frozenset[str], frozenset[str]]:
+    tainted_strs = _seed_untrusted_param_names(ctx)
+    uncontained_paths: set[str] = set()
+    assigns = [
+        (lhs, rhs)
+        for n in _iter_local_ast_nodes(ctx.node)
+        if (rhs := (p := _extract_assign_pair(n))[1]) is not None and (lhs := p[0])
+    ]
+    for _ in range(4):
+        for lhs, rhs in assigns:
+            _step_path_taint_pair(lhs, rhs, tainted_strs, uncontained_paths)
+    return frozenset(tainted_strs), frozenset(uncontained_paths)
+
+
+def _body_checks_containment(ctx: CallableContext) -> bool:
+    return any(
+        isinstance(n, ast.Call)
+        and isinstance(n.func, ast.Attribute)
+        and n.func.attr == "is_relative_to"
+        for n in _iter_local_ast_nodes(ctx.node)
+    )
+
+
+def _check_callable_path_method_sink(
+    unit: SourceUnit,
+    ctx: CallableContext,
+    call: ast.Call,
+    tainted_strs: frozenset[str],
+    uncontained_paths: frozenset[str],
+) -> RawDiscrepancy | None:
+    if not isinstance(call.func, ast.Attribute) or call.func.attr not in _PATH_METHOD_SINKS:
+        return None
+    recv = call.func.value
+    if isinstance(recv, ast.Attribute) and recv.attr == "resolved_path":
+        return None
+    is_tainted_recv = (isinstance(recv, ast.Name) and recv.id in uncontained_paths) or (
+        _is_path_wrap_expr(recv) and bool(_names_in_expr(recv) & (tainted_strs | uncontained_paths))
+    )
+    if not is_tainted_recv:
+        return None
+    return RawDiscrepancy(
+        code_id="JBC-SEC-005",
+        location=SourceSpan(
+            file_path=unit.file_path,
+            line=call.lineno,
+            column=call.col_offset,
+            symbol=ctx.qualname,
+        ),
+        message=(
+            f"Filesystem sink '.{call.func.attr}()' invoked on uncontained Path derived from "
+            "untrusted parameter."
+        ),
+        remediation="Confine relative path via ContainedPath.from_parts(root, rel) before I/O.",
+    )
+
+
+def _check_callable_taint_aliases(unit: SourceUnit, ctx: CallableContext) -> list[RawDiscrepancy]:
+    if ctx.qualname == "ContainedPath.from_parts" or _body_checks_containment(ctx):
+        return []
+    tainted_strs, uncontained_paths = _collect_callable_path_taint(ctx)
+    if not tainted_strs and not uncontained_paths:
+        return []
+    out: list[RawDiscrepancy] = []
+    for node in _iter_local_ast_nodes(ctx.node):
+        if not isinstance(node, ast.Call):
+            continue
+        method_hit = _check_callable_path_method_sink(
+            unit, ctx, node, tainted_strs, uncontained_paths
+        )
+        if method_hit is not None:
+            out.append(method_hit)
+    return out
+
+
 @jezz_callable
 def check_sec_005(unit: GuardedSourceUnit) -> list[RawDiscrepancy]:
     """Inspect ``unit`` for JBC-SEC-005 (taint separation & canonicalized path/URL sinks)."""
@@ -526,9 +738,10 @@ def check_sec_005(unit: GuardedSourceUnit) -> list[RawDiscrepancy]:
         callee = dotted_expr_name(node.func)
         first_arg = node.args[0]
         span = SourceSpan(file_path=unit.file_path, line=node.lineno, column=node.col_offset)
-        if callee in _RAW_PATH_SINKS and isinstance(
+        is_uncontained_arg = isinstance(
             first_arg, ast.Name | ast.Constant | ast.JoinedStr | ast.BinOp
-        ):
+        ) or (".resolved_path" not in ast.unparse(first_arg) and bool(_names_in_expr(first_arg)))
+        if callee in _RAW_PATH_SINKS and is_uncontained_arg:
             discrepancies.append(
                 RawDiscrepancy(
                     code_id="JBC-SEC-005",
@@ -548,6 +761,8 @@ def check_sec_005(unit: GuardedSourceUnit) -> list[RawDiscrepancy]:
                     remediation="Validate scheme/host via HttpUrl/AnyHttpUrl before request.",
                 )
             )
+    for ctx in unit.callables:
+        discrepancies.extend(_check_callable_taint_aliases(unit, ctx))
     return discrepancies
 
 

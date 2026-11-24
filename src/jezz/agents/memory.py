@@ -1,13 +1,14 @@
 """Persistent cross-mandate workspace memory (``.jezz/memory.json``) and consultation grounding."""
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from pathlib import Path
+from types import MappingProxyType
 from typing import Annotated, Final
 
 import icontract
 from pydantic import Field
 
-from jezz.agents.env_introspect import inspect_installed_package_api
+from jezz.agents.env_introspect import inspect_polyglot_package_api
 from jezz.agents.schemas import (
     CuratedMemoryDigest,
     SealedMandateMemoryEntry,
@@ -15,6 +16,7 @@ from jezz.agents.schemas import (
 )
 from jezz.behaviors.runtime import AgentExecutionState
 from jezz.codes.codebook import CODE_BOOK
+from jezz.codes.polyglot_ir import SupportedLanguage
 from jezz.guards import (
     BoundedText,
     ContainedPath,
@@ -23,9 +25,20 @@ from jezz.guards import (
     jezz_callable,
     read_bounded_text,
 )
-from jezz.methodology.mandate import EngineeringMandate
+from jezz.methodology.mandate import ConsultTargetStr, EngineeringMandate
 
 WORKSPACE_MEMORY_REL_PATH: Final[str] = ".jezz/memory.json"
+_CONSULT_ECOSYSTEM_PREFIXES: Final[Mapping[str, SupportedLanguage]] = MappingProxyType(
+    {
+        "py": SupportedLanguage.PYTHON,
+        "python": SupportedLanguage.PYTHON,
+        "npm": SupportedLanguage.TYPESCRIPT,
+        "ts": SupportedLanguage.TYPESCRIPT,
+        "crate": SupportedLanguage.RUST,
+        "rust": SupportedLanguage.RUST,
+        "go": SupportedLanguage.GO,
+    }
+)
 
 
 def _dedupe_bounded_strings(
@@ -194,10 +207,33 @@ def apply_curated_digest_to_state(
     state.world_model.falsified_paths = list(digest.retained_falsified_paths)
 
 
+def _split_prefixed_consult_target(target: str) -> tuple[SupportedLanguage, str] | None:
+    if ":" not in target:
+        return None
+    prefix, remainder = target.split(":", maxsplit=1)
+    lang = _CONSULT_ECOSYSTEM_PREFIXES.get(prefix.lower())
+    cleaned = remainder.strip()
+    if lang is None or not cleaned:
+        return None
+    return lang, cleaned
+
+
+def _resolve_package_target(repo_root: Path, label: str, lang: SupportedLanguage, spec: str) -> str:
+    try:
+        pkg_summary = inspect_polyglot_package_api(repo_root, lang, spec)
+    except ImportError, ValueError:
+        return f"[Target {label}] Unresolved reference; verify via read-only tools."
+    return f"[Installed API {label}]\n{pkg_summary.to_compact_text()[:1_500]}"
+
+
 def _resolve_single_consult_target(repo_root: Path, target: str) -> str:
-    if target in CODE_BOOK:
-        code = CODE_BOOK[target]
+    upper = target.strip().upper()
+    if upper in CODE_BOOK:
+        code = CODE_BOOK[upper]
         return f"[{code.code_id} {code.title}] {code.normative_rule} Pass: {code.pass_criteria}"
+    prefixed = _split_prefixed_consult_target(target)
+    if prefixed is not None:
+        return _resolve_package_target(repo_root, target, prefixed[0], prefixed[1])
     try:
         contained = ContainedPath.from_parts(repo_root, target)
     except ValueError:
@@ -205,17 +241,13 @@ def _resolve_single_consult_target(repo_root: Path, target: str) -> str:
     if contained is not None and contained.resolved_path.is_file():
         excerpt = read_bounded_text(contained, max_bytes=32_768)[:1_500]
         return f"[Workspace Reference {contained.relative_posix}]\n{excerpt}"
-    try:
-        pkg_summary = inspect_installed_package_api(target)
-    except ImportError, ValueError:
-        return f"[Target {target}] Unresolved reference; verify via read-only tools."
-    return f"[Installed API {target}]\n{pkg_summary.to_compact_text()[:1_500]}"
+    return _resolve_package_target(repo_root, target, SupportedLanguage.PYTHON, target)
 
 
 @jezz_callable
 def build_consultation_reference_pack(
     repo_root: Path,
-    targets: Annotated[Sequence[IdentifierStr], Field(max_length=32)],
+    targets: Annotated[Sequence[ConsultTargetStr], Field(max_length=32)],
 ) -> BoundedText:
     """Resolve JBC code provisions, confined workspace docs, and package APIs for BHV-06 CONSULT."""
     resolved_root = repo_root.resolve()

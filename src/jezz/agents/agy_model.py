@@ -1,10 +1,11 @@
 """Zero-credential Antigravity CLI (``agy``) Pydantic AI Model adapter (``antigravity:<model>``)."""
 
 import asyncio
+import contextlib
 import hashlib
 import json
 import tempfile
-from collections.abc import Sequence
+from collections.abc import AsyncIterator, Sequence
 from typing import Annotated, Final, Protocol, runtime_checkable
 
 import icontract
@@ -22,7 +23,7 @@ from pydantic_ai.messages import (
     ToolReturnPart,
     UserPromptPart,
 )
-from pydantic_ai.models import Model, ModelRequestParameters
+from pydantic_ai.models import Model, ModelRequestParameters, StreamedResponse
 from pydantic_ai.profiles import ModelProfile
 from pydantic_ai.settings import ModelSettings
 from pydantic_ai.tools import ToolDefinition
@@ -36,6 +37,7 @@ from jezz.guards import (
     LoopBudget,
     NonNegativeInt,
     jezz_callable,
+    jezz_generator,
 )
 
 AGY_PROVIDER_PREFIX: Final[str] = "antigravity"
@@ -240,6 +242,9 @@ class SubprocessAntigravityRunner:
                         stderr=asyncio.subprocess.PIPE,
                     )
                     out_bytes, err_bytes = await proc.communicate()
+            except FileNotFoundError as exc:
+                msg = f"Antigravity CLI executable '{self._binary_name}' was not found on PATH."
+                raise UserError(msg) from exc
             except TimeoutError as exc:
                 await _terminate_timed_out_proc(proc)
                 msg = f"Antigravity CLI ('{agy_model}') timed out after {timeout_sec}s."
@@ -475,7 +480,15 @@ def _parse_response_parts(
 
 
 class AntigravityCliModel(Model):
-    """Zero-credential ``pydantic_ai.models.Model`` backed by ``agy`` CLI sessions."""
+    """Zero-credential ``pydantic_ai.models.Model`` backed by ``agy --print`` sessions.
+
+    Isolation & Streaming Contract:
+        ``agy --print`` currently exposes ``--disable-slash-commands`` without a CLI flag to
+        disable built-in host tools; ``SubprocessAntigravityRunner`` therefore executes each
+        turn inside an ephemeral ``tempfile.TemporaryDirectory()`` alongside the JSON tool
+        banner. Token streaming (``request_stream``) is unsupported because ``agy --print``
+        emits a single terminal JSON envelope per turn and raises ``UserError`` if invoked.
+    """
 
     @jezz_callable
     def __init__(
@@ -561,3 +574,21 @@ class AntigravityCliModel(Model):
             next_key = _history_fingerprint(instr_text, tools_text, [*messages, response])
             self._record_conversation(next_key, turn.conversation_id)
         return response
+
+    @contextlib.asynccontextmanager
+    @jezz_generator
+    async def request_stream(
+        self,
+        messages: list[ModelMessage],
+        model_settings: ModelSettings | None,
+        model_request_parameters: ModelRequestParameters,
+        run_context: object = None,
+    ) -> AsyncIterator[Annotated[StreamedResponse, InstanceGuard(StreamedResponse)]]:
+        """Reject streaming requests explicitly because ``agy --print`` is turn-atomic."""
+        _ = (messages, model_settings, model_request_parameters, run_context)
+        msg = (
+            f"AntigravityCliModel ('{self._system}:{self._agy_slug}') executes atomic "
+            "'agy --print' turns and does not support token streaming; use Agent.run()."
+        )
+        raise UserError(msg)
+        yield

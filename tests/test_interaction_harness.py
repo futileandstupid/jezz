@@ -7,6 +7,8 @@ import textwrap
 from pathlib import Path
 
 import pytest
+from hypothesis import given
+from hypothesis import strategies as st
 from pydantic import TypeAdapter
 from pydantic_ai.messages import ModelMessage, ModelResponse, ToolCallPart
 from pydantic_ai.models.function import AgentInfo, FunctionModel
@@ -402,3 +404,23 @@ def test_cli_interactive_elicitation_progress_and_plan_only_flow(
     assert code_exec == 0
     assert "OCCUPANCY_CERTIFIED" in out_exec.getvalue()
     assert (tmp_path / "src" / "pkg_one" / "calc.py").is_file()
+
+
+@given(
+    max_cont=st.integers(min_value=1, max_value=10),
+    extra_steps=st.integers(min_value=0, max_value=10),
+)
+def test_property_stop_hook_continuation_cap_always_fails_open(
+    max_cont: int,
+    extra_steps: int,
+) -> None:
+    out = evaluate_stop_hook(
+        StopHookInput(
+            termination_reason="NO_TOOL_CALL",
+            execution_num=max_cont + extra_steps,
+            continuation_active=True,
+            workspace_paths=(),
+        ),
+        config=StopHookConfig(max_continuations=max_cont),
+    )
+    assert out.decision == StopHookDecisionKind.ALLOW

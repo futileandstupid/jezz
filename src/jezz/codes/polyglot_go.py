@@ -100,6 +100,9 @@ _GO_UNBOUNDED_TYPE_RE: Final[re.Pattern[str]] = re.compile(
 _GO_FUEL_NAMES: Final[frozenset[str]] = frozenset(
     {"maxDepth", "remainingDepth", "fuel", "depthBudget", "budget"}
 )
+_GO_GUARD_CALL_TAILS: Final[frozenset[str]] = frozenset(
+    {"Validate", "Decode", "Parse", "Check", "Verify", "IsNaN", "IsInf"}
+)
 _GO_RAW_FS_CALLS: Final[frozenset[str]] = frozenset(
     {"os.Open", "os.ReadFile", "os.WriteFile", "os.Remove", "os.RemoveAll", "os.Create"}
 )
@@ -198,18 +201,54 @@ def _extract_go_receiver_info(fn_node: ts.Node) -> tuple[str, str]:
     return r_var, r_type
 
 
-def _go_body_has_guard(body_node: ts.Node | None, has_params: bool) -> bool:
-    if not has_params or body_node is None:
-        return True
-    if ".Validate(" in node_text(body_node):
-        return True
-    return any(
-        sub.type in {"if_statement", "expression_switch_statement"}
-        for sub in iter_local_cst_nodes(body_node, _GO_SCOPE_BOUNDARIES)
-    )
+def _identifiers_in_go_node(node: ts.Node | None) -> set[str]:
+    if node is None:
+        return set()
+    return {node_text(i) for i in iter_cst_nodes(node) if i.type == "identifier"}
 
 
-def _extract_go_params(params_node: ts.Node | None, guarded_fn: bool) -> tuple[PolyglotParam, ...]:
+def _record_go_guard_node(
+    sub: ts.Node,
+    guarded: set[str],
+    deps: dict[str, set[str]],
+) -> None:
+    if sub.type in {"if_statement", "expression_switch_statement", "type_switch_statement"}:
+        guarded |= _identifiers_in_go_node(sub.child_by_field_name("initializer"))
+        cond = sub.child_by_field_name("condition") or sub.child_by_field_name("value")
+        guarded |= _identifiers_in_go_node(cond)
+        return
+    if sub.type == "call_expression":
+        tail = _go_callee_name(sub).rsplit(".", maxsplit=1)[-1]
+        if tail in _GO_GUARD_CALL_TAILS:
+            guarded |= _identifiers_in_go_node(sub)
+        return
+    if sub.type in {"short_var_declaration", "assignment_statement", "var_spec"}:
+        lhs_node = sub.child_by_field_name("left") or sub.child_by_field_name("name")
+        rhs_node = sub.child_by_field_name("right") or sub.child_by_field_name("value")
+        rhs_ids = _identifiers_in_go_node(rhs_node)
+        for lhs in _identifiers_in_go_node(lhs_node):
+            deps.setdefault(lhs, set()).update(rhs_ids)
+
+
+def _collect_go_guarded_identifiers(body_node: ts.Node | None) -> frozenset[str]:
+    if body_node is None:
+        return frozenset()
+    guarded: set[str] = set()
+    deps: dict[str, set[str]] = {}
+    for sub in iter_local_cst_nodes(body_node, _GO_SCOPE_BOUNDARIES):
+        _record_go_guard_node(sub, guarded, deps)
+    for _ in range(4):
+        extra = {src for lhs in list(guarded) for src in deps.get(lhs, ()) if src not in guarded}
+        if not extra:
+            break
+        guarded |= extra
+    return frozenset(guarded)
+
+
+def _extract_go_params(
+    params_node: ts.Node | None,
+    guarded_idents: frozenset[str],
+) -> tuple[PolyglotParam, ...]:
     if params_node is None:
         return ()
     out: list[PolyglotParam] = []
@@ -224,7 +263,8 @@ def _extract_go_params(params_node: ts.Node | None, guarded_fn: bool) -> tuple[P
             if decl.field_name_for_child(i) == "name"
         ] or ["_"]
         for p_name in names:
-            unb = not guarded_fn and _GO_UNBOUNDED_TYPE_RE.match(t_txt) is not None
+            is_guarded = p_name == "_" or p_name in guarded_idents
+            unb = (not is_guarded) and _GO_UNBOUNDED_TYPE_RE.match(t_txt) is not None
             out.append(
                 PolyglotParam(
                     name=p_name[:256],
@@ -238,6 +278,20 @@ def _extract_go_params(params_node: ts.Node | None, guarded_fn: bool) -> tuple[P
                 )
             )
     return tuple(out[:64])
+
+
+def _has_go_boundary_contract(
+    params: tuple[PolyglotParam, ...],
+    guarded_idents: frozenset[str],
+) -> bool:
+    for param in params:
+        if param.name == "_":
+            continue
+        if param.is_unbounded_primitive or not param.has_type:
+            return False
+        if (param.is_untyped_bag or param.has_any_erasure) and param.name not in guarded_idents:
+            return False
+    return True
 
 
 def _visit_go_local_node(
@@ -371,8 +425,8 @@ def _build_go_callable(fn_node: ts.Node, is_test_file: bool) -> PolyglotCallable
     params_node = fn_node.child_by_field_name("parameters")
     body_node = fn_node.child_by_field_name("body")
     has_raw_params = params_node is not None and bool(params_node.named_children)
-    guarded_fn = _go_body_has_guard(body_node, has_raw_params)
-    params = _extract_go_params(params_node, guarded_fn)
+    guarded_idents = _collect_go_guarded_identifiers(body_node) if has_raw_params else frozenset()
+    params = _extract_go_params(params_node, guarded_idents)
     param_names = frozenset(p.name for p in params if p.name != "_")
     t_param = _extract_go_test_t_param(params, is_test_fn)
 
@@ -387,7 +441,6 @@ def _build_go_callable(fn_node: ts.Node, is_test_file: bool) -> PolyglotCallable
         if body_node is not None
         else (0, 0, 0)
     )
-    has_unb = any(p.is_unbounded_primitive for p in params)
     arg_sig = ", ".join(f"{p.name} {p.type_text}" for p in params)
     recv_used = uses_recv or not bool(recv_type) or not bool(recv_var) or recv_var == "_"
     return PolyglotCallable(
@@ -404,7 +457,7 @@ def _build_go_callable(fn_node: ts.Node, is_test_file: bool) -> PolyglotCallable
         return_type_text=res_txt[:256],
         return_has_any_erasure=_GO_ANY_RE.search(res_txt) is not None,
         return_is_untyped_bag=_GO_BAG_RE.search(res_txt) is not None,
-        has_boundary_contract=guarded_fn or not has_unb,
+        has_boundary_contract=_has_go_boundary_contract(params, guarded_idents),
         cognitive_complexity=cc,
         max_nesting_depth=depth,
         statement_count=stmts,
@@ -763,8 +816,27 @@ def _check_go_resource_call(
     return out
 
 
+def _go_arg_is_dynamic_sql_alias(call: ts.Node, args_txt: str) -> bool:
+    if "fmt.Sprintf(" in args_txt or "+" in args_txt:
+        return True
+    args_node = call.child_by_field_name("arguments")
+    body = _enclosing_go_func_body(call)
+    if args_node is None or body is None:
+        return False
+    arg_ids = _identifiers_in_go_node(args_node)
+    for sub in iter_local_cst_nodes(body, _GO_SCOPE_BOUNDARIES):
+        if sub.type in {"short_var_declaration", "assignment_statement"}:
+            lhs = _identifiers_in_go_node(sub.child_by_field_name("left"))
+            rhs = sub.child_by_field_name("right")
+            rhs_txt = node_text(rhs) if rhs is not None else ""
+            if (lhs & arg_ids) and ("fmt.Sprintf(" in rhs_txt or "+" in rhs_txt):
+                return True
+    return False
+
+
 def _check_go_injection_call(
     span: SourceSpan,
+    call: ts.Node,
     callee: str,
     args_txt: str,
 ) -> list[RawDiscrepancy]:
@@ -782,9 +854,9 @@ def _check_go_injection_call(
                 remediation="Execute target binary directly with discrete argument strings.",
             )
         )
-    if callee.endswith((".Query", ".QueryContext", ".Exec", ".ExecContext")) and (
-        "fmt.Sprintf(" in args_txt or "+" in args_txt
-    ):
+    if callee.endswith(
+        (".Query", ".QueryContext", ".Exec", ".ExecContext")
+    ) and _go_arg_is_dynamic_sql_alias(call, args_txt):
         out.append(
             RawDiscrepancy(
                 code_id="JBC-SEC-001",
@@ -919,7 +991,7 @@ def _check_go_call_node(file_path: str, call: ts.Node, is_test: bool) -> list[Ra
     return [
         *_check_go_panic_or_err_call(span, call, callee, args_txt, is_test),
         *_check_go_resource_call(span, call, callee, args_txt, is_test),
-        *_check_go_injection_call(span, callee, args_txt),
+        *_check_go_injection_call(span, call, callee, args_txt),
         *_check_go_wire_json_call(span, call, callee, args_txt, is_test),
         *_check_go_fs_and_path_call(span, callee, first_arg, is_test),
         *_check_go_obs_and_vrf_call(span, callee, is_test),

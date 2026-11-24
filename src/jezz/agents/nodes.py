@@ -74,15 +74,17 @@ from jezz.behaviors.runtime import (
 )
 from jezz.behaviors.taxonomy import BehaviorKind
 from jezz.codes.ast_graph import build_workspace_ast_graph
+from jezz.codes.discovery import build_workspace_inspector
 from jezz.codes.inspector import (
     BuildingInspector,
+    ManifestDependencies,
     bind_permit_to_state,
     certify_occupancy_in_state,
     compute_units_digest,
     record_inspection_to_state,
 )
 from jezz.codes.permits import CodePermit, GateAttestation, InspectionReport
-from jezz.codes.polyglot_ir import SupportedLanguage
+from jezz.codes.polyglot_ir import EcosystemManifest, PolyglotManifest, SupportedLanguage
 from jezz.codes.ratchet import (
     DifferentialScope,
     inspect_differential_final,
@@ -616,24 +618,31 @@ def _build_deterministic_env_observation(
     missing: Sequence[DependencyRequirement],
 ) -> EnvironmentObservation:
     py_ver = f"{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}"
+    langs = sorted(_active_languages(deps), key=str)
     primary_lang = _primary_language(deps)
-    eco = deps.inspector.polyglot_manifest.for_language(primary_lang)
-    run_source = (
-        deps.inspector.manifest.runtime_roots
-        if primary_lang == SupportedLanguage.PYTHON
-        else eco.runtime_roots
-    )
-    dev_source = (
-        deps.inspector.manifest.dev_roots
-        if primary_lang == SupportedLanguage.PYTHON
-        else eco.dev_roots
-    )
-    run_roots = tuple(sorted(str(r) for r in run_source))[:256]
-    dev_roots = tuple(sorted(str(r) for r in dev_source))[:256]
-    missing_specs = tuple(d.pep508_spec() for d in missing)[:64]
+    run_pool: set[str] = set()
+    dev_pool: set[str] = set()
+    for lang in langs:
+        eco = deps.inspector.polyglot_manifest.for_language(lang)
+        run_pool |= (
+            set(deps.inspector.manifest.runtime_roots)
+            if lang == SupportedLanguage.PYTHON
+            else set(eco.runtime_roots)
+        )
+        dev_pool |= (
+            set(deps.inspector.manifest.dev_roots)
+            if lang == SupportedLanguage.PYTHON
+            else set(eco.dev_roots)
+        )
+    run_roots = tuple(sorted(run_pool))[:256]
+    dev_roots = tuple(sorted(dev_pool))[:256]
+    missing_specs = tuple(d.ecosystem_spec(str(d.infer_ecosystem(primary_lang))) for d in missing)[
+        :64
+    ]
     prior_ids = tuple(m.mandate_id for m in deps.memory_ledger.sealed_mandates)[:128]
+    lang_label = "+".join(str(lang) for lang in langs)
     summary = (
-        f"Lang={primary_lang} (Python {py_ver}); runtime_roots={len(run_roots)}, "
+        f"Lang={lang_label} (Python {py_ver}); runtime_roots={len(run_roots)}, "
         f"dev_roots={len(dev_roots)}, missing_deps={list(missing_specs)}, "
         f"prior_mandates={len(prior_ids)}"
     )[:240]
@@ -919,6 +928,38 @@ class ProvisionNode(AtomicBehaviorGraphNode[PceGraphDeps, PceWorkflowResult]):
         return CheckpointImplNode()
 
 
+def _union_eco_workspace_roots(
+    base: EcosystemManifest, discovered: EcosystemManifest
+) -> EcosystemManifest:
+    return EcosystemManifest(
+        runtime_roots=base.runtime_roots,
+        dev_roots=base.dev_roots,
+        workspace_roots=frozenset(base.workspace_roots | discovered.workspace_roots),
+        module_prefix=base.module_prefix or discovered.module_prefix,
+    )
+
+
+def _refresh_local_workspace_roots(deps: PceGraphDeps) -> None:
+    discovered = build_workspace_inspector(deps.repo_root, deps.sandbox.load_units())
+    cur = deps.inspector
+    py_manifest = ManifestDependencies(
+        runtime_roots=cur.manifest.runtime_roots,
+        dev_roots=cur.manifest.dev_roots,
+        workspace_roots=frozenset(
+            cur.manifest.workspace_roots | discovered.manifest.workspace_roots
+        ),
+    )
+    poly_cur = cur.polyglot_manifest
+    poly_disc = discovered.polyglot_manifest
+    poly_manifest = PolyglotManifest(
+        python=_union_eco_workspace_roots(poly_cur.python, poly_disc.python),
+        typescript=_union_eco_workspace_roots(poly_cur.typescript, poly_disc.typescript),
+        rust=_union_eco_workspace_roots(poly_cur.rust, poly_disc.rust),
+        go=_union_eco_workspace_roots(poly_cur.go, poly_disc.go),
+    )
+    deps.inspector = BuildingInspector(manifest=py_manifest, polyglot_manifest=poly_manifest)
+
+
 @dataclass
 class SpecifyNode(AtomicBehaviorGraphNode[PceGraphDeps, PceWorkflowResult]):
     """Phase III (BHV-14 SPECIFY): Emit compiled schemas and @icontract obligations."""
@@ -942,6 +983,7 @@ class SpecifyNode(AtomicBehaviorGraphNode[PceGraphDeps, PceWorkflowResult]):
         )
         ctx.deps.telemetry.append(tel)
         _apply_patches_to_state(ctx.state, ctx.deps.sandbox, bundle.contract_patches)
+        _refresh_local_workspace_roots(ctx.deps)
         _record_pce_step(self, ctx, "specify", bundle.summary[:240])
         return InstrumentNode()
 

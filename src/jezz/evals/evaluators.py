@@ -1,4 +1,4 @@
-"""Track 4: Deterministic pydantic-evals Evaluators and Dataset builder for SDD vs. PCE."""
+"""Track 4 & 17: Deterministic pydantic-evals Evaluators and Dataset builders for SDD vs. PCE."""
 
 from collections.abc import Mapping, Sequence
 from types import MappingProxyType
@@ -13,7 +13,11 @@ from jezz.evals.schemas import (
     BenchmarkCaseMetadata,
     BenchmarkTaskSpec,
 )
-from jezz.evals.tasks import build_track4_benchmark_cases
+from jezz.evals.tasks import (
+    BenchmarkLanguageSelector,
+    build_polyglot_benchmark_cases,
+    build_track4_benchmark_cases,
+)
 from jezz.guards import IdentifierStr, InstanceGuard, jezz_callable
 
 type BenchmarkDataset = Dataset[BenchmarkTaskSpec, ArmRunOutcome, BenchmarkCaseMetadata]
@@ -52,7 +56,7 @@ def evaluate_jbc_safety(
 def evaluate_oracle_falsification(
     ctx: GuardedEvalContext,
 ) -> Mapping[IdentifierStr, GuardedEvalReason]:
-    """Score survival against the unseen held-out Hypothesis oracle and mypy --strict."""
+    """Score survival against the unseen held-out property oracle and static typecheck."""
     verdict = ctx.output.oracle_verdict
     results: dict[str, GuardedEvalReason] = {
         "heldout_oracle_passed": EvaluationReason(
@@ -61,7 +65,7 @@ def evaluate_oracle_falsification(
         ),
         "mypy_strict_clean": EvaluationReason(
             value=verdict.mypy_strict_passed,
-            reason="mypy --strict exit=0" if verdict.mypy_strict_passed else "mypy --strict failed",
+            reason="static_types exit=0" if verdict.mypy_strict_passed else "static_types failed",
         ),
         "oracle_survival_rate": EvaluationReason(
             value=round(verdict.survival_rate, 4),
@@ -75,7 +79,7 @@ def evaluate_oracle_falsification(
 def evaluate_structural_maintainability(
     ctx: GuardedEvalContext,
 ) -> Mapping[IdentifierStr, GuardedEvalReason]:
-    """Score AST Cognitive Complexity, class LCOM4 cohesion, and elif ladder counts."""
+    """Score AST/CST Cognitive Complexity, class LCOM4 cohesion, and elif ladder counts."""
     st = ctx.output.structural
     results: dict[str, GuardedEvalReason] = {
         "max_cognitive_complexity": EvaluationReason(value=st.max_cognitive_complexity),
@@ -98,16 +102,10 @@ def evaluate_spec_and_cost(
     return MappingProxyType(results)
 
 
-@jezz_callable
-def build_track4_dataset(
-    cases: Annotated[
-        Sequence[tuple[BenchmarkTaskSpec, BenchmarkCaseMetadata]],
-        Field(min_length=1, max_length=64),
-    ]
-    | None = None,
+def _assemble_benchmark_dataset(
+    dataset_name: str,
+    raw_cases: Sequence[tuple[BenchmarkTaskSpec, BenchmarkCaseMetadata]],
 ) -> GuardedDataset:
-    """Build the typed pydantic-evals Dataset with all Track 4 cases and evaluators."""
-    raw_cases = build_track4_benchmark_cases() if cases is None else tuple(cases)
     eval_cases = [
         Case[BenchmarkTaskSpec, ArmRunOutcome, BenchmarkCaseMetadata](
             name=spec.case_id,
@@ -117,7 +115,7 @@ def build_track4_dataset(
         for spec, meta in raw_cases
     ]
     return Dataset[BenchmarkTaskSpec, ArmRunOutcome, BenchmarkCaseMetadata](
-        name="jezz_track4_sdd_vs_pce",
+        name=dataset_name,
         cases=eval_cases,
         evaluators=(
             evaluate_jbc_safety,
@@ -126,3 +124,36 @@ def build_track4_dataset(
             evaluate_spec_and_cost,
         ),
     )
+
+
+@jezz_callable
+def build_track4_dataset(
+    cases: Annotated[
+        Sequence[tuple[BenchmarkTaskSpec, BenchmarkCaseMetadata]],
+        Field(min_length=1, max_length=64),
+    ]
+    | None = None,
+) -> GuardedDataset:
+    """Build the typed pydantic-evals Dataset with all Track 4 Python cases and evaluators."""
+    raw_cases = build_track4_benchmark_cases() if cases is None else tuple(cases)
+    return _assemble_benchmark_dataset("jezz_track4_sdd_vs_pce", raw_cases)
+
+
+@jezz_callable
+def build_polyglot_dataset(
+    language: BenchmarkLanguageSelector = "all",
+    *,
+    cases: Annotated[
+        Sequence[tuple[BenchmarkTaskSpec, BenchmarkCaseMetadata]],
+        Field(min_length=1, max_length=64),
+    ]
+    | None = None,
+) -> GuardedDataset:
+    """Build a polyglot pydantic-evals Dataset across Python, TypeScript, Rust, Go, or ``all``."""
+    raw_cases = build_polyglot_benchmark_cases(language) if cases is None else tuple(cases)
+    ds_name = (
+        "jezz_track4_sdd_vs_pce"
+        if str(language) == "python"
+        else f"jezz_polyglot_sdd_vs_pce_{language}"
+    )
+    return _assemble_benchmark_dataset(ds_name, raw_cases)
