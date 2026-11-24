@@ -1,6 +1,7 @@
 """Layer 0 runtime breakers: strict call validation, bounded primitives, budgets, and safe paths."""
 
 import functools
+import inspect
 from collections.abc import Callable
 from pathlib import Path
 from types import TracebackType
@@ -46,7 +47,7 @@ type LineNumber = Annotated[int, Field(ge=1, le=1_000_000)]
 type ColumnOffset = Annotated[int, Field(ge=0, le=100_000)]
 type NonNegativeInt = Annotated[int, Field(ge=0, le=1_000_000_000_000_000_000)]
 type PositiveInt = Annotated[int, Field(ge=1, le=1_000_000_000_000_000_000)]
-type BoundedInt = Annotated[int, Field(ge=-1_000_000_000_000_000_000, le=1_000_000_000_000_000_000)]
+type BoundedInt = Annotated[int, Field(ge=-1_000_000_000_000_000, le=1_000_000_000_000_000)]
 type FiniteFloat = Annotated[float, Field(ge=-1e18, le=1e18, allow_inf_nan=False)]
 
 
@@ -62,16 +63,40 @@ WIRE_TUPLE_VALIDATOR: Final[BeforeValidator] = BeforeValidator(_coerce_json_list
 WIRE_FROZENSET_VALIDATOR: Final[BeforeValidator] = BeforeValidator(_coerce_json_list_to_frozenset)
 
 
+def _is_zero_arg_none_method(func: Callable[..., object]) -> bool:
+    try:
+        sig = inspect.signature(func)
+    except NameError, TypeError, ValueError:
+        return False
+    params = tuple(sig.parameters.values())
+    if len(params) != 1:
+        return False
+    p0 = params[0]
+    return (
+        p0.name == "self"
+        and p0.annotation is inspect.Parameter.empty
+        and p0.kind == inspect.Parameter.POSITIONAL_OR_KEYWORD
+        and sig.return_annotation in (None, "None")
+    )
+
+
 def _build_lazy_breaker[**P, R](
     func: Callable[P, R],
     *,
     check_return: bool,
 ) -> Callable[P, R]:
     compiled: Callable[P, R] | None = None
+    fast_self_none: bool | None = None
 
     @functools.wraps(func)
     def _enforced(*args: P.args, **kwargs: P.kwargs) -> R:
-        nonlocal compiled
+        nonlocal compiled, fast_self_none
+        if fast_self_none is None:
+            fast_self_none = _is_zero_arg_none_method(func)
+        if fast_self_none and len(args) == 1 and not kwargs:
+            res = func(*args, **kwargs)
+            if not check_return or res is None:
+                return res
         active = compiled
         if active is None:
             active = validate_call(

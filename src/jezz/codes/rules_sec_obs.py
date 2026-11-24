@@ -2,7 +2,7 @@
 
 import ast
 import re
-from collections.abc import Iterator
+from collections.abc import Sequence
 from typing import Final
 
 from jezz.codes.ast_utils import (
@@ -11,11 +11,10 @@ from jezz.codes.ast_utils import (
     RawDiscrepancy,
     SourceSpan,
     SourceUnit,
-    dotted_expr_name,
     is_enum_class,
     is_pydantic_model_class,
 )
-from jezz.guards import LoopBudget, jezz_callable
+from jezz.guards import jezz_callable
 
 _BANNED_EXEC_CALLS: Final[frozenset[str]] = frozenset(
     {
@@ -106,6 +105,42 @@ _GLOBAL_PRNG_CALLS: Final[frozenset[str]] = frozenset(
 )
 
 
+def _node_hit(
+    code_id: str,
+    unit: SourceUnit,
+    node: ast.AST,
+    message: str,
+    remediation: str,
+    *,
+    symbol: str = "",
+) -> RawDiscrepancy:
+    return RawDiscrepancy(
+        code_id=code_id,
+        location=SourceSpan(
+            file_path=unit.file_path,
+            line=getattr(node, "lineno", 1),
+            column=getattr(node, "col_offset", 0),
+            symbol=symbol,
+        ),
+        message=message,
+        remediation=remediation,
+    )
+
+
+def _dotted_expr(expr: ast.expr, *, remaining_depth: int = 32) -> str:
+    if remaining_depth <= 0:
+        return ""
+    target = expr.value if isinstance(expr, ast.Subscript) else expr
+    if isinstance(target, ast.Call):
+        target = target.func
+    if isinstance(target, ast.Name):
+        return target.id
+    if isinstance(target, ast.Attribute):
+        prefix = _dotted_expr(target.value, remaining_depth=remaining_depth - 1)
+        return f"{prefix}.{target.attr}" if prefix else target.attr
+    return ""
+
+
 def _is_dynamic_sql_query(expr: ast.expr) -> bool:
     if isinstance(expr, ast.JoinedStr):
         return True
@@ -144,12 +179,12 @@ def _step_sec_001_pair(
         true_vars.add(lhs)
 
 
-def _collect_sec_001_aliases(root: ast.AST) -> tuple[frozenset[str], frozenset[str]]:
+def _collect_sec_001_aliases(nodes: Sequence[ast.AST]) -> tuple[frozenset[str], frozenset[str]]:
     sql_vars: set[str] = set()
     true_vars: set[str] = set()
     pairs = [
         (lhs, rhs)
-        for n in ast.walk(root)
+        for n in nodes
         if (rhs := (p := _extract_assign_pair(n))[1]) is not None and (lhs := p[0])
     ]
     for _ in range(4):
@@ -185,37 +220,38 @@ def _inspect_sec_001_call(
     sql_vars: frozenset[str],
     true_vars: frozenset[str],
 ) -> RawDiscrepancy | None:
-    callee = dotted_expr_name(call.func)
-    span = SourceSpan(file_path=unit.file_path, line=call.lineno, column=call.col_offset)
-
+    callee = _dotted_expr(call.func)
     if callee in _BANNED_EXEC_CALLS:
-        return RawDiscrepancy(
-            code_id="JBC-SEC-001",
-            location=span,
-            message=f"Prohibited dynamic execution or deserialization sink '{callee}()'.",
-            remediation="Use safe typed parsers (tomllib/Pydantic) or arg-list subprocesses.",
+        return _node_hit(
+            "JBC-SEC-001",
+            unit,
+            call,
+            f"Prohibited dynamic execution or deserialization sink '{callee}()'.",
+            "Use safe typed parsers (tomllib/Pydantic) or arg-list subprocesses.",
         )
     if callee == "yaml.load":
         has_safe = any(
             kw.arg == "Loader"
-            and dotted_expr_name(kw.value).rsplit(".", maxsplit=1)[-1] in _SAFE_YAML_LOADERS
+            and _dotted_expr(kw.value).rsplit(".", maxsplit=1)[-1] in _SAFE_YAML_LOADERS
             for kw in call.keywords
         )
         if not has_safe:
-            return RawDiscrepancy(
-                code_id="JBC-SEC-001",
-                location=span,
-                message="yaml.load() invoked without SafeLoader/CSafeLoader.",
-                remediation="Use yaml.safe_load() or pass Loader=yaml.SafeLoader.",
+            return _node_hit(
+                "JBC-SEC-001",
+                unit,
+                call,
+                "yaml.load() invoked without SafeLoader/CSafeLoader.",
+                "Use yaml.safe_load() or pass Loader=yaml.SafeLoader.",
             )
     if callee.startswith("subprocess.") and _is_subprocess_shell_hazard(
         call, true_vars, unit.is_test_file
     ):
-        return RawDiscrepancy(
-            code_id="JBC-SEC-001",
-            location=span,
-            message=f"'{callee}()' invoked with shell=True or '-c' command-injection hazard.",
-            remediation="Pass an explicit argument sequence with shell=False.",
+        return _node_hit(
+            "JBC-SEC-001",
+            unit,
+            call,
+            f"'{callee}()' invoked with shell=True or '-c' command-injection hazard.",
+            "Pass an explicit argument sequence with shell=False.",
         )
     if (
         isinstance(call.func, ast.Attribute)
@@ -226,11 +262,12 @@ def _inspect_sec_001_call(
             or (isinstance(call.args[0], ast.Name) and call.args[0].id in sql_vars)
         )
     ):
-        return RawDiscrepancy(
-            code_id="JBC-SEC-001",
-            location=span,
-            message=f"SQL sink '.{call.func.attr}()' receives a dynamically interpolated query.",
-            remediation="Use parameterized query placeholders and bound parameter tuples/dicts.",
+        return _node_hit(
+            "JBC-SEC-001",
+            unit,
+            call,
+            f"SQL sink '.{call.func.attr}()' receives a dynamically interpolated query.",
+            "Use parameterized query placeholders and bound parameter tuples/dicts.",
         )
     return None
 
@@ -238,13 +275,12 @@ def _inspect_sec_001_call(
 @jezz_callable
 def check_sec_001(unit: GuardedSourceUnit) -> list[RawDiscrepancy]:
     """Inspect ``unit`` for JBC-SEC-001 (injection immunity & eval/deserialization ban)."""
-    sql_vars, true_vars = _collect_sec_001_aliases(unit.tree)
+    sql_vars, true_vars = _collect_sec_001_aliases(unit.all_nodes)
     discrepancies: list[RawDiscrepancy] = []
-    for node in ast.walk(unit.tree):
-        if isinstance(node, ast.Call):
-            finding = _inspect_sec_001_call(unit, node, sql_vars, true_vars)
-            if finding is not None:
-                discrepancies.append(finding)
+    for node in unit.calls:
+        finding = _inspect_sec_001_call(unit, node, sql_vars, true_vars)
+        if finding is not None:
+            discrepancies.append(finding)
     return discrepancies
 
 
@@ -295,7 +331,7 @@ def _expr_references_sensitive_var(expr: ast.expr) -> str | None:
     return None
 
 
-def _extract_assigned_str(node: ast.AST) -> tuple[str, str, int, int]:
+def _extract_assigned_str(node: ast.AST) -> tuple[str, str]:
     if isinstance(node, ast.Assign) and len(node.targets) == 1:
         first_target = node.targets[0]
         if (
@@ -303,15 +339,15 @@ def _extract_assigned_str(node: ast.AST) -> tuple[str, str, int, int]:
             and isinstance(node.value, ast.Constant)
             and isinstance(node.value.value, str)
         ):
-            return first_target.id, node.value.value, node.lineno, node.col_offset
+            return first_target.id, node.value.value
     if (
         isinstance(node, ast.AnnAssign)
         and isinstance(node.target, ast.Name)
         and isinstance(node.value, ast.Constant)
         and isinstance(node.value.value, str)
     ):
-        return node.target.id, node.value.value, node.lineno, node.col_offset
-    return "", "", 1, 0
+        return node.target.id, node.value.value
+    return "", ""
 
 
 def _check_hardcoded_credentials(unit: SourceUnit) -> list[RawDiscrepancy]:
@@ -322,7 +358,7 @@ def _check_hardcoded_credentials(unit: SourceUnit) -> list[RawDiscrepancy]:
         for sub in ast.walk(cls_node)
     }
     discrepancies: list[RawDiscrepancy] = []
-    for node in ast.walk(unit.tree):
+    for node in unit.all_nodes:
         if id(node) in enum_node_ids:
             continue
         if (
@@ -331,16 +367,15 @@ def _check_hardcoded_credentials(unit: SourceUnit) -> list[RawDiscrepancy]:
             and _CREDENTIAL_LITERAL_RE.search(node.value)
         ):
             discrepancies.append(
-                RawDiscrepancy(
-                    code_id="JBC-SEC-002",
-                    location=SourceSpan(
-                        file_path=unit.file_path, line=node.lineno, column=node.col_offset
-                    ),
-                    message="Source contains a hardcoded credential or private-key literal.",
-                    remediation="Load secrets from a vault or injected SecretStr configuration.",
+                _node_hit(
+                    "JBC-SEC-002",
+                    unit,
+                    node,
+                    "Source contains a hardcoded credential or private-key literal.",
+                    "Load secrets from a vault or injected SecretStr configuration.",
                 )
             )
-        target_name, assigned_val, a_line, a_col = _extract_assigned_str(node)
+        target_name, assigned_val = _extract_assigned_str(node)
         if (
             target_name
             and assigned_val
@@ -348,40 +383,41 @@ def _check_hardcoded_credentials(unit: SourceUnit) -> list[RawDiscrepancy]:
             and assigned_val.lower() != target_name.lower()
         ):
             discrepancies.append(
-                RawDiscrepancy(
-                    code_id="JBC-SEC-002",
-                    location=SourceSpan(file_path=unit.file_path, line=a_line, column=a_col),
-                    message=f"Sensitive identifier '{target_name}' assigned a hardcoded literal.",
-                    remediation="Inject credentials at runtime rather than embedding literals.",
+                _node_hit(
+                    "JBC-SEC-002",
+                    unit,
+                    node,
+                    f"Sensitive identifier '{target_name}' assigned a hardcoded literal.",
+                    "Inject credentials at runtime rather than embedding literals.",
                 )
             )
     return discrepancies
 
 
-def _sink_args_and_pos(node: ast.AST) -> tuple[list[ast.expr], int, int]:
+def _sink_args_for_node(node: ast.AST) -> list[ast.expr]:
     if isinstance(node, ast.Raise) and isinstance(node.exc, ast.Call):
-        return list(node.exc.args), node.lineno, node.col_offset
+        return list(node.exc.args)
     if isinstance(node, ast.Call):
-        callee = dotted_expr_name(node.func)
+        callee = _dotted_expr(node.func)
         tail = callee.rsplit(".", maxsplit=1)[-1]
         if callee == "print" or tail in _LOG_METHODS:
-            return list(node.args), node.lineno, node.col_offset
-    return [], 1, 0
+            return list(node.args)
+    return []
 
 
 def _check_sensitive_sink_interpolation(unit: SourceUnit) -> list[RawDiscrepancy]:
     discrepancies: list[RawDiscrepancy] = []
-    for node in ast.walk(unit.tree):
-        sink_args, line, col = _sink_args_and_pos(node)
-        for arg in sink_args:
+    for node in unit.all_nodes:
+        for arg in _sink_args_for_node(node):
             leaked = _expr_references_sensitive_var(arg)
             if leaked is not None:
                 discrepancies.append(
-                    RawDiscrepancy(
-                        code_id="JBC-SEC-002",
-                        location=SourceSpan(file_path=unit.file_path, line=line, column=col),
-                        message=f"Sensitive variable '{leaked}' leaked into log/error output.",
-                        remediation="Redact sensitive values before logging or raising errors.",
+                    _node_hit(
+                        "JBC-SEC-002",
+                        unit,
+                        node,
+                        f"Sensitive variable '{leaked}' leaked into log/error output.",
+                        "Redact sensitive values before logging or raising errors.",
                     )
                 )
     return discrepancies
@@ -391,7 +427,7 @@ def _field_is_redacted(stmt: ast.AnnAssign) -> bool:
     for sub in ast.walk(stmt.annotation):
         if isinstance(sub, ast.Name) and sub.id in {"SecretStr", "SecretBytes"}:
             return True
-    if isinstance(stmt.value, ast.Call) and dotted_expr_name(stmt.value.func).endswith("Field"):
+    if isinstance(stmt.value, ast.Call) and _dotted_expr(stmt.value.func).endswith("Field"):
         return any(
             kw.arg == "repr" and isinstance(kw.value, ast.Constant) and kw.value.value is False
             for kw in stmt.value.keywords
@@ -411,20 +447,15 @@ def _check_pydantic_sensitive_fields(unit: SourceUnit) -> list[RawDiscrepancy]:
                 and _is_sensitive_identifier(stmt.target.id)
                 and not _field_is_redacted(stmt)
             ):
+                sym = f"{cls_node.name}.{stmt.target.id}"
                 discrepancies.append(
-                    RawDiscrepancy(
-                        code_id="JBC-SEC-002",
-                        location=SourceSpan(
-                            file_path=unit.file_path,
-                            line=stmt.lineno,
-                            column=stmt.col_offset,
-                            symbol=f"{cls_node.name}.{stmt.target.id}",
-                        ),
-                        message=(
-                            f"Sensitive field '{cls_node.name}.{stmt.target.id}' lacks "
-                            "SecretStr or Field(repr=False)."
-                        ),
-                        remediation="Type field as SecretStr or pass repr=False to Field().",
+                    _node_hit(
+                        "JBC-SEC-002",
+                        unit,
+                        stmt,
+                        f"Sensitive field '{sym}' lacks SecretStr or Field(repr=False).",
+                        "Type field as SecretStr or pass repr=False to Field().",
+                        symbol=sym,
                     )
                 )
     return discrepancies
@@ -474,7 +505,7 @@ def _model_is_strictly_closed(cls_node: ast.ClassDef) -> bool:
         val = _extract_model_config_value(stmt)
         if val is None:
             continue
-        if dotted_expr_name(val).rsplit(".", maxsplit=1)[-1] in _STRICT_CONFIG_PRESETS:
+        if _dotted_expr(val).rsplit(".", maxsplit=1)[-1] in _STRICT_CONFIG_PRESETS:
             return True
         if isinstance(val, ast.Call) and _keywords_satisfy_strict_schema(val.keywords):
             return True
@@ -488,19 +519,16 @@ def check_sec_003(unit: GuardedSourceUnit) -> list[RawDiscrepancy]:
     for cls_node in unit.classes:
         if is_pydantic_model_class(cls_node) and not _model_is_strictly_closed(cls_node):
             discrepancies.append(
-                RawDiscrepancy(
-                    code_id="JBC-SEC-003",
-                    location=SourceSpan(
-                        file_path=unit.file_path,
-                        line=cls_node.lineno,
-                        column=cls_node.col_offset,
-                        symbol=cls_node.name,
-                    ),
-                    message=(
+                _node_hit(
+                    "JBC-SEC-003",
+                    unit,
+                    cls_node,
+                    (
                         f"BaseModel '{cls_node.name}' omits extra='forbid', strict=True, "
                         "or allow_inf_nan=False."
                     ),
-                    remediation="Set model_config = STRICT_FROZEN_CONFIG or STRICT_MUTABLE_CONFIG.",
+                    "Set model_config = STRICT_FROZEN_CONFIG or STRICT_MUTABLE_CONFIG.",
+                    symbol=cls_node.name,
                 )
             )
     return discrepancies
@@ -514,7 +542,7 @@ def _is_untyped_object_bag(expr: ast.expr, *, remaining_depth: int = 16) -> bool
         return True
     if not isinstance(expr, ast.Subscript):
         return False
-    root = dotted_expr_name(expr.value).rsplit(".", maxsplit=1)[-1]
+    root = _dotted_expr(expr.value).rsplit(".", maxsplit=1)[-1]
     if root == "Annotated" and isinstance(expr.slice, ast.Tuple) and expr.slice.elts:
         return _is_untyped_object_bag(expr.slice.elts[0], remaining_depth=remaining_depth - 1)
     if root not in {"dict", "Mapping"}:
@@ -531,36 +559,30 @@ def _check_public_bag_signatures(unit: SourceUnit, ctx: CallableContext) -> list
     for arg in args:
         if arg.annotation is not None and _is_untyped_object_bag(arg.annotation):
             discrepancies.append(
-                RawDiscrepancy(
-                    code_id="JBC-SEC-004",
-                    location=SourceSpan(
-                        file_path=unit.file_path,
-                        line=arg.lineno,
-                        column=arg.col_offset,
-                        symbol=ctx.qualname,
-                    ),
-                    message=(
+                _node_hit(
+                    "JBC-SEC-004",
+                    unit,
+                    arg,
+                    (
                         f"Public parameter '{arg.arg}' in '{ctx.qualname}' accepts an "
                         "untyped dict/Mapping object bag."
                     ),
-                    remediation="Accept a closed Pydantic BaseModel ingress schema.",
+                    "Accept a closed Pydantic BaseModel ingress schema.",
+                    symbol=ctx.qualname,
                 )
             )
     if ctx.node.returns is not None and _is_untyped_object_bag(ctx.node.returns):
         discrepancies.append(
-            RawDiscrepancy(
-                code_id="JBC-SEC-004",
-                location=SourceSpan(
-                    file_path=unit.file_path,
-                    line=ctx.node.returns.lineno,
-                    column=ctx.node.returns.col_offset,
-                    symbol=ctx.qualname,
-                ),
-                message=(
+            _node_hit(
+                "JBC-SEC-004",
+                unit,
+                ctx.node.returns,
+                (
                     f"Public callable '{ctx.qualname}' returns an untyped dict/Mapping "
                     "egress bag (OWASP API3:2023)."
                 ),
-                remediation="Project egress data through a dedicated frozen BaseModel.",
+                "Project egress data through a dedicated frozen BaseModel.",
+                symbol=ctx.qualname,
             )
         )
     return discrepancies
@@ -572,37 +594,22 @@ def check_sec_004(unit: GuardedSourceUnit) -> list[RawDiscrepancy]:
     if unit.is_test_file:
         return []
     discrepancies: list[RawDiscrepancy] = []
-    for node in ast.walk(unit.tree):
-        if isinstance(node, ast.Call) and dotted_expr_name(node.func) in _UNTYPED_JSON_CALLS:
-            callee = dotted_expr_name(node.func)
+    for node in unit.calls:
+        callee = _dotted_expr(node.func)
+        if callee in _UNTYPED_JSON_CALLS:
             discrepancies.append(
-                RawDiscrepancy(
-                    code_id="JBC-SEC-004",
-                    location=SourceSpan(
-                        file_path=unit.file_path, line=node.lineno, column=node.col_offset
-                    ),
-                    message=f"Untyped '{callee}()' produces unvalidated dict/list trees.",
-                    remediation=(
-                        "Use Model.model_validate_json() or TypeAdapter(T).validate_json()."
-                    ),
+                _node_hit(
+                    "JBC-SEC-004",
+                    unit,
+                    node,
+                    f"Untyped '{callee}()' produces unvalidated dict/list trees.",
+                    "Use Model.model_validate_json() or TypeAdapter(T).validate_json().",
                 )
             )
     for ctx in unit.callables:
         if not ctx.node.name.startswith("_"):
             discrepancies.extend(_check_public_bag_signatures(unit, ctx))
     return discrepancies
-
-
-def _iter_local_ast_nodes(fn_node: ast.FunctionDef | ast.AsyncFunctionDef) -> Iterator[ast.AST]:
-    stack: list[ast.AST] = list(reversed(fn_node.body))
-    budget = LoopBudget(max_steps=100_000)
-    while stack:
-        budget.tick()
-        curr = stack.pop()
-        if isinstance(curr, ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef):
-            continue
-        yield curr
-        stack.extend(reversed(list(ast.iter_child_nodes(curr))))
 
 
 def _names_in_expr(expr: ast.expr) -> set[str]:
@@ -612,7 +619,7 @@ def _names_in_expr(expr: ast.expr) -> set[str]:
 def _is_sanitizer_call(expr: ast.expr) -> bool:
     if not isinstance(expr, ast.Call):
         return False
-    callee = dotted_expr_name(expr.func)
+    callee = _dotted_expr(expr.func)
     return callee.endswith(("ContainedPath.from_parts", "HttpUrl", "AnyHttpUrl"))
 
 
@@ -621,7 +628,7 @@ def _is_path_wrap_expr(expr: ast.expr) -> bool:
         return True
     if not isinstance(expr, ast.Call):
         return False
-    callee = dotted_expr_name(expr.func)
+    callee = _dotted_expr(expr.func)
     return callee in _UNANCHORED_PATH_CTORS or callee.endswith((".joinpath", ".resolve", "join"))
 
 
@@ -637,13 +644,17 @@ def _seed_untrusted_param_names(ctx: CallableContext) -> set[str]:
     return tainted
 
 
+def _has_resolved_path_attr(expr: ast.expr) -> bool:
+    return any(isinstance(s, ast.Attribute) and s.attr == "resolved_path" for s in ast.walk(expr))
+
+
 def _step_path_taint_pair(
     lhs: str,
     rhs: ast.expr,
     tainted_strs: set[str],
     uncontained_paths: set[str],
 ) -> None:
-    if _is_sanitizer_call(rhs) or ".resolved_path" in ast.unparse(rhs):
+    if _is_sanitizer_call(rhs) or _has_resolved_path_attr(rhs):
         return
     refs = _names_in_expr(rhs)
     if _is_path_wrap_expr(rhs) and (refs & (tainted_strs | uncontained_paths)):
@@ -657,7 +668,7 @@ def _collect_callable_path_taint(ctx: CallableContext) -> tuple[frozenset[str], 
     uncontained_paths: set[str] = set()
     assigns = [
         (lhs, rhs)
-        for n in _iter_local_ast_nodes(ctx.node)
+        for n in ctx.local_nodes
         if (rhs := (p := _extract_assign_pair(n))[1]) is not None and (lhs := p[0])
     ]
     for _ in range(4):
@@ -671,7 +682,7 @@ def _body_checks_containment(ctx: CallableContext) -> bool:
         isinstance(n, ast.Call)
         and isinstance(n.func, ast.Attribute)
         and n.func.attr == "is_relative_to"
-        for n in _iter_local_ast_nodes(ctx.node)
+        for n in ctx.local_nodes
     )
 
 
@@ -692,19 +703,16 @@ def _check_callable_path_method_sink(
     )
     if not is_tainted_recv:
         return None
-    return RawDiscrepancy(
-        code_id="JBC-SEC-005",
-        location=SourceSpan(
-            file_path=unit.file_path,
-            line=call.lineno,
-            column=call.col_offset,
-            symbol=ctx.qualname,
-        ),
-        message=(
+    return _node_hit(
+        "JBC-SEC-005",
+        unit,
+        call,
+        (
             f"Filesystem sink '.{call.func.attr}()' invoked on uncontained Path derived from "
             "untrusted parameter."
         ),
-        remediation="Confine relative path via ContainedPath.from_parts(root, rel) before I/O.",
+        "Confine relative path via ContainedPath.from_parts(root, rel) before I/O.",
+        symbol=ctx.qualname,
     )
 
 
@@ -715,7 +723,7 @@ def _check_callable_taint_aliases(unit: SourceUnit, ctx: CallableContext) -> lis
     if not tainted_strs and not uncontained_paths:
         return []
     out: list[RawDiscrepancy] = []
-    for node in _iter_local_ast_nodes(ctx.node):
+    for node in ctx.local_nodes:
         if not isinstance(node, ast.Call):
             continue
         method_hit = _check_callable_path_method_sink(
@@ -726,49 +734,56 @@ def _check_callable_taint_aliases(unit: SourceUnit, ctx: CallableContext) -> lis
     return out
 
 
+def _inspect_sec_005_raw_call(unit: SourceUnit, node: ast.Call) -> list[RawDiscrepancy]:
+    if not node.args:
+        return []
+    callee = _dotted_expr(node.func)
+    if callee not in _RAW_PATH_SINKS and callee not in _RAW_URL_SINKS:
+        return []
+    first_arg = node.args[0]
+    is_raw_expr = isinstance(first_arg, ast.Name | ast.Constant | ast.JoinedStr | ast.BinOp)
+    out: list[RawDiscrepancy] = []
+    if callee in _RAW_PATH_SINKS and (
+        is_raw_expr or (not _has_resolved_path_attr(first_arg) and bool(_names_in_expr(first_arg)))
+    ):
+        out.append(
+            _node_hit(
+                "JBC-SEC-005",
+                unit,
+                node,
+                f"Filesystem sink '{callee}()' invoked with uncontained raw path.",
+                "Anchor path via ContainedPath.from_parts() before sink access.",
+            )
+        )
+    if callee in _RAW_URL_SINKS and is_raw_expr:
+        out.append(
+            _node_hit(
+                "JBC-SEC-005",
+                unit,
+                node,
+                f"Network sink '{callee}()' invoked with unvalidated raw URL.",
+                "Validate scheme/host via HttpUrl/AnyHttpUrl before request.",
+            )
+        )
+    return out
+
+
 @jezz_callable
 def check_sec_005(unit: GuardedSourceUnit) -> list[RawDiscrepancy]:
     """Inspect ``unit`` for JBC-SEC-005 (taint separation & canonicalized path/URL sinks)."""
     if unit.is_test_file:
         return []
     discrepancies: list[RawDiscrepancy] = []
-    for node in ast.walk(unit.tree):
-        if not isinstance(node, ast.Call) or not node.args:
-            continue
-        callee = dotted_expr_name(node.func)
-        first_arg = node.args[0]
-        span = SourceSpan(file_path=unit.file_path, line=node.lineno, column=node.col_offset)
-        is_uncontained_arg = isinstance(
-            first_arg, ast.Name | ast.Constant | ast.JoinedStr | ast.BinOp
-        ) or (".resolved_path" not in ast.unparse(first_arg) and bool(_names_in_expr(first_arg)))
-        if callee in _RAW_PATH_SINKS and is_uncontained_arg:
-            discrepancies.append(
-                RawDiscrepancy(
-                    code_id="JBC-SEC-005",
-                    location=span,
-                    message=f"Filesystem sink '{callee}()' invoked with uncontained raw path.",
-                    remediation="Anchor path via ContainedPath.from_parts() before sink access.",
-                )
-            )
-        if callee in _RAW_URL_SINKS and isinstance(
-            first_arg, ast.Name | ast.Constant | ast.JoinedStr | ast.BinOp
-        ):
-            discrepancies.append(
-                RawDiscrepancy(
-                    code_id="JBC-SEC-005",
-                    location=span,
-                    message=f"Network sink '{callee}()' invoked with unvalidated raw URL.",
-                    remediation="Validate scheme/host via HttpUrl/AnyHttpUrl before request.",
-                )
-            )
+    for node in unit.calls:
+        discrepancies.extend(_inspect_sec_005_raw_call(unit, node))
     for ctx in unit.callables:
         discrepancies.extend(_check_callable_taint_aliases(unit, ctx))
     return discrepancies
 
 
-def _docstring_constant_ids(tree: ast.Module) -> set[int]:
+def _docstring_constant_ids(nodes: Sequence[ast.AST]) -> set[int]:
     doc_ids: set[int] = set()
-    for node in ast.walk(tree):
+    for node in nodes:
         if (
             isinstance(
                 node,
@@ -804,7 +819,7 @@ def _inspect_sec_006_call(
     unit: SourceUnit,
     call: ast.Call,
 ) -> tuple[RawDiscrepancy | None, int | None]:
-    callee = dotted_expr_name(call.func)
+    callee = _dotted_expr(call.func)
     if not call.args or callee not in _UNANCHORED_PATH_CTORS:
         return None, None
     prefix, consumed_id = _extract_static_arg_prefix(call.args[0])
@@ -814,16 +829,16 @@ def _inspect_sec_006_call(
         prefix.startswith(("/", "~")) or _HARDCODED_FS_PATH_RE.search(prefix) is not None
     ):
         return None, None
-    span = SourceSpan(file_path=unit.file_path, line=call.lineno, column=call.col_offset)
     return (
-        RawDiscrepancy(
-            code_id="JBC-SEC-006",
-            location=span,
-            message=(
+        _node_hit(
+            "JBC-SEC-006",
+            unit,
+            call,
+            (
                 f"Path constructor '{callee}()' invoked with hardcoded literal '{prefix[:64]}' "
                 "instead of a dynamic anchor."
             ),
-            remediation=(
+            (
                 "Derive paths from Path(__file__).resolve(), importlib.resources, Path.home(), "
                 "Path.cwd(), tempfile, or ContainedPath.from_parts(anchor, rel)."
             ),
@@ -835,16 +850,15 @@ def _inspect_sec_006_call(
 @jezz_callable
 def check_sec_006(unit: GuardedSourceUnit) -> list[RawDiscrepancy]:
     """Inspect ``unit`` for JBC-SEC-006 (dynamic path anchoring & hardcoded path prohibition)."""
-    skip_ids = _docstring_constant_ids(unit.tree)
+    skip_ids = _docstring_constant_ids(unit.all_nodes)
     discrepancies: list[RawDiscrepancy] = []
-    for node in ast.walk(unit.tree):
-        if isinstance(node, ast.Call):
-            finding, consumed_id = _inspect_sec_006_call(unit, node)
-            if consumed_id is not None:
-                skip_ids.add(consumed_id)
-            if finding is not None:
-                discrepancies.append(finding)
-    for node in ast.walk(unit.tree):
+    for call_node in unit.calls:
+        finding, consumed_id = _inspect_sec_006_call(unit, call_node)
+        if consumed_id is not None:
+            skip_ids.add(consumed_id)
+        if finding is not None:
+            discrepancies.append(finding)
+    for node in unit.all_nodes:
         if (
             isinstance(node, ast.Constant)
             and id(node) not in skip_ids
@@ -852,13 +866,12 @@ def check_sec_006(unit: GuardedSourceUnit) -> list[RawDiscrepancy]:
             and _is_hardcoded_host_path_literal(node.value)
         ):
             discrepancies.append(
-                RawDiscrepancy(
-                    code_id="JBC-SEC-006",
-                    location=SourceSpan(
-                        file_path=unit.file_path, line=node.lineno, column=node.col_offset
-                    ),
-                    message=f"Hardcoded host/OS filesystem path literal '{node.value[:64]}'.",
-                    remediation=(
+                _node_hit(
+                    "JBC-SEC-006",
+                    unit,
+                    node,
+                    f"Hardcoded host/OS filesystem path literal '{node.value[:64]}'.",
+                    (
                         "Calculate paths dynamically from Path(__file__).resolve(), "
                         "importlib.resources, tmp_path/tempfile, or ContainedPath.from_parts()."
                     ),
@@ -871,30 +884,26 @@ def check_sec_006(unit: GuardedSourceUnit) -> list[RawDiscrepancy]:
 def check_obs_001(unit: GuardedSourceUnit) -> list[RawDiscrepancy]:
     """Inspect ``unit`` for JBC-OBS-001 (structured telemetry & debug trap ban)."""
     discrepancies: list[RawDiscrepancy] = []
-    for node in ast.walk(unit.tree):
-        if not isinstance(node, ast.Call):
-            continue
-        callee = dotted_expr_name(node.func)
+    for node in unit.calls:
+        callee = _dotted_expr(node.func)
         if callee in _DEBUG_TRAP_CALLS:
             discrepancies.append(
-                RawDiscrepancy(
-                    code_id="JBC-OBS-001",
-                    location=SourceSpan(
-                        file_path=unit.file_path, line=node.lineno, column=node.col_offset
-                    ),
-                    message=f"Interactive debugger trap '{callee}()' left in source.",
-                    remediation="Remove debugger trap before certification.",
+                _node_hit(
+                    "JBC-OBS-001",
+                    unit,
+                    node,
+                    f"Interactive debugger trap '{callee}()' left in source.",
+                    "Remove debugger trap before certification.",
                 )
             )
         if not unit.is_test_file and callee == "print":
             discrepancies.append(
-                RawDiscrepancy(
-                    code_id="JBC-OBS-001",
-                    location=SourceSpan(
-                        file_path=unit.file_path, line=node.lineno, column=node.col_offset
-                    ),
-                    message="Unstructured print() call in production module.",
-                    remediation="Emit structured log records via logging or typed return models.",
+                _node_hit(
+                    "JBC-OBS-001",
+                    unit,
+                    node,
+                    "Unstructured print() call in production module.",
+                    "Emit structured log records via logging or typed return models.",
                 )
             )
     return discrepancies
@@ -905,7 +914,7 @@ def _is_mutable_default_expr(expr: ast.expr | None) -> bool:
         return False
     if isinstance(expr, ast.List | ast.Dict | ast.Set):
         return True
-    return isinstance(expr, ast.Call) and dotted_expr_name(expr.func) in _MUTABLE_DEFAULT_CALLS
+    return isinstance(expr, ast.Call) and _dotted_expr(expr.func) in _MUTABLE_DEFAULT_CALLS
 
 
 @jezz_callable
@@ -920,29 +929,25 @@ def check_obs_002(unit: GuardedSourceUnit) -> list[RawDiscrepancy]:
         for default_expr in defaults:
             if default_expr is not None and _is_mutable_default_expr(default_expr):
                 discrepancies.append(
-                    RawDiscrepancy(
-                        code_id="JBC-OBS-002",
-                        location=SourceSpan(
-                            file_path=unit.file_path,
-                            line=default_expr.lineno,
-                            column=default_expr.col_offset,
-                            symbol=ctx.qualname,
-                        ),
-                        message=f"Callable '{ctx.qualname}' uses a mutable default argument.",
-                        remediation="Default to None or an immutable tuple/frozenset.",
+                    _node_hit(
+                        "JBC-OBS-002",
+                        unit,
+                        default_expr,
+                        f"Callable '{ctx.qualname}' uses a mutable default argument.",
+                        "Default to None or an immutable tuple/frozenset.",
+                        symbol=ctx.qualname,
                     )
                 )
-    for node in ast.walk(unit.tree):
+    for node in unit.all_nodes:
         if isinstance(node, ast.Global):
             names_preview = ", ".join(node.names[:8])
             discrepancies.append(
-                RawDiscrepancy(
-                    code_id="JBC-OBS-002",
-                    location=SourceSpan(
-                        file_path=unit.file_path, line=node.lineno, column=node.col_offset
-                    ),
-                    message=f"'global {names_preview}' mutates module-level state.",
-                    remediation="Thread explicit state parameters or return immutable values.",
+                _node_hit(
+                    "JBC-OBS-002",
+                    unit,
+                    node,
+                    f"'global {names_preview}' mutates module-level state.",
+                    "Thread explicit state parameters or return immutable values.",
                 )
             )
     return discrepancies
@@ -950,9 +955,9 @@ def check_obs_002(unit: GuardedSourceUnit) -> list[RawDiscrepancy]:
 
 def _is_os_environ_mutation(node: ast.AST) -> bool:
     if isinstance(node, ast.Subscript) and isinstance(node.ctx, ast.Store | ast.Del):
-        return dotted_expr_name(node.value) in {"os.environ", "environ"}
+        return _dotted_expr(node.value) in {"os.environ", "environ"}
     if isinstance(node, ast.Call):
-        callee = dotted_expr_name(node.func)
+        callee = _dotted_expr(node.func)
         if callee == "os.putenv":
             return True
         if callee.startswith(("os.environ.", "environ.")):
@@ -965,30 +970,27 @@ def _is_os_environ_mutation(node: ast.AST) -> bool:
 def check_obs_003(unit: GuardedSourceUnit) -> list[RawDiscrepancy]:
     """Inspect ``unit`` for JBC-OBS-003 (controlled nondeterminism & env isolation)."""
     discrepancies: list[RawDiscrepancy] = []
-    for node in ast.walk(unit.tree):
-        if isinstance(node, ast.Call) and dotted_expr_name(node.func) in _GLOBAL_PRNG_CALLS:
-            callee = dotted_expr_name(node.func)
-            discrepancies.append(
-                RawDiscrepancy(
-                    code_id="JBC-OBS-003",
-                    location=SourceSpan(
-                        file_path=unit.file_path, line=node.lineno, column=node.col_offset
-                    ),
-                    message=f"Unseeded global PRNG call '{callee}()' compromises determinism.",
-                    remediation="Inject an explicit random.Random(seed) instance or use secrets.",
+    for node in unit.all_nodes:
+        if isinstance(node, ast.Call):
+            callee = _dotted_expr(node.func)
+            if callee in _GLOBAL_PRNG_CALLS:
+                discrepancies.append(
+                    _node_hit(
+                        "JBC-OBS-003",
+                        unit,
+                        node,
+                        f"Unseeded global PRNG call '{callee}()' compromises determinism.",
+                        "Inject an explicit random.Random(seed) instance or use secrets.",
+                    )
                 )
-            )
         if not unit.is_test_file and _is_os_environ_mutation(node):
-            line = getattr(node, "lineno", 1)
-            col = getattr(node, "col_offset", 0)
             discrepancies.append(
-                RawDiscrepancy(
-                    code_id="JBC-OBS-003",
-                    location=SourceSpan(file_path=unit.file_path, line=line, column=col),
-                    message="Direct mutation of process-global os.environ in production code.",
-                    remediation=(
-                        "Pass explicit configuration objects instead of mutating os.environ."
-                    ),
+                _node_hit(
+                    "JBC-OBS-003",
+                    unit,
+                    node,
+                    "Direct mutation of process-global os.environ in production code.",
+                    "Pass explicit configuration objects instead of mutating os.environ.",
                 )
             )
     return discrepancies

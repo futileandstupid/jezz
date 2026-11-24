@@ -69,6 +69,7 @@ class CallableContext:
     qualname: str
     enclosing_class: ast.ClassDef | None
     in_type_checking: bool
+    local_nodes: tuple[ast.AST, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -83,6 +84,8 @@ class SourceUnit:
     is_test_file: bool
     callables: tuple[CallableContext, ...]
     classes: tuple[ast.ClassDef, ...]
+    all_nodes: tuple[ast.AST, ...] = ()
+    calls: tuple[ast.Call, ...] = ()
 
 
 type GuardedSourceUnit = Annotated[SourceUnit, InstanceGuard(SourceUnit)]
@@ -117,45 +120,52 @@ def _dotted_expr_bounded(expr: ast.expr, *, remaining_depth: int) -> str:
     return ""
 
 
-@jezz_callable
-def is_type_checking_guard(test: ast.expr) -> bool:
-    """Return True iff ``test`` guards an ``if TYPE_CHECKING:`` static-only block."""
-    return dotted_expr_name(test) in {"TYPE_CHECKING", "typing.TYPE_CHECKING"}
-
-
-@jezz_callable
-def class_base_tails(cls_node: ast.ClassDef) -> frozenset[IdentifierStr]:
-    """Return simple tail names of all direct base classes of ``cls_node``."""
+def _class_base_tails_raw(cls_node: ast.ClassDef) -> frozenset[str]:
     tails: set[str] = set()
     for base in cls_node.bases:
-        dotted = dotted_expr_name(base)
+        dotted = _dotted_expr_bounded(base, remaining_depth=32)
         if dotted:
             tails.add(dotted.rsplit(".", maxsplit=1)[-1])
     return frozenset(tails)
 
 
 @jezz_callable
+def is_type_checking_guard(test: ast.expr) -> bool:
+    """Return True iff ``test`` guards an ``if TYPE_CHECKING:`` static-only block."""
+    return _dotted_expr_bounded(test, remaining_depth=32) in {
+        "TYPE_CHECKING",
+        "typing.TYPE_CHECKING",
+    }
+
+
+@jezz_callable
+def class_base_tails(cls_node: ast.ClassDef) -> frozenset[IdentifierStr]:
+    """Return simple tail names of all direct base classes of ``cls_node``."""
+    return _class_base_tails_raw(cls_node)
+
+
+@jezz_callable
 def is_pydantic_model_class(cls_node: ast.ClassDef) -> bool:
     """Return True iff ``cls_node`` directly subclasses Pydantic ``BaseModel``."""
-    return "BaseModel" in class_base_tails(cls_node)
+    return "BaseModel" in _class_base_tails_raw(cls_node)
 
 
 @jezz_callable
 def is_enum_class(cls_node: ast.ClassDef) -> bool:
     """Return True iff ``cls_node`` subclasses standard ``Enum`` / ``StrEnum`` / ``Flag``."""
-    return bool(class_base_tails(cls_node) & {"Enum", "StrEnum", "IntEnum", "Flag", "IntFlag"})
+    return bool(_class_base_tails_raw(cls_node) & {"Enum", "StrEnum", "IntEnum", "Flag", "IntFlag"})
 
 
 @jezz_callable
 def is_protocol_class(cls_node: ast.ClassDef) -> bool:
     """Return True iff ``cls_node`` is a ``typing.Protocol`` interface."""
-    return "Protocol" in class_base_tails(cls_node)
+    return "Protocol" in _class_base_tails_raw(cls_node)
 
 
 @jezz_callable
 def is_node_visitor_class(cls_node: ast.ClassDef) -> bool:
     """Return True iff ``cls_node`` subclasses ``ast.NodeVisitor`` or ``NodeTransformer``."""
-    return bool(class_base_tails(cls_node) & {"NodeVisitor", "NodeTransformer"})
+    return bool(_class_base_tails_raw(cls_node) & {"NodeVisitor", "NodeTransformer"})
 
 
 @jezz_callable
@@ -163,12 +173,27 @@ def is_abstract_or_overload(ctx: CallableContext) -> bool:
     """Return True iff ``ctx`` is an abstractmethod, typing overload, or Protocol stub."""
     if ctx.in_type_checking:
         return True
-    if ctx.enclosing_class is not None and is_protocol_class(ctx.enclosing_class):
+    if ctx.enclosing_class is not None and "Protocol" in _class_base_tails_raw(ctx.enclosing_class):
         return True
     decorator_tails = {
-        dotted_expr_name(dec).rsplit(".", maxsplit=1)[-1] for dec in ctx.node.decorator_list
+        _dotted_expr_bounded(dec, remaining_depth=32).rsplit(".", maxsplit=1)[-1]
+        for dec in ctx.node.decorator_list
     }
     return bool(decorator_tails & {"abstractmethod", "overload"})
+
+
+def _collect_local_scope_nodes(root: ast.AST) -> tuple[ast.AST, ...]:
+    nodes: list[ast.AST] = []
+    stack: list[ast.AST] = list(ast.iter_child_nodes(root))
+    budget = LoopBudget(max_steps=_MAX_SCOPE_WALK)
+    while stack:
+        budget.tick()
+        current = stack.pop()
+        nodes.append(current)
+        if isinstance(current, ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef):
+            continue
+        stack.extend(ast.iter_child_nodes(current))
+    return tuple(nodes)
 
 
 @jezz_generator
@@ -216,7 +241,10 @@ class _UnitCollector(ast.NodeVisitor):
             super().visit(node)
 
     def visit_If(self, node: ast.If) -> None:
-        is_tc = is_type_checking_guard(node.test)
+        is_tc = _dotted_expr_bounded(node.test, remaining_depth=32) in {
+            "TYPE_CHECKING",
+            "typing.TYPE_CHECKING",
+        }
         if is_tc:
             self._cursor.type_checking_depth += 1
         for stmt in node.body:
@@ -243,6 +271,7 @@ class _UnitCollector(ast.NodeVisitor):
                 qualname=qual,
                 enclosing_class=enclosing,
                 in_type_checking=self._cursor.type_checking_depth > 0,
+                local_nodes=_collect_local_scope_nodes(node),
             )
         )
         self._cursor.scope_names.append(node.name)
@@ -301,6 +330,7 @@ def parse_source_unit(
     tree = ast.parse(source, filename=file_path)
     collector = _UnitCollector()
     collector.visit(tree)
+    all_nodes = tuple(ast.walk(tree))
     return SourceUnit(
         file_path=file_path,
         module_name=module_name or infer_module_name(file_path),
@@ -310,4 +340,6 @@ def parse_source_unit(
         is_test_file=infer_is_test_file(file_path) if is_test_file is None else is_test_file,
         callables=tuple(collector.callables),
         classes=tuple(collector.classes),
+        all_nodes=all_nodes,
+        calls=tuple(n for n in all_nodes if isinstance(n, ast.Call)),
     )

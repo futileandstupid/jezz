@@ -15,7 +15,6 @@ from jezz.codes.ast_utils import (
     dotted_expr_name,
     is_abstract_or_overload,
     is_node_visitor_class,
-    iter_local_scope_nodes,
 )
 from jezz.codes.complexity import strip_leading_docstring
 from jezz.codes.permits import GateAttestation, GateKind
@@ -49,7 +48,7 @@ def _vacuous_assert_reason(test: ast.expr) -> str | None:
 
 
 def _callable_has_real_verification(ctx: CallableContext) -> bool:
-    for node in iter_local_scope_nodes(ctx.node):
+    for node in ctx.local_nodes:
         if isinstance(node, ast.Assert):
             return True
         if isinstance(node, ast.Call):
@@ -82,7 +81,7 @@ def check_vrf_001(unit: GuardedSourceUnit) -> list[RawDiscrepancy]:
                     remediation="Assert concrete postconditions or expected exceptions.",
                 )
             )
-    for node in ast.walk(unit.tree):
+    for node in unit.all_nodes:
         if isinstance(node, ast.Assert):
             reason = _vacuous_assert_reason(node.test)
             if reason is not None:
@@ -156,9 +155,9 @@ def check_vrf_002(unit: GuardedSourceUnit) -> list[RawDiscrepancy]:
     return discrepancies
 
 
-def _iter_absolute_import_roots(tree: ast.Module) -> list[tuple[str, int, int]]:
+def _iter_absolute_import_roots(nodes: Sequence[ast.AST]) -> list[tuple[str, int, int]]:
     roots: list[tuple[str, int, int]] = []
-    for node in ast.walk(tree):
+    for node in nodes:
         if isinstance(node, ast.Import):
             for alias in node.names:
                 roots.append((alias.name.split(".", maxsplit=1)[0], node.lineno, node.col_offset))
@@ -180,15 +179,14 @@ def check_vrf_003(
     allowed = base_allowed | set(dev_roots) if unit.is_test_file else base_allowed
 
     discrepancies: list[RawDiscrepancy] = []
-    for root_pkg, line, col in _iter_absolute_import_roots(unit.tree):
+    for root_pkg, line, col in _iter_absolute_import_roots(unit.all_nodes):
         if root_pkg in allowed:
             continue
-        span = SourceSpan(file_path=unit.file_path, line=line, column=col)
         if not unit.is_test_file and root_pkg in dev_roots:
             discrepancies.append(
                 RawDiscrepancy(
                     code_id="JBC-VRF-003",
-                    location=span,
+                    location=SourceSpan(file_path=unit.file_path, line=line, column=col),
                     message=f"Production module imports dev-only package '{root_pkg}'.",
                     remediation=f"Promote '{root_pkg}' to [project].dependencies or remove import.",
                 )
@@ -197,7 +195,7 @@ def check_vrf_003(
         discrepancies.append(
             RawDiscrepancy(
                 code_id="JBC-VRF-003",
-                location=span,
+                location=SourceSpan(file_path=unit.file_path, line=line, column=col),
                 message=(
                     f"Ungrounded or undeclared import '{root_pkg}' (absent from stdlib, "
                     "workspace, and pyproject.toml)."
@@ -242,8 +240,8 @@ def check_vrf_004(unit: GuardedSourceUnit) -> list[RawDiscrepancy]:
                         remediation="Remove @skip or register a time-bounded CodeVariance.",
                     )
                 )
-    for node in ast.walk(unit.tree):
-        if isinstance(node, ast.Call) and dotted_expr_name(node.func) == "pytest.skip":
+    for node in unit.calls:
+        if dotted_expr_name(node.func) == "pytest.skip":
             discrepancies.append(
                 RawDiscrepancy(
                     code_id="JBC-VRF-004",

@@ -86,18 +86,17 @@ def _inspect_except_handler(
     unit: SourceUnit,
     node: ast.ExceptHandler,
 ) -> RawDiscrepancy | None:
-    span = SourceSpan(file_path=unit.file_path, line=node.lineno, column=node.col_offset)
     if node.type is None:
         return RawDiscrepancy(
             code_id="JBC-FLT-001",
-            location=span,
+            location=SourceSpan(file_path=unit.file_path, line=node.lineno, column=node.col_offset),
             message="Bare 'except:' clause catches SystemExit/KeyboardInterrupt.",
             remediation="Catch narrow exception types and log or re-raise with cause.",
         )
     if _is_noop_body(node.body):
         return RawDiscrepancy(
             code_id="JBC-FLT-001",
-            location=span,
+            location=SourceSpan(file_path=unit.file_path, line=node.lineno, column=node.col_offset),
             message="Exception handler silently discards fault with pass/ellipsis.",
             remediation="Propagate exception, translate with 'from', or log context.",
         )
@@ -105,7 +104,7 @@ def _inspect_except_handler(
     if _catches_broad_type(node.type) and not has_action:
         return RawDiscrepancy(
             code_id="JBC-FLT-001",
-            location=span,
+            location=SourceSpan(file_path=unit.file_path, line=node.lineno, column=node.col_offset),
             message="Broad Exception handler returns fallback without fault action.",
             remediation="Narrow caught exception type or record structured diagnostics.",
         )
@@ -116,7 +115,7 @@ def _inspect_except_handler(
 def check_flt_001(unit: GuardedSourceUnit) -> list[RawDiscrepancy]:
     """Inspect ``unit`` for JBC-FLT-001 (prohibition of silent fault suppression)."""
     discrepancies: list[RawDiscrepancy] = []
-    for node in ast.walk(unit.tree):
+    for node in unit.all_nodes:
         if isinstance(node, ast.ExceptHandler):
             finding = _inspect_except_handler(unit, node)
             if finding is not None:
@@ -161,12 +160,13 @@ def _inspect_raise_expr(unit: SourceUnit, node: ast.Raise) -> list[RawDiscrepanc
     if tail in _CONTROL_FLOW_EXITS:
         return []
     discrepancies: list[RawDiscrepancy] = []
-    span = SourceSpan(file_path=unit.file_path, line=node.lineno, column=node.col_offset)
     if tail in _BROAD_EXCEPTIONS:
         discrepancies.append(
             RawDiscrepancy(
                 code_id="JBC-FLT-002",
-                location=span,
+                location=SourceSpan(
+                    file_path=unit.file_path, line=node.lineno, column=node.col_offset
+                ),
                 message=f"Raising generic '{tail}' obscures failure semantics.",
                 remediation="Raise a specific exception subclass (ValueError, etc.).",
             )
@@ -177,7 +177,9 @@ def _inspect_raise_expr(unit: SourceUnit, node: ast.Raise) -> list[RawDiscrepanc
         discrepancies.append(
             RawDiscrepancy(
                 code_id="JBC-FLT-002",
-                location=span,
+                location=SourceSpan(
+                    file_path=unit.file_path, line=node.lineno, column=node.col_offset
+                ),
                 message="Exception raised with an empty diagnostic message.",
                 remediation="Provide an actionable message naming the violated invariant.",
             )
@@ -220,7 +222,7 @@ def check_flt_002(unit: GuardedSourceUnit) -> list[RawDiscrepancy]:
         for sub in ast.walk(ctx.node)
     }
     discrepancies: list[RawDiscrepancy] = []
-    for node in ast.walk(unit.tree):
+    for node in unit.all_nodes:
         if id(node) in abstract_ids:
             continue
         if isinstance(node, ast.Raise):
@@ -230,9 +232,9 @@ def check_flt_002(unit: GuardedSourceUnit) -> list[RawDiscrepancy]:
     return discrepancies
 
 
-def _managed_call_ids(tree: ast.Module) -> set[int]:
+def _managed_call_ids(nodes: Sequence[ast.AST]) -> set[int]:
     managed: set[int] = set()
-    for node in ast.walk(tree):
+    for node in nodes:
         if isinstance(node, ast.With | ast.AsyncWith):
             for item in node.items:
                 managed.add(id(item.context_expr))
@@ -286,20 +288,19 @@ def _check_retry_decorators(unit: SourceUnit, ctx: CallableContext) -> list[RawD
 def check_flt_003(unit: GuardedSourceUnit) -> list[RawDiscrepancy]:
     """Inspect ``unit`` for JBC-FLT-003 (managed handles, sync timeouts, & bounded retries)."""
     discrepancies: list[RawDiscrepancy] = []
-    managed_ids = _managed_call_ids(unit.tree)
+    managed_ids = _managed_call_ids(unit.all_nodes)
     for ctx in unit.callables:
         discrepancies.extend(_check_retry_decorators(unit, ctx))
 
-    for node in ast.walk(unit.tree):
-        if not isinstance(node, ast.Call):
-            continue
+    for node in unit.calls:
         callee = dotted_expr_name(node.func)
-        span = SourceSpan(file_path=unit.file_path, line=node.lineno, column=node.col_offset)
         if callee in _MANAGED_RESOURCE_CALLS and id(node) not in managed_ids:
             discrepancies.append(
                 RawDiscrepancy(
                     code_id="JBC-FLT-003",
-                    location=span,
+                    location=SourceSpan(
+                        file_path=unit.file_path, line=node.lineno, column=node.col_offset
+                    ),
                     message=f"Resource '{callee}()' acquired outside a 'with' context manager.",
                     remediation=f"Acquire '{callee}(...)' inside a 'with' statement.",
                 )
@@ -310,7 +311,9 @@ def check_flt_003(unit: GuardedSourceUnit) -> list[RawDiscrepancy]:
             discrepancies.append(
                 RawDiscrepancy(
                     code_id="JBC-FLT-003",
-                    location=span,
+                    location=SourceSpan(
+                        file_path=unit.file_path, line=node.lineno, column=node.col_offset
+                    ),
                     message=f"Blocking I/O call '{callee}()' omits an explicit 'timeout='.",
                     remediation="Pass an explicit numeric 'timeout=' keyword argument.",
                 )
@@ -377,7 +380,7 @@ def _build_local_call_graph(unit: SourceUnit) -> Mapping[str, set[str]]:
     known = {ctx.qualname for ctx in unit.callables}
     graph: dict[str, set[str]] = {ctx.qualname: set() for ctx in unit.callables}
     for ctx in unit.callables:
-        for sub in iter_local_scope_nodes(ctx.node):
+        for sub in ctx.local_nodes:
             callee = _resolve_local_callee(sub, ctx, known)
             if callee is not None:
                 graph[ctx.qualname].add(callee)
@@ -403,7 +406,7 @@ def _node_in_call_cycle(start: str, graph: Mapping[str, set[str]]) -> bool:
 def check_flt_004(unit: GuardedSourceUnit) -> list[RawDiscrepancy]:
     """Inspect ``unit`` for JBC-FLT-004 (LoopBudget on while & fuel bounds on recursion)."""
     discrepancies: list[RawDiscrepancy] = []
-    for node in ast.walk(unit.tree):
+    for node in unit.all_nodes:
         if isinstance(node, ast.While) and not _while_ticks_budget(node):
             discrepancies.append(
                 RawDiscrepancy(
@@ -455,8 +458,8 @@ def check_flt_004(unit: GuardedSourceUnit) -> list[RawDiscrepancy]:
     return discrepancies
 
 
-def _async_fn_awaits_external_io(func: ast.AsyncFunctionDef) -> bool:
-    for node in iter_local_scope_nodes(func):
+def _async_fn_awaits_external_io(local_nodes: Sequence[ast.AST]) -> bool:
+    for node in local_nodes:
         if isinstance(node, ast.Await) and isinstance(node.value, ast.Call):
             callee = dotted_expr_name(node.value.func)
             if callee.startswith(_EXTERNAL_ASYNC_IO_PREFIXES):
@@ -464,8 +467,8 @@ def _async_fn_awaits_external_io(func: ast.AsyncFunctionDef) -> bool:
     return False
 
 
-def _async_fn_has_deadline_scope(func: ast.AsyncFunctionDef) -> bool:
-    for node in iter_local_scope_nodes(func):
+def _async_fn_has_deadline_scope(local_nodes: Sequence[ast.AST]) -> bool:
+    for node in local_nodes:
         if isinstance(node, ast.AsyncWith):
             for item in node.items:
                 tail = dotted_expr_name(item.context_expr).rsplit(".", maxsplit=1)[-1]
@@ -474,9 +477,9 @@ def _async_fn_has_deadline_scope(func: ast.AsyncFunctionDef) -> bool:
     return False
 
 
-def _task_group_var_names(tree: ast.Module) -> set[str]:
+def _task_group_var_names(nodes: Sequence[ast.AST]) -> set[str]:
     names: set[str] = set()
-    for node in ast.walk(tree):
+    for node in nodes:
         if not isinstance(node, ast.AsyncWith):
             continue
         for item in node.items:
@@ -507,9 +510,9 @@ def _is_unstructured_spawn_call(call: ast.Call, tg_vars: set[str]) -> bool:
 def check_flt_005(unit: GuardedSourceUnit) -> list[RawDiscrepancy]:
     """Inspect ``unit`` for JBC-FLT-005 (structured concurrency & async wall-clock deadlines)."""
     discrepancies: list[RawDiscrepancy] = []
-    tg_vars = _task_group_var_names(unit.tree)
-    for node in ast.walk(unit.tree):
-        if isinstance(node, ast.Call) and _is_unstructured_spawn_call(node, tg_vars):
+    tg_vars = _task_group_var_names(unit.all_nodes)
+    for node in unit.calls:
+        if _is_unstructured_spawn_call(node, tg_vars):
             callee = dotted_expr_name(node.func)
             discrepancies.append(
                 RawDiscrepancy(
@@ -524,8 +527,8 @@ def check_flt_005(unit: GuardedSourceUnit) -> list[RawDiscrepancy]:
     for ctx in unit.callables:
         if (
             isinstance(ctx.node, ast.AsyncFunctionDef)
-            and _async_fn_awaits_external_io(ctx.node)
-            and not _async_fn_has_deadline_scope(ctx.node)
+            and _async_fn_awaits_external_io(ctx.local_nodes)
+            and not _async_fn_has_deadline_scope(ctx.local_nodes)
         ):
             discrepancies.append(
                 RawDiscrepancy(
@@ -595,8 +598,8 @@ def check_flt_006(unit: GuardedSourceUnit) -> list[RawDiscrepancy]:
                 )
     if unit.is_test_file:
         return discrepancies
-    for node in ast.walk(unit.tree):
-        if isinstance(node, ast.Call) and _is_unbounded_stream_slurp(node):
+    for node in unit.calls:
+        if _is_unbounded_stream_slurp(node):
             method = node.func.attr if isinstance(node.func, ast.Attribute) else "read"
             discrepancies.append(
                 RawDiscrepancy(

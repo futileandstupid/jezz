@@ -15,7 +15,6 @@ from jezz.codes.ast_utils import (
     is_abstract_or_overload,
     is_node_visitor_class,
     is_pydantic_model_class,
-    iter_local_scope_nodes,
 )
 from jezz.codes.complexity import strip_leading_docstring
 from jezz.guards import jezz_callable
@@ -74,9 +73,7 @@ def _check_contract_decorators(unit: SourceUnit, ctx: CallableContext) -> list[R
                 )
             )
         if tail in _VALIDATOR_DEC_NAMES:
-            has_check = any(
-                isinstance(n, ast.Raise | ast.Call) for n in iter_local_scope_nodes(ctx.node)
-            )
+            has_check = any(isinstance(n, ast.Raise | ast.Call) for n in ctx.local_nodes)
             if not has_check:
                 discrepancies.append(
                     RawDiscrepancy(
@@ -94,12 +91,12 @@ def _check_contract_decorators(unit: SourceUnit, ctx: CallableContext) -> list[R
     return discrepancies
 
 
-def _guarded_parameter_names(func: ast.FunctionDef | ast.AsyncFunctionDef) -> set[str]:
+def _guarded_parameter_names(ctx: CallableContext) -> set[str]:
     """Collect parameter identifiers referenced in decorators, if-guards, asserts, or matches."""
     guarded: set[str] = set()
-    for dec in func.decorator_list:
+    for dec in ctx.node.decorator_list:
         guarded |= _names_in_ast(dec)
-    for node in iter_local_scope_nodes(func):
+    for node in ctx.local_nodes:
         if isinstance(node, ast.If | ast.Assert):
             guarded |= _names_in_ast(node.test)
         elif isinstance(node, ast.Match):
@@ -177,8 +174,8 @@ def check_dbc_001(unit: GuardedSourceUnit) -> list[RawDiscrepancy]:
     for ctx in unit.callables:
         discrepancies.extend(_check_contract_decorators(unit, ctx))
         param_names = _non_path_param_names(ctx.node)
-        guarded = _guarded_parameter_names(ctx.node)
-        for node in iter_local_scope_nodes(ctx.node):
+        guarded = _guarded_parameter_names(ctx)
+        for node in ctx.local_nodes:
             if (
                 isinstance(node, ast.BinOp)
                 and isinstance(node.op, ast.Div | ast.FloorDiv | ast.Mod)
@@ -291,7 +288,7 @@ def check_dbc_002(unit: GuardedSourceUnit) -> list[RawDiscrepancy]:
     for ctx in unit.callables:
         discrepancies.extend(_check_callable_annotations(unit, ctx))
 
-    for node in ast.walk(unit.tree):
+    for node in unit.all_nodes:
         if isinstance(node, ast.ImportFrom) and any(a.name == "Any" for a in node.names):
             discrepancies.append(
                 RawDiscrepancy(
@@ -387,7 +384,7 @@ def check_dbc_003(unit: GuardedSourceUnit) -> list[RawDiscrepancy]:
     for ctx in unit.callables:
         if is_abstract_or_overload(ctx):
             continue
-        local_nodes = list(iter_local_scope_nodes(ctx.node))
+        local_nodes = ctx.local_nodes
         if any(isinstance(n, ast.Yield | ast.YieldFrom) for n in local_nodes):
             continue
 
@@ -472,17 +469,16 @@ def check_dbc_004(unit: GuardedSourceUnit) -> list[RawDiscrepancy]:
         dec_tails = {
             dotted_expr_name(d).rsplit(".", maxsplit=1)[-1] for d in ctx.node.decorator_list
         }
-        span = SourceSpan(
-            file_path=unit.file_path,
-            line=ctx.node.lineno,
-            column=ctx.node.col_offset,
-            symbol=ctx.qualname,
-        )
         if not (dec_tails & _CALL_BREAKER_DEC_TAILS):
             discrepancies.append(
                 RawDiscrepancy(
                     code_id="JBC-DBC-004",
-                    location=span,
+                    location=SourceSpan(
+                        file_path=unit.file_path,
+                        line=ctx.node.lineno,
+                        column=ctx.node.col_offset,
+                        symbol=ctx.qualname,
+                    ),
                     message=(
                         f"Public callable '{ctx.qualname}' lacks a runtime signature breaker "
                         "(@jezz_callable)."
@@ -491,14 +487,17 @@ def check_dbc_004(unit: GuardedSourceUnit) -> list[RawDiscrepancy]:
                 )
             )
             continue
-        is_gen = any(
-            isinstance(n, ast.Yield | ast.YieldFrom) for n in iter_local_scope_nodes(ctx.node)
-        )
+        is_gen = any(isinstance(n, ast.Yield | ast.YieldFrom) for n in ctx.local_nodes)
         if "jezz_generator" in dec_tails and not is_gen:
             discrepancies.append(
                 RawDiscrepancy(
                     code_id="JBC-DBC-004",
-                    location=span,
+                    location=SourceSpan(
+                        file_path=unit.file_path,
+                        line=ctx.node.lineno,
+                        column=ctx.node.col_offset,
+                        symbol=ctx.qualname,
+                    ),
                     message=(
                         f"Non-generator '{ctx.qualname}' uses @jezz_generator, skipping "
                         "return validation."

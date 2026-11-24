@@ -82,17 +82,16 @@ def check_cog_002(
             qualname=ctx.qualname,
             is_method=ctx.enclosing_class is not None,
         )
-        span = SourceSpan(
-            file_path=unit.file_path,
-            line=m.line,
-            column=ctx.node.col_offset,
-            symbol=ctx.qualname,
-        )
         if m.max_nesting_depth > eff.max_nesting_depth:
             discrepancies.append(
                 RawDiscrepancy(
                     code_id="JBC-COG-002",
-                    location=span,
+                    location=SourceSpan(
+                        file_path=unit.file_path,
+                        line=m.line,
+                        column=ctx.node.col_offset,
+                        symbol=ctx.qualname,
+                    ),
                     message=(
                         f"Callable '{ctx.qualname}' has control-flow nesting depth "
                         f"{m.max_nesting_depth} (limit {eff.max_nesting_depth})."
@@ -104,7 +103,12 @@ def check_cog_002(
             discrepancies.append(
                 RawDiscrepancy(
                     code_id="JBC-COG-002",
-                    location=span,
+                    location=SourceSpan(
+                        file_path=unit.file_path,
+                        line=m.line,
+                        column=ctx.node.col_offset,
+                        symbol=ctx.qualname,
+                    ),
                     message=(
                         f"Callable '{ctx.qualname}' takes {m.parameter_count} parameters "
                         f"(limit {eff.max_parameter_count})."
@@ -116,7 +120,12 @@ def check_cog_002(
             discrepancies.append(
                 RawDiscrepancy(
                     code_id="JBC-COG-002",
-                    location=span,
+                    location=SourceSpan(
+                        file_path=unit.file_path,
+                        line=m.line,
+                        column=ctx.node.col_offset,
+                        symbol=ctx.qualname,
+                    ),
                     message=(
                         f"Callable '{ctx.qualname}' spans {m.statement_count} AST statements "
                         f"(limit {eff.max_statement_count})."
@@ -318,9 +327,9 @@ def _count_elif_links(head: ast.If) -> int:
     return count
 
 
-def _collect_elif_child_ids(tree: ast.Module) -> set[int]:
+def _collect_elif_child_ids(nodes: Sequence[ast.AST]) -> set[int]:
     ids: set[int] = set()
-    for node in ast.walk(tree):
+    for node in nodes:
         if isinstance(node, ast.If) and len(node.orelse) == 1:
             first_else = node.orelse[0]
             if isinstance(first_else, ast.If):
@@ -342,19 +351,20 @@ def _is_mutable_dispatch_dict(stmt: ast.stmt) -> tuple[bool, int, int]:
 def check_cog_004(unit: GuardedSourceUnit) -> list[RawDiscrepancy]:
     """Inspect ``unit`` for JBC-COG-004 (dispatch tables, <=1 elif, no post-jump else)."""
     discrepancies: list[RawDiscrepancy] = []
-    elif_child_ids = _collect_elif_child_ids(unit.tree)
+    elif_child_ids = _collect_elif_child_ids(unit.all_nodes)
 
-    for node in ast.walk(unit.tree):
+    for node in unit.all_nodes:
         if not isinstance(node, ast.If):
             continue
-        span = SourceSpan(file_path=unit.file_path, line=node.lineno, column=node.col_offset)
         if id(node) not in elif_child_ids:
             elif_count = _count_elif_links(node)
             if elif_count > _MAX_ELIF_BRANCHES:
                 discrepancies.append(
                     RawDiscrepancy(
                         code_id="JBC-COG-004",
-                        location=span,
+                        location=SourceSpan(
+                            file_path=unit.file_path, line=node.lineno, column=node.col_offset
+                        ),
                         message=(
                             f"Conditional chain has {elif_count} 'elif' branches "
                             f"(limit {_MAX_ELIF_BRANCHES})."
@@ -370,7 +380,9 @@ def check_cog_004(unit: GuardedSourceUnit) -> list[RawDiscrepancy]:
             discrepancies.append(
                 RawDiscrepancy(
                     code_id="JBC-COG-004",
-                    location=span,
+                    location=SourceSpan(
+                        file_path=unit.file_path, line=node.lineno, column=node.col_offset
+                    ),
                     message="Redundant 'else'/'elif' block after terminal jump statement.",
                     remediation="Flatten conditional into early guard clauses.",
                 )

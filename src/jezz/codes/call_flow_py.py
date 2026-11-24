@@ -1,7 +1,7 @@
 """Python AST per-callable flow-fact extractor for inter-procedural JBC analysis."""
 
 import ast
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from types import MappingProxyType
 from typing import Final
 
@@ -9,9 +9,7 @@ from jezz.codes.ast_utils import (
     CallableContext,
     GuardedSourceUnit,
     SourceUnit,
-    dotted_expr_name,
     is_abstract_or_overload,
-    iter_local_scope_nodes,
 )
 from jezz.codes.call_flow_extract import (
     ArgFlowFact,
@@ -51,6 +49,20 @@ _PY_PATH_CTORS: Final[frozenset[str]] = frozenset(
 )
 
 
+def _fast_dotted_expr(expr: ast.expr, *, remaining_depth: int = 24) -> str:
+    if remaining_depth <= 0:
+        return ""
+    target = expr.value if isinstance(expr, ast.Subscript) else expr
+    if isinstance(target, ast.Call):
+        target = target.func
+    if isinstance(target, ast.Name):
+        return target.id
+    if isinstance(target, ast.Attribute):
+        prefix = _fast_dotted_expr(target.value, remaining_depth=remaining_depth - 1)
+        return f"{prefix}.{target.attr}" if prefix else target.attr
+    return ""
+
+
 def _py_names(node: ast.AST | None) -> set[str]:
     if node is None:
         return set()
@@ -74,11 +86,13 @@ def _is_py_dynamic_sql(expr: ast.expr) -> bool:
 
 
 def _is_py_sanitizer(expr: ast.expr) -> bool:
-    if ".resolved_path" in ast.unparse(expr):
+    if any(
+        isinstance(sub, ast.Attribute) and sub.attr == "resolved_path" for sub in ast.walk(expr)
+    ):
         return True
     if not isinstance(expr, ast.Call):
         return False
-    callee = dotted_expr_name(expr.func)
+    callee = _fast_dotted_expr(expr.func)
     return callee.endswith(("ContainedPath.from_parts", "HttpUrl", "AnyHttpUrl"))
 
 
@@ -87,7 +101,7 @@ def _is_py_path_wrap(expr: ast.expr) -> bool:
         return True
     if not isinstance(expr, ast.Call):
         return False
-    callee = dotted_expr_name(expr.func)
+    callee = _fast_dotted_expr(expr.func)
     return callee in _PY_PATH_CTORS or callee.endswith((".joinpath", ".resolve"))
 
 
@@ -119,7 +133,7 @@ def _record_py_import_node(
 
 def _extract_py_import_aliases(unit: SourceUnit) -> Mapping[str, tuple[str, str]]:
     aliases: dict[str, tuple[str, str]] = {}
-    for node in ast.walk(unit.tree):
+    for node in unit.all_nodes:
         _record_py_import_node(unit.module_name, node, aliases)
     return MappingProxyType(aliases)
 
@@ -166,6 +180,7 @@ def _step_py_alias_pair(lhs: str, rhs: ast.expr, state: MutableAliasState) -> No
 
 def _build_py_flow_scope(
     ctx: CallableContext,
+    local_nodes: Sequence[ast.AST],
     param_names: tuple[str, ...],
     untrusted_indices: frozenset[int],
     has_containment: bool,
@@ -178,7 +193,7 @@ def _build_py_flow_scope(
     )
     pairs = [
         (lhs, rhs)
-        for n in iter_local_scope_nodes(ctx.node)
+        for n in local_nodes
         if (rhs := (pair := _py_assign_target_and_value(n))[1]) is not None and (lhs := pair[0])
     ]
     for _ in range(4):
@@ -213,7 +228,7 @@ def _build_py_arg_fact(expr: ast.expr, scope: LocalFlowScope) -> ArgFlowFact:
     nested = tuple(
         c_name
         for sub in ast.walk(expr)
-        if isinstance(sub, ast.Call) and (c_name := dotted_expr_name(sub.func))
+        if isinstance(sub, ast.Call) and (c_name := _fast_dotted_expr(sub.func))
     )
     is_tainted = bool(ref_params & scope.untrusted_indices) or bool(refs & scope.uncontained_vars)
     inline_uncontained = (
@@ -233,7 +248,7 @@ def _build_py_arg_fact(expr: ast.expr, scope: LocalFlowScope) -> ArgFlowFact:
 
 
 def _build_py_call_site(call: ast.Call, scope: LocalFlowScope) -> CallSiteFlowFact:
-    callee = dotted_expr_name(call.func) or "<call>"
+    callee = _fast_dotted_expr(call.func) or "<call>"
     is_sql = isinstance(call.func, ast.Attribute) and call.func.attr in _PY_SQL_METHODS
     if (
         isinstance(call.func, ast.Attribute)
@@ -265,22 +280,26 @@ def _build_py_call_site(call: ast.Call, scope: LocalFlowScope) -> CallSiteFlowFa
     )
 
 
-def _py_body_has_containment(ctx: CallableContext) -> bool:
-    for sub in iter_local_scope_nodes(ctx.node):
+def _py_body_has_containment(local_nodes: Sequence[ast.AST]) -> bool:
+    for sub in local_nodes:
         if isinstance(sub, ast.Attribute) and sub.attr == "resolved_path":
             return True
-        if isinstance(sub, ast.Call) and dotted_expr_name(sub.func).endswith(
+        if isinstance(sub, ast.Call) and _fast_dotted_expr(sub.func).endswith(
             ("is_relative_to", "ContainedPath.from_parts", "HttpUrl", "AnyHttpUrl")
         ):
             return True
     return False
 
 
-def _py_direct_guarded_params(ctx: CallableContext, scope: LocalFlowScope) -> frozenset[int]:
+def _py_direct_guarded_params(
+    ctx: CallableContext,
+    local_nodes: Sequence[ast.AST],
+    scope: LocalFlowScope,
+) -> frozenset[int]:
     guarded_names: set[str] = set()
     for dec in ctx.node.decorator_list:
         guarded_names |= _py_names(dec)
-    for sub in iter_local_scope_nodes(ctx.node):
+    for sub in local_nodes:
         if isinstance(sub, ast.If | ast.Assert):
             guarded_names |= _py_names(sub.test)
         elif isinstance(sub, ast.Match):
@@ -289,13 +308,13 @@ def _py_direct_guarded_params(ctx: CallableContext, scope: LocalFlowScope) -> fr
 
 
 def _scan_py_returns(
-    ctx: CallableContext,
+    local_nodes: Sequence[ast.AST],
     scope: LocalFlowScope,
 ) -> tuple[bool, bool, tuple[str, ...]]:
     ret_dyn_sql = False
     ret_uncontained = False
     return_calls: list[str] = []
-    for sub in iter_local_scope_nodes(ctx.node):
+    for sub in local_nodes:
         if not isinstance(sub, ast.Return) or sub.value is None:
             continue
         refs = _py_names(sub.value)
@@ -308,7 +327,7 @@ def _scan_py_returns(
             and (bool(ret_params & scope.untrusted_indices) or bool(refs & scope.uncontained_vars))
         ):
             ret_uncontained = True
-        if isinstance(sub.value, ast.Call) and (callee := dotted_expr_name(sub.value.func)):
+        if isinstance(sub.value, ast.Call) and (callee := _fast_dotted_expr(sub.value.func)):
             return_calls.append(callee)
     return ret_dyn_sql, ret_uncontained, tuple(return_calls)
 
@@ -319,10 +338,12 @@ def _extract_py_callable_flow(
     import_aliases: Mapping[str, tuple[str, str]],
 ) -> ExtractedCallableFlow:
     param_names, untrusted_indices = _extract_py_params(ctx)
-    has_containment = ctx.qualname == "ContainedPath.from_parts" or _py_body_has_containment(ctx)
-    scope = _build_py_flow_scope(ctx, param_names, untrusted_indices, has_containment)
-    direct_guarded = _py_direct_guarded_params(ctx, scope)
-    local_nodes = list(iter_local_scope_nodes(ctx.node))
+    local_nodes = ctx.local_nodes
+    has_containment = ctx.qualname == "ContainedPath.from_parts" or _py_body_has_containment(
+        local_nodes
+    )
+    scope = _build_py_flow_scope(ctx, local_nodes, param_names, untrusted_indices, has_containment)
+    direct_guarded = _py_direct_guarded_params(ctx, local_nodes, scope)
     call_sites = tuple(
         _build_py_call_site(n, scope) for n in local_nodes if isinstance(n, ast.Call)
     )
@@ -332,7 +353,7 @@ def _extract_py_callable_flow(
         if (lhs := (pair := _py_assign_target_and_value(n))[0])
         and isinstance(rhs := pair[1], ast.Call)
     )
-    ret_dyn_sql, ret_uncontained, return_calls = _scan_py_returns(ctx, scope)
+    ret_dyn_sql, ret_uncontained, return_calls = _scan_py_returns(local_nodes, scope)
     sql_sink_params, path_sink_params = sink_param_indices(
         call_sites, has_containment=has_containment, is_test_file=unit.is_test_file
     )

@@ -373,6 +373,15 @@ def _arg_carries_helper_uncontained_path(
     )
 
 
+def _make_call_span(caller: ExtractedCallableFlow, cs: CallSiteFlowFact) -> SourceSpan:
+    return SourceSpan(
+        file_path=caller.file_path,
+        line=cs.line,
+        column=cs.column,
+        symbol=caller.qualname,
+    )
+
+
 def _emit_call_site_taint_findings(
     caller: ExtractedCallableFlow,
     cs: CallSiteFlowFact,
@@ -381,19 +390,13 @@ def _emit_call_site_taint_findings(
     solved: _SolvedCallFlow,
 ) -> list[RawDiscrepancy]:
     out: list[RawDiscrepancy] = []
-    span = SourceSpan(
-        file_path=caller.file_path,
-        line=cs.line,
-        column=cs.column,
-        symbol=caller.qualname,
-    )
     if cs.is_sql_sink and len(cs.args) > cs.sql_query_arg_index:
         q_arg = cs.args[cs.sql_query_arg_index]
         if _arg_carries_dynamic_sql(caller, q_arg, eff_sql_vars, solved):
             out.append(
                 RawDiscrepancy(
                     code_id="JBC-SEC-001",
-                    location=span,
+                    location=_make_call_span(caller, cs),
                     message=(
                         f"SQL sink '{cs.callee}()' receives inter-procedurally interpolated query."
                     ),
@@ -410,7 +413,7 @@ def _emit_call_site_taint_findings(
         out.append(
             RawDiscrepancy(
                 code_id="JBC-SEC-005",
-                location=span,
+                location=_make_call_span(caller, cs),
                 message=(
                     f"Sink '{cs.callee}()' receives uncontained path returned by helper call."
                 ),
@@ -429,7 +432,7 @@ def _emit_call_site_taint_findings(
             out.append(
                 RawDiscrepancy(
                     code_id="JBC-SEC-001",
-                    location=span,
+                    location=_make_call_span(caller, cs),
                     message=(
                         f"Call to '{cs.callee}()' forwards dynamically interpolated SQL to sink "
                         f"'{t_sum.qualname}'."
@@ -443,7 +446,7 @@ def _emit_call_site_taint_findings(
             out.append(
                 RawDiscrepancy(
                     code_id="JBC-SEC-005",
-                    location=span,
+                    location=_make_call_span(caller, cs),
                     message=(
                         f"Call to '{cs.callee}()' forwards uncontained path to filesystem sink "
                         f"'{t_sum.qualname}'."
