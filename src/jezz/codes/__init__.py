@@ -27,6 +27,12 @@ from jezz.codes.ast_utils import (
     SourceUnit,
     parse_source_unit,
 )
+from jezz.codes.call_flow import (
+    CallableFlowSummary,
+    WorkspaceCallFlow,
+    build_workspace_call_flow,
+    refine_discrepancies_with_call_flow,
+)
 from jezz.codes.codebook import (
     CODE_BOOK,
     CODEBOOK_EDITION,
@@ -196,6 +202,7 @@ __all__ = [
     "BuildingCode",
     "BuildingInspector",
     "CallableContext",
+    "CallableFlowSummary",
     "CallableMetrics",
     "CertificateOfOccupancy",
     "ClassCohesionMetrics",
@@ -258,10 +265,12 @@ __all__ = [
     "SymbolNodeKind",
     "TreeSitterLanguageAdapter",
     "WorkspaceAstGraph",
+    "WorkspaceCallFlow",
     "adapter_for_path",
     "assemble_inspection_report",
     "bind_permit_to_state",
     "build_workspace_ast_graph",
+    "build_workspace_call_flow",
     "build_workspace_inspector",
     "certify_occupancy_in_state",
     "check_cog_003_for_paths",
@@ -306,6 +315,7 @@ __all__ = [
     "read_bounded_text",
     "read_contained_json",
     "record_inspection_to_state",
+    "refine_discrepancies_with_call_flow",
     "require_workspace_units",
     "resolve_complexity_limits",
     "resolve_git_changed_paths",

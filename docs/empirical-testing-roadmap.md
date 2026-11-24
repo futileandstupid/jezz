@@ -153,3 +153,22 @@ With Pillars 1–4 implemented, self-audited, and passing (`jezz.behaviors`, `je
 **Goal:** Generalize `jezz.evals` (`BenchmarkTaskSpec`, `sdd_baseline.py`, `verifier.py`, `runner.py`, and `jezz benchmark --language <python|typescript|rust|go|all>`) across all four `SupportedLanguage`s with matched prompts, `EngineeringMandate`s, and offline held-out property/fuzz oracles (`node:test` Mulberry32 property loops, Rust SplitMix64 integration tests, and Go `testing/quick` suites) while preserving backward compatibility with the 6 canonical Python tasks.
 
 - **Verification:** Implemented 12-case polyglot benchmark dataset (`6` Python, `2` TypeScript, `2` Rust, `2` Go), CST syntax validation on non-Python held-out oracles, `PolyglotWorkspaceVerifier` + `InProcessWorkspaceVerifier` polyglot grading, and end-to-end A/B evaluation in `tests/test_track17_polyglot_benchmark.py`.
+
+---
+
+## Tracks 18–20 — `<= 1,000` LOC Decomposition, Polyglot Inter-Procedural Call-Flow Engine, & Live MCP Hot-Reload Supervisor (`v0.4.0`) — *Completed*
+
+**Goal:** Eliminate internal module size debt (`<= 1,000` LOC per `src/jezz/**/*.py` file), lift static guard and taint analysis from intra-callable local aliases to whole-workspace inter-procedural call-flow summaries across Python, TypeScript, Rust, and Go, and equip `jezz mcp` with a crash-resilient hot-reload supervisor during self-hosted `jezz` development.
+
+- **Verification:**
+  - **Track 18 (`tests/test_track18_module_decomposition.py`):** Decomposed all 8 oversized modules into cohesive, acyclic `<= 1,000` LOC units (`codebook_articles.py`, `cli_parsers.py`, `overlay_staging.py`, `specialist_board.py`, `polyglot_{ts,rust,go}_hazards.py`, `nodes_context.py`, `nodes_exec.py`) with `0` `JBC-COG-003` violations.
+  - **Track 19 (`src/jezz/codes/call_flow*.py`, `tests/test_track19_interprocedural_analysis.py`):** Implemented monotone fixed-point inter-procedural call-flow propagation (`LoopBudget`-bounded) across Python, TypeScript, Rust, and Go, detecting cross-callable and cross-module `JBC-SEC-001` / `JBC-SEC-005` sink/source taint chains, honoring workspace validator-helper delegation for `JBC-DBC-001`/`004`/`005`, and preserving differential ratchet anchoring.
+  - **Track 20 (`src/jezz/mcp_reload.py`, `tests/test_track20_mcp_hot_reload.py`):** Implemented SHA-256 `(rel_path, st_mtime_ns, st_size)` package fingerprint supervision on `build_jezz_mcp_server`, spawning isolated `sys.executable -P` reload workers on source drift and serving seamlessly from a materialized compile-verified healthy snapshot across transient mid-edit `SyntaxError`s.
+
+---
+
+## Track 21 — Live 24-Build Polyglot SDD-vs-`PCE` Benchmark Wave (`v0.4.0`) — *Completed*
+
+**Goal:** Execute a live, matched 24-workspace polyglot A/B benchmark across all 6 TypeScript, Rust, and Go tasks (`case_ts_01_bps_split`, `case_ts_02_escrow_vault`, `case_rs_01_bps_split`, `case_rs_02_escrow_fsm`, `case_go_01_bps_split`, `case_go_02_strict_receipt`) on `claude_sonnet` and `claude_tiered` (`Claude Opus 5.5` Architect + `Claude Sonnet 5.5` Builder) via zero-credential `antigravity:*` routing.
+
+- **Report & Verification (`docs/track-21-polyglot-live-benchmark.md`, `tests/test_track21_polyglot_live_wave.py`):** `jezz` `PCE` achieved `12 / 12` (`100.0%`) `JBC` v1.2 occupancy (`0` violations), `12 / 12` (`100.0%`) held-out property/fuzz oracle survival, `0` rollbacks, `-4.2%` lower effective billed input (`54.3%` cache hit ratio), `-56.7%` fewer output tokens, and `-60.8%` faster mean latency (`84.93s` vs. `216.87s`) against Prose SDD (`1 / 12` occupiable, `23` violations, `33.3%` silent oracle escape, and monotonic Wave 4D violation growth under `Opus 5.5` across all three languages).

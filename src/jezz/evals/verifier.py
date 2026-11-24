@@ -394,11 +394,16 @@ def _resolve_ts_static_check(
     ]
     if type_errs:
         return 1, f"TypeScript AST/CST type check failed: {type_errs}"
-    for unit in units:
-        rc, out = run_cmd(resolved_ws, ("node", "--check", unit.file_path))
-        if rc != 0:
-            return rc, out
-    return 0, "node --check + JBC TypeScript type annotations clean"
+    strip_js = (
+        "const { stripTypeScriptTypes } = require('node:module');"
+        "const fs = require('node:fs');"
+        "for (const f of process.argv.slice(1)) stripTypeScriptTypes(fs.readFileSync(f, 'utf8'));"
+    )
+    ts_paths = tuple(u.file_path for u in units)
+    rc, out = run_cmd(resolved_ws, ("node", "--no-warnings", "-e", strip_js, *ts_paths))
+    if rc != 0:
+        return rc, out
+    return 0, "node stripTypeScriptTypes + JBC TypeScript type annotations clean"
 
 
 class UvWorkspaceVerifier:

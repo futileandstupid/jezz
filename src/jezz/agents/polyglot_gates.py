@@ -167,6 +167,13 @@ def _resolve_local_node_bin(repo_root: Path, binary_name: str) -> str | None:
     return None
 
 
+_NODE_STRIP_TS_SCRIPT: Final[str] = (
+    "const { stripTypeScriptTypes } = require('node:module');"
+    "const fs = require('node:fs');"
+    "for (const f of process.argv.slice(1)) { stripTypeScriptTypes(fs.readFileSync(f, 'utf8')); }"
+)
+
+
 def _build_tsc_argv(repo_root: Path, ts_files: Sequence[str]) -> tuple[str, ...]:
     tsc_bin = _resolve_local_node_bin(repo_root, "tsc") or "tsc"
     has_tsconfig = ContainedPath.from_parts(repo_root, "tsconfig.json").resolved_path.is_file()
@@ -287,13 +294,22 @@ class TypeScriptSubprocessGateRunner:
             self._timeout_sec,
             scoped_tests=scoped_tests,
         )
+        static_targets = scoped_ts or ts_files
         static_spec = _SubprocessGateSpec(
-            argv=_build_tsc_argv(sandbox.repo_root, scoped_ts or ts_files),
+            argv=_build_tsc_argv(sandbox.repo_root, static_targets),
             gate_kind=GateKind.STATIC_TYPES,
             tool_name="tsc",
-            fallback_checks=max(1, len(scoped_ts or ts_units)),
+            fallback_checks=max(1, len(static_targets or ts_units)),
         )
         static_att = _run_subprocess_gate(sandbox.repo_root, static_spec, self._timeout_sec)
+        if static_att.exit_code == 127 and static_targets:
+            node_spec = _SubprocessGateSpec(
+                argv=("node", "--no-warnings", "-e", _NODE_STRIP_TS_SCRIPT, *static_targets),
+                gate_kind=GateKind.STATIC_TYPES,
+                tool_name="node-strip-types",
+                fallback_checks=len(static_targets),
+            )
+            static_att = _run_subprocess_gate(sandbox.repo_root, node_spec, self._timeout_sec)
         return dyn_att, static_att
 
 

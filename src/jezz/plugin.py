@@ -35,7 +35,8 @@ _RULES_AGENTS_MD: Final[str] = """# Jezz Statutory Engineering Rules (JBC v1.2 &
 ## Statutory Verification Workflow
 - Before writing or editing non-trivial source modules (`.py`, `.ts`, `.tsx`, `.rs`, `.go`),
   dry-run candidate source buffers in memory via MCP tool `jbc_preview_source` (`0` unwaived
-  `RED_TAG` violations, including whole-workspace `JBC-COG-003` cycle and encapsulation checks).
+  `RED_TAG` violations, including whole-workspace `JBC-COG-003` cycle, encapsulation, and
+  inter-procedural call-flow checks).
 - Use `jbc_get_code`, `jbc_list_codes`, or `jbc_query_ast_graph` to inspect normative **Jezz
   Software Building Code (`JBC` Edition 1.2)** requirements, remediations, and AST/CST symbol maps.
 - Before ending any turn that modifies governed source files, verify clean occupancy via

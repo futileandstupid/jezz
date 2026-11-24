@@ -17,6 +17,7 @@ from pydantic import BaseModel, Field
 from jezz.behaviors.runtime import AgentExecutionState
 from jezz.codes.adapters import detect_unit_triggers
 from jezz.codes.ast_utils import RawDiscrepancy, SourceUnit, parse_source_unit
+from jezz.codes.call_flow import refine_discrepancies_with_call_flow
 from jezz.codes.codebook import CODE_BOOK, codes_for_triggers
 from jezz.codes.complexity import ResolvedComplexityLimits
 from jezz.codes.permits import (
@@ -655,7 +656,11 @@ class BuildingInspector:
                 discrepancies.extend(
                     _run_polyglot_per_unit_code(self.polyglot_manifest, code_id, poly_units, limits)
                 )
-        return discrepancies
+        return refine_discrepancies_with_call_flow(
+            units,
+            discrepancies,
+            frozenset(active_code_ids),
+        )
 
     @jezz_callable
     def inspect_rough_in(

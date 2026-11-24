@@ -2,8 +2,9 @@
 
 import asyncio
 import json
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
+from types import MappingProxyType
 from typing import Annotated, Final
 
 from mcp.server.mcpserver import MCPServer
@@ -59,6 +60,7 @@ from jezz.guards import (
     SourceCodeText,
     jezz_callable,
 )
+from jezz.mcp_reload import HotReloadSupervisor
 from jezz.methodology.dossier import DossierAuditReport, EngineeringDossier, audit_pce_dossier
 
 SERVER_NAME: Final[str] = "jezz"
@@ -83,6 +85,12 @@ _SERVER_INSTRUCTIONS: Final[str] = (
 )
 
 type GuardedMcpServer = Annotated[MCPServer[object], InstanceGuard(MCPServer)]
+type GuardedSupervisor = Annotated[HotReloadSupervisor, InstanceGuard(HotReloadSupervisor)]
+type TargetDirsArg = Annotated[
+    tuple[IdentifierStr, ...],
+    WIRE_TUPLE_VALIDATOR,
+    Field(max_length=64),
+]
 
 
 def _restore_pre_parsed_json_text(raw_value: object) -> object:
@@ -166,6 +174,29 @@ class AstGraphQueryResult(BaseModel):
         Field(max_length=256),
     ] = ()
     symbol_slice: SourceCodeText = ""
+
+
+class _ReloadToolArgs(BaseModel):
+    """Closed typed IPC argument envelope validated inside fresh reload workers."""
+
+    model_config = STRICT_FROZEN_CONFIG
+
+    article: CodeArticle | None = None
+    trigger: CodeTrigger | None = None
+    code_id: IdentifierStr = "JBC-DBC-001"
+    graph: BehaviorGraph | None = None
+    workspace_subpath: IdentifierStr = "."
+    target_dirs: TargetDirsArg = ()
+    permit_path: IdentifierStr | None = None
+    as_of: IdentifierStr | None = None
+    changed_since: IdentifierStr | None = None
+    staged: bool = False
+    file_path: IdentifierStr = "preview.py"
+    source_code: SourceCodeText = ""
+    dossier_path: IdentifierStr | None = None
+    dossier_json: WireJsonText | None = None
+    symbol_query: IdentifierStr | None = None
+    caller_of: IdentifierStr | None = None
 
 
 @jezz_callable
@@ -407,11 +438,7 @@ class JezzWorkspaceGate:
     def inspect_workspace(
         self,
         workspace_subpath: IdentifierStr = ".",
-        target_dirs: Annotated[
-            tuple[IdentifierStr, ...],
-            WIRE_TUPLE_VALIDATOR,
-            Field(max_length=64),
-        ] = (),
+        target_dirs: TargetDirsArg = (),
         permit_path: IdentifierStr | None = None,
         as_of: IdentifierStr | None = None,
     ) -> InspectionReport:
@@ -474,11 +501,7 @@ class JezzWorkspaceGate:
         dossier_path: IdentifierStr | None = None,
         dossier_json: WireJsonText | None = None,
         workspace_subpath: IdentifierStr = ".",
-        target_dirs: Annotated[
-            tuple[IdentifierStr, ...],
-            WIRE_TUPLE_VALIDATOR,
-            Field(max_length=64),
-        ] = (),
+        target_dirs: TargetDirsArg = (),
     ) -> DossierAuditReport:
         """Audit a 5-phase PCE EngineeringDossier against compiled polyglot workspace symbols."""
         return _run_tool_safely(
@@ -495,11 +518,7 @@ class JezzWorkspaceGate:
     def query_ast_graph(
         self,
         workspace_subpath: IdentifierStr = ".",
-        target_dirs: Annotated[
-            tuple[IdentifierStr, ...],
-            WIRE_TUPLE_VALIDATOR,
-            Field(max_length=64),
-        ] = (),
+        target_dirs: TargetDirsArg = (),
         symbol_query: IdentifierStr | None = None,
         caller_of: IdentifierStr | None = None,
     ) -> AstGraphQueryResult:
@@ -515,7 +534,147 @@ class JezzWorkspaceGate:
         )
 
 
-def _make_preview_handler(gate: JezzWorkspaceGate) -> Callable[..., DifferentialInspectionReport]:
+def _dispatch_verify_graph(_gate: JezzWorkspaceGate, args: _ReloadToolArgs) -> BaseModel:
+    if args.graph is None:
+        raise ToolError("Missing required 'graph' payload for jbc_verify_behavior_graph.")
+    return verify_jbc_behavior_graph(args.graph)
+
+
+type _WorkerDispatchFn = Callable[[JezzWorkspaceGate, _ReloadToolArgs], BaseModel]
+
+_WORKER_TOOL_DISPATCH: Final[Mapping[str, _WorkerDispatchFn]] = MappingProxyType(
+    {
+        "jbc_list_codes": lambda _g, a: list_jbc_codes(article=a.article, trigger=a.trigger),
+        "jbc_get_code": lambda _g, a: get_jbc_code(a.code_id),
+        "jbc_verify_behavior_graph": _dispatch_verify_graph,
+        "jbc_inspect_workspace": lambda g, a: g.inspect_workspace(
+            a.workspace_subpath, a.target_dirs, a.permit_path, a.as_of
+        ),
+        "jbc_inspect_differential": lambda g, a: g.inspect_differential(
+            a.changed_since, a.staged, a.workspace_subpath, a.permit_path, a.as_of
+        ),
+        "jbc_preview_source": lambda g, a: g.preview_source(
+            a.file_path, a.source_code, a.workspace_subpath, a.permit_path, a.as_of
+        ),
+        "jbc_audit_dossier": lambda g, a: g.audit_dossier(
+            a.dossier_path, a.dossier_json, a.workspace_subpath, a.target_dirs
+        ),
+        "jbc_query_ast_graph": lambda g, a: g.query_ast_graph(
+            a.workspace_subpath, a.target_dirs, a.symbol_query, a.caller_of
+        ),
+    }
+)
+
+
+@jezz_callable
+def dispatch_reloaded_mcp_call(
+    workspace_root: Path,
+    tool_name: IdentifierStr,
+    arguments_json: SourceCodeText,
+) -> SourceCodeText:
+    """Execute ``tool_name`` inside a fresh reload worker process and return serialized JSON."""
+    handler = _WORKER_TOOL_DISPATCH.get(tool_name)
+    if handler is None:
+        raise ToolError(f"Unknown MCP statutory tool '{tool_name}'.")
+    parsed_args = _run_tool_safely(lambda: _ReloadToolArgs.model_validate_json(arguments_json))
+    gate = JezzWorkspaceGate(workspace_root=workspace_root)
+    return handler(gate, parsed_args).model_dump_json()
+
+
+def _build_catalog_handlers(
+    sup: HotReloadSupervisor,
+) -> tuple[
+    Callable[..., JbcCatalogPayload],
+    Callable[..., BuildingCode],
+    Callable[..., GraphVerificationReport],
+]:
+    def _list_tool(
+        article: CodeArticle | None = None,
+        trigger: CodeTrigger | None = None,
+    ) -> JbcCatalogPayload:
+        raw = json.dumps(
+            {
+                "article": str(article) if article is not None else None,
+                "trigger": str(trigger) if trigger is not None else None,
+            }
+        )
+        return sup.invoke_or_local(
+            "jbc_list_codes",
+            raw,
+            JbcCatalogPayload,
+            lambda: list_jbc_codes(article=article, trigger=trigger),
+        )
+
+    def _get_tool(code_id: IdentifierStr) -> BuildingCode:
+        raw = json.dumps({"code_id": code_id})
+        return sup.invoke_or_local("jbc_get_code", raw, BuildingCode, lambda: get_jbc_code(code_id))
+
+    def _verify_tool(graph: BehaviorGraph) -> GraphVerificationReport:
+        raw = json.dumps({"graph": graph.model_dump(mode="json")})
+        return sup.invoke_or_local(
+            "jbc_verify_behavior_graph",
+            raw,
+            GraphVerificationReport,
+            lambda: verify_jbc_behavior_graph(graph),
+        )
+
+    return _list_tool, _get_tool, _verify_tool
+
+
+def _build_inspection_handlers(
+    gate: JezzWorkspaceGate,
+    sup: HotReloadSupervisor,
+) -> tuple[
+    Callable[..., InspectionReport],
+    Callable[..., DifferentialInspectionReport],
+    Callable[..., DifferentialInspectionReport],
+]:
+    def _ws_tool(
+        workspace_subpath: IdentifierStr = ".",
+        target_dirs: TargetDirsArg = (),
+        permit_path: IdentifierStr | None = None,
+        as_of: IdentifierStr | None = None,
+    ) -> InspectionReport:
+        raw = json.dumps(
+            {
+                "workspace_subpath": workspace_subpath,
+                "target_dirs": list(target_dirs),
+                "permit_path": permit_path,
+                "as_of": as_of,
+            }
+        )
+        return sup.invoke_or_local(
+            "jbc_inspect_workspace",
+            raw,
+            InspectionReport,
+            lambda: gate.inspect_workspace(workspace_subpath, target_dirs, permit_path, as_of),
+        )
+
+    def _diff_tool(
+        changed_since: IdentifierStr | None = None,
+        staged: bool = False,
+        workspace_subpath: IdentifierStr = ".",
+        permit_path: IdentifierStr | None = None,
+        as_of: IdentifierStr | None = None,
+    ) -> DifferentialInspectionReport:
+        raw = json.dumps(
+            {
+                "changed_since": changed_since,
+                "staged": staged,
+                "workspace_subpath": workspace_subpath,
+                "permit_path": permit_path,
+                "as_of": as_of,
+            }
+        )
+        return sup.invoke_or_local(
+            "jbc_inspect_differential",
+            raw,
+            DifferentialInspectionReport,
+            lambda: gate.inspect_differential(
+                changed_since, staged, workspace_subpath, permit_path, as_of
+            ),
+        )
+
     def _preview_tool(
         file_path: IdentifierStr,
         source_code: str,
@@ -523,66 +682,136 @@ def _make_preview_handler(gate: JezzWorkspaceGate) -> Callable[..., Differential
         permit_path: IdentifierStr | None = None,
         as_of: IdentifierStr | None = None,
     ) -> DifferentialInspectionReport:
-        return gate.preview_source(
-            file_path=file_path,
-            source_code=source_code,
-            workspace_subpath=workspace_subpath,
-            permit_path=permit_path,
-            as_of=as_of,
+        raw = json.dumps(
+            {
+                "file_path": file_path,
+                "source_code": source_code,
+                "workspace_subpath": workspace_subpath,
+                "permit_path": permit_path,
+                "as_of": as_of,
+            }
+        )
+        return sup.invoke_or_local(
+            "jbc_preview_source",
+            raw,
+            DifferentialInspectionReport,
+            lambda: gate.preview_source(
+                file_path=file_path,
+                source_code=source_code,
+                workspace_subpath=workspace_subpath,
+                permit_path=permit_path,
+                as_of=as_of,
+            ),
         )
 
-    return _preview_tool
+    return _ws_tool, _diff_tool, _preview_tool
 
 
-def _register_statutory_tools(server: MCPServer[object], gate: JezzWorkspaceGate) -> None:
+def _build_dossier_and_graph_handlers(
+    gate: JezzWorkspaceGate,
+    sup: HotReloadSupervisor,
+) -> tuple[Callable[..., DossierAuditReport], Callable[..., AstGraphQueryResult]]:
+    def _dossier_tool(
+        dossier_path: IdentifierStr | None = None,
+        dossier_json: WireJsonText | None = None,
+        workspace_subpath: IdentifierStr = ".",
+        target_dirs: TargetDirsArg = (),
+    ) -> DossierAuditReport:
+        raw = json.dumps(
+            {
+                "dossier_path": dossier_path,
+                "dossier_json": dossier_json,
+                "workspace_subpath": workspace_subpath,
+                "target_dirs": list(target_dirs),
+            }
+        )
+        return sup.invoke_or_local(
+            "jbc_audit_dossier",
+            raw,
+            DossierAuditReport,
+            lambda: gate.audit_dossier(dossier_path, dossier_json, workspace_subpath, target_dirs),
+        )
+
+    def _ast_tool(
+        workspace_subpath: IdentifierStr = ".",
+        target_dirs: TargetDirsArg = (),
+        symbol_query: IdentifierStr | None = None,
+        caller_of: IdentifierStr | None = None,
+    ) -> AstGraphQueryResult:
+        raw = json.dumps(
+            {
+                "workspace_subpath": workspace_subpath,
+                "target_dirs": list(target_dirs),
+                "symbol_query": symbol_query,
+                "caller_of": caller_of,
+            }
+        )
+        return sup.invoke_or_local(
+            "jbc_query_ast_graph",
+            raw,
+            AstGraphQueryResult,
+            lambda: gate.query_ast_graph(workspace_subpath, target_dirs, symbol_query, caller_of),
+        )
+
+    return _dossier_tool, _ast_tool
+
+
+def _register_statutory_tools(
+    server: MCPServer[object],
+    gate: JezzWorkspaceGate,
+    sup: HotReloadSupervisor,
+) -> None:
+    list_fn, get_fn, verify_fn = _build_catalog_handlers(sup)
+    ws_fn, diff_fn, preview_fn = _build_inspection_handlers(gate, sup)
+    dossier_fn, ast_fn = _build_dossier_and_graph_handlers(gate, sup)
     specs: tuple[tuple[str, str, str, Callable[..., object]], ...] = (
         (
             "jbc_list_codes",
             "List JBC Edition 1.2 Building Codes",
             "List JBC v1.2 provisions filtered optionally by CodeArticle or CodeTrigger.",
-            list_jbc_codes,
+            list_fn,
         ),
         (
             "jbc_get_code",
             "Get JBC Building Code Provision",
             "Fetch normative rule, hazard, pass criteria, and standards citations for a JBC code.",
-            get_jbc_code,
+            get_fn,
         ),
         (
             "jbc_verify_behavior_graph",
             "Verify Pillar 1 BehaviorGraph",
             "Verify state-machine transitions and Kildall dataflow laws on a BehaviorGraph.",
-            verify_jbc_behavior_graph,
+            verify_fn,
         ),
         (
             "jbc_inspect_workspace",
             "Inspect Workspace (JBC Rough-In)",
             "Run JBC v1.2 Rough-In static inspection across workspace .py/.ts/.tsx/.rs/.go files.",
-            gate.inspect_workspace,
+            ws_fn,
         ),
         (
             "jbc_inspect_differential",
             "Inspect Differential Scope (Git Ratchet)",
             "Gate Git-modified/untracked (--changed-since, default HEAD) or staged source files.",
-            gate.inspect_differential,
+            diff_fn,
         ),
         (
             "jbc_preview_source",
             "Preview Unsaved Source Buffer",
             "Overlay an in-memory .py/.ts/.tsx/.rs/.go buffer onto the workspace for JBC check.",
-            _make_preview_handler(gate),
+            preview_fn,
         ),
         (
             "jbc_audit_dossier",
             "Audit PCE Engineering Dossier",
             "Verify 5-phase Permit-and-Contract Engineering dossier grounding and occupancy seal.",
-            gate.audit_dossier,
+            dossier_fn,
         ),
         (
             "jbc_query_ast_graph",
             "Query Workspace AST Graph",
             "Inspect deterministic module import layers, symbol call sites, and AST/CST slices.",
-            gate.query_ast_graph,
+            ast_fn,
         ),
     )
     for name, title, description, handler in specs:
@@ -597,9 +826,18 @@ def _register_statutory_tools(server: MCPServer[object], gate: JezzWorkspaceGate
 
 
 @jezz_callable
-def build_jezz_mcp_server(workspace_root: Path | None = None) -> GuardedMcpServer:
-    """Construct a configured, read-only ``MCPServer`` jailed to ``workspace_root``."""
+def build_jezz_mcp_server(
+    workspace_root: Path | None = None,
+    *,
+    watched_package_root: Path | None = None,
+    supervisor: GuardedSupervisor | None = None,
+) -> GuardedMcpServer:
+    """Construct a configured, hot-reloading ``MCPServer`` jailed to ``workspace_root``."""
     gate = JezzWorkspaceGate(workspace_root=workspace_root)
+    active_sup = supervisor or HotReloadSupervisor(
+        workspace_root=gate.anchor_root,
+        package_root=watched_package_root,
+    )
     server: MCPServer[object] = MCPServer(
         name=SERVER_NAME,
         title="Jezz Software Building Code & PCE Statutory Gate",
@@ -607,7 +845,7 @@ def build_jezz_mcp_server(workspace_root: Path | None = None) -> GuardedMcpServe
         version=SERVER_VERSION,
         log_level="WARNING",
     )
-    _register_statutory_tools(server, gate)
+    _register_statutory_tools(server, gate, active_sup)
     return server
 
 

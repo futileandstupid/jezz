@@ -12,6 +12,7 @@ import icontract
 from pydantic import BaseModel, Field, model_validator
 
 from jezz.codes.ast_utils import RawDiscrepancy, SourceUnit
+from jezz.codes.call_flow import refine_discrepancies_with_call_flow
 from jezz.codes.codebook import CODE_BOOK, codes_for_triggers
 from jezz.codes.complexity import ResolvedComplexityLimits
 from jezz.codes.inspector import (
@@ -286,12 +287,17 @@ def _collect_differential_discrepancies(
 ) -> list[RawDiscrepancy]:
     if not touched_units:
         return []
-    per_unit = collect_per_unit_discrepancies(
-        inspector.manifest,
-        touched_units,
+    per_unit = refine_discrepancies_with_call_flow(
+        all_units,
+        collect_per_unit_discrepancies(
+            inspector.manifest,
+            touched_units,
+            static_ids,
+            polyglot_manifest=inspector.polyglot_manifest,
+            limits=limits,
+        ),
         static_ids,
-        polyglot_manifest=inspector.polyglot_manifest,
-        limits=limits,
+        target_paths=touched_paths,
     )
     if "JBC-COG-003" not in static_ids:
         return per_unit
