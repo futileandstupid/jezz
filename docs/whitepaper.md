@@ -305,29 +305,31 @@ Marketed "Spec-Driven Development" mistakes the **medium of management bureaucra
 - **Track 12 Turnkey Distribution, Reusable CI Gate (`action.yml`), & `v0.2.0` Packaging:** [track-12-distribution-and-ci-gate.md](track-12-distribution-and-ci-gate.md)
 - **Tracks 13–20 Statutory Hardening (`v0.2.1`), Polyglot Closure (`v0.3.0`), & Inter-Procedural / Daemon Architecture (`v0.4.0`):** [empirical-testing-roadmap.md](empirical-testing-roadmap.md) (`src/jezz/codes/dep_graph.py`, `PermitProfile`, scoped polyglot `--ratchet` + `--gate-timeout`, $O(|\Delta|)$ `_OverlayPatchFinder`, `>=92%` coverage ratchet + stateful/fuzz `Hypothesis`, multi-ecosystem `PROVISION` / offline polyglot `CONSULT`, `<= 1,000` LOC module ceiling, whole-workspace polyglot inter-procedural `call_flow*.py`, live MCP `mcp_reload.py` hot-reload supervisor, and 4-language `jezz benchmark --language`)
 - **Track 21 Live 24-Build Polyglot SDD-vs-`PCE` Benchmark (`TypeScript`, `Rust`, & `Go`):** [track-21-polyglot-live-benchmark.md](track-21-polyglot-live-benchmark.md)
-- **Tracks 22–26 (`v0.5.0`) — Scheme-Routed Secrets, Empirical TDD Bifurcation, `JBC-COG-006` (`Edition 1.3`), `ProjectCharter` Intake, & `BlueprintGraph` Switchable CAD / `LVS` Gate:** [empirical-testing-roadmap.md](empirical-testing-roadmap.md) (`src/jezz/secrets.py`, `src/jezz/codes/compartment.py`, `src/jezz/methodology/lot_line.py`, `src/jezz/methodology/charter*.py`, `src/jezz/codes/blueprint/`, `src/jezz/codes/blueprint_lvs.py`, `src/jezz/cli_blueprint.py`, `packages/jezz-blueprint/`)
+- **Tracks 22–26 (`v0.5.0`) — Compartmentation, Project Charters, Switchable CAD Blueprints, & Coarse-Grained `LVS`:** [empirical-testing-roadmap.md](empirical-testing-roadmap.md) (`src/jezz/secrets.py`, `src/jezz/codes/compartment.py`, `src/jezz/methodology/lot_line.py`, `src/jezz/methodology/charter*.py`, `src/jezz/codes/blueprint/`, `src/jezz/codes/blueprint_lvs.py`, `src/jezz/cli_blueprint.py`, `packages/jezz-blueprint/`)
+- **Tracks 27–30 (`v0.6.0`) — Polyglot Z3 Symbolic Contract Discharge, `jezz.toml`, Turnkey Starter Templates, Reproducibility Suite, & Ecosystem Landscape:** [landscape-comparison.md](landscape-comparison.md) · [jbc-codebook-reference.md](jbc-codebook-reference.md) · [references.md](references.md) (`src/jezz/codes/smt/`, `templates/`, `benchmarks/`, `examples/`)
 
 ---
 
 ## References
 
-1. Böckeler, B. (2025). *Understanding Spec-Driven-Development: Kiro, spec-kit, and Tessl*. MartinFowler.com.
-2. Campbell, G. A. (2017). *Cognitive Complexity: A New Way of Measuring Understandability*. SonarSource White Paper.
-3. Chidamber, S. R., & Kemerer, C. F. (1994). A metrics suite for object oriented design. *IEEE Transactions on Software Engineering*, 20(6), 476–493.
-4. Claessen, K., & Hughes, J. (2000). QuickCheck: A lightweight tool for random testing of Haskell programs. *ACM SIGPLAN Notices (ICFP)*, 35(9), 268–279.
-5. Delimarsky, D. (2025). *Spec-driven development with AI: Get started with a new open source toolkit (`github/spec-kit`)*. GitHub Blog.
-6. Fucci, D., Erdogmus, H., Turhan, B., Oivo, M., & Juristo, N. (2017). A dissection of the test-driven development process: Does it really matter to test-first or to test-last? *IEEE Transactions on Software Engineering*, 43(7), 597–614.
-7. Gessel, I. (1972). Problem H-187 (Fibonacci perfect-square characterization $5n^2 \pm 4$). *The Fibonacci Quarterly*, 10(4), 417–419.
-8. Hitz, M., & Montazeri, B. (1995). Measuring coupling and cohesion in object-oriented systems. *Proceedings of the International Symposium on Applied Corporate Computing (ISACC)*.
-9. Hoare, C. A. R. (1969). An axiomatic basis for computer programming. *Communications of the ACM*, 12(10), 576–580.
-10. Holzmann, G. J. (2006). The power of 10: Rules for developing safety-critical code. *IEEE Computer*, 39(6), 95–97.
-11. Jackson, M. (1995). *Software Requirements & Specifications: A Lexicon of Practice, Principles and Prejudices*. Addison-Wesley.
-12. Kildall, G. A. (1973). A unified approach to global program optimization. *Proceedings of the 1st Annual ACM SIGACT-SIGPLAN Symposium on Principles of Programming Languages (POPL)*, 194–206.
-13. Mavin, A., Wilkinson, P., Harwood, A., & Novak, M. (2009). Easy Approach to Requirements Syntax (EARS). *17th IEEE International Requirements Engineering Conference (RE)*, 317–322.
-14. Meyer, B. (1997). *Object-Oriented Software Construction* (2nd ed.). Prentice Hall.
-15. Nagappan, N., Maximilien, E. M., Bhat, T., & Williams, L. (2008). Realizing quality improvement through test driven development: Results and experiences of four industrial teams. *Empirical Software Engineering*, 13(3), 289–302.
-16. Newcombe, C., Rath, T., Zhang, F., Munteanu, B., Brooker, M., & Deardeuff, M. (2015). How Amazon Web Services uses formal methods. *Communications of the ACM*, 58(4), 66–73.
-17. Parnas, D. L. (1972). On the criteria to be used in decomposing systems into modules. *Communications of the ACM*, 15(12), 1053–1058.
-18. Rafique, Y., & Mišić, V. B. (2013). The effects of test-driven development on external quality and productivity: A meta-analysis. *IEEE Transactions on Software Engineering*, 39(6), 835–856.
-19. Tarjan, R. E. (1972). Depth-first search and linear graph algorithms. *SIAM Journal on Computing*, 1(2), 146–160.
-20. Van der Aalst, W. M. P. (1998). The application of Petri nets to workflow management. *Journal of Circuits, Systems, and Computers*, 8(1), 21–66.
+1. Böckeler, B. (2025). *Understanding Spec-Driven-Development: Kiro, spec-kit, and Tessl*. MartinFowler.com. [https://martinfowler.com/articles/exploring-gen-ai/sdd-3-tools.html](https://martinfowler.com/articles/exploring-gen-ai/sdd-3-tools.html)
+2. Campbell, G. A. (2018). Cognitive Complexity: An overview and evaluation. *TechDebt '18*, 57–58. [https://doi.org/10.1145/3194164.3194186](https://doi.org/10.1145/3194164.3194186)
+3. Chidamber, S. R., & Kemerer, C. F. (1994). A metrics suite for object oriented design. *IEEE Transactions on Software Engineering*, 20(6), 476–493. [https://doi.org/10.1109/32.295895](https://doi.org/10.1109/32.295895)
+4. Claessen, K., & Hughes, J. (2000). QuickCheck: A lightweight tool for random testing of Haskell programs. *ACM SIGPLAN Notices (ICFP)*, 35(9), 268–279. [https://doi.org/10.1145/351240.351266](https://doi.org/10.1145/351240.351266)
+5. de Moura, L., & Bjørner, N. (2008). Z3: An efficient SMT solver. *TACAS 2008*, LNCS 4963, 337–340. [https://doi.org/10.1007/978-3-540-78800-3_24](https://doi.org/10.1007/978-3-540-78800-3_24)
+6. Delimarsky, D. (2025). *Spec-driven development with AI: Get started with a new open source toolkit (`github/spec-kit`)*. GitHub Blog. [https://github.blog/ai-and-ml/generative-ai/spec-driven-development-with-ai-get-started-with-a-new-open-source-toolkit/](https://github.blog/ai-and-ml/generative-ai/spec-driven-development-with-ai-get-started-with-a-new-open-source-toolkit/)
+7. Fucci, D., Erdogmus, H., Turhan, B., Oivo, M., & Juristo, N. (2017). A dissection of the test-driven development process: Does it really matter to test-first or to test-last? *IEEE Transactions on Software Engineering*, 43(7), 597–614. [https://doi.org/10.1109/TSE.2016.2616877](https://doi.org/10.1109/TSE.2016.2616877)
+8. Gessel, I. (1972). Problem H-187 (Fibonacci perfect-square characterization $5n^2 \pm 4$). *The Fibonacci Quarterly*, 10(4), 417–419. [https://www.fq.math.ca/Scanned/10-4/advanced10-4.pdf](https://www.fq.math.ca/Scanned/10-4/advanced10-4.pdf)
+9. Hitz, M., & Montazeri, B. (1995). Measuring coupling and cohesion in object-oriented systems. *ISACC / ECOOP '96 Workshop Reader*. [https://doi.org/10.1007/BFb0053059](https://doi.org/10.1007/BFb0053059)
+10. Hoare, C. A. R. (1969). An axiomatic basis for computer programming. *Communications of the ACM*, 12(10), 576–580. [https://doi.org/10.1145/363235.363259](https://doi.org/10.1145/363235.363259)
+11. Holzmann, G. J. (2006). The power of 10: Rules for developing safety-critical code. *IEEE Computer*, 39(6), 95–97. [https://doi.org/10.1109/MC.2006.212](https://doi.org/10.1109/MC.2006.212)
+12. Jackson, M. (1995). *Software Requirements & Specifications: A Lexicon of Practice, Principles and Prejudices*. Addison-Wesley. [https://dl.acm.org/doi/book/10.5555/209060](https://dl.acm.org/doi/book/10.5555/209060)
+13. Kildall, G. A. (1973). A unified approach to global program optimization. *ACM POPL '73*, 194–206. [https://doi.org/10.1145/512927.512945](https://doi.org/10.1145/512927.512945)
+14. Mavin, A., Wilkinson, P., Harwood, A., & Novak, M. (2009). Easy Approach to Requirements Syntax (EARS). *17th IEEE RE*, 317–322. [https://doi.org/10.1109/RE.2009.9](https://doi.org/10.1109/RE.2009.9)
+15. Meyer, B. (1992 / 1997). Applying "Design by Contract" (*IEEE Computer*, 25(10), 40–51) & *Object-Oriented Software Construction* (2nd ed., Prentice Hall). [https://doi.org/10.1109/2.161279](https://doi.org/10.1109/2.161279)
+16. Nagappan, N., Maximilien, E. M., Bhat, T., & Williams, L. (2008). Realizing quality improvement through test driven development. *Empirical Software Engineering*, 13(3), 289–302. [https://doi.org/10.1007/s10664-008-9062-z](https://doi.org/10.1007/s10664-008-9062-z)
+17. Newcombe, C., Rath, T., Zhang, F., Munteanu, B., Brooker, M., & Deardeuff, M. (2015). How Amazon Web Services uses formal methods. *Communications of the ACM*, 58(4), 66–73. [https://doi.org/10.1145/2699417](https://doi.org/10.1145/2699417)
+18. Parnas, D. L. (1972). On the criteria to be used in decomposing systems into modules. *Communications of the ACM*, 15(12), 1053–1058. [https://doi.org/10.1145/361598.361623](https://doi.org/10.1145/361598.361623)
+19. Rafique, Y., & Mišić, V. B. (2013). The effects of test-driven development on external quality and productivity: A meta-analysis. *IEEE Transactions on Software Engineering*, 39(6), 835–856. [https://doi.org/10.1109/TSE.2012.28](https://doi.org/10.1109/TSE.2012.28)
+20. Tarjan, R. E. (1972). Depth-first search and linear graph algorithms. *SIAM Journal on Computing*, 1(2), 146–160. [https://doi.org/10.1137/0201010](https://doi.org/10.1137/0201010)
+21. Van der Aalst, W. M. P. (1998). The application of Petri nets to workflow management. *Journal of Circuits, Systems, and Computers*, 8(1), 21–66. [https://doi.org/10.1142/S0218126698000043](https://doi.org/10.1142/S0218126698000043)

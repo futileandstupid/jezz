@@ -18,6 +18,7 @@ node_modules/
 .ruff_cache/
 .coverage
 htmlcov/
+site/
 
 # Environment & OS
 .env

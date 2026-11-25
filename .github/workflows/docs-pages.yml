@@ -1,0 +1,60 @@
+name: Deploy Documentation & Interactive CAD Blueprint
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: "pages"
+  cancel-in-progress: false
+
+jobs:
+  build-docs:
+    name: Build MkDocs Material Site & Verify Codebook Parity
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v10.4.0
+        with:
+          enable-cache: true
+
+      - name: Install Python runtime and sync docs group
+        run: |
+          uv python install
+          uv sync --locked --group docs
+
+      - name: Regenerate interactive Blueprint HTML & build strict MkDocs site
+        run: |
+          uv run jezz blueprint . --title "Jezz Self-Hosted Architecture" --write-html docs/demo/jezz-blueprint.html
+          uv run --group docs mkdocs build --strict
+
+      - name: Setup GitHub Pages
+        uses: actions/configure-pages@v5
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: ./site
+
+  deploy-docs:
+    name: Publish to GitHub Pages
+    needs: build-docs
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4

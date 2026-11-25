@@ -1,0 +1,80 @@
+site_name: "jezz — Software Building Codes & PCE"
+site_description: "Licensure-grade Software Building Codes (JBC v1.3), Z3 symbolic contract proofs, switchable A-1/E-1 CAD blueprints, and Permit-and-Contract Engineering."
+site_url: "https://futileandstupid.github.io/jezz/"
+repo_url: "https://github.com/futileandstupid/jezz"
+repo_name: "futileandstupid/jezz"
+
+theme:
+  name: material
+  palette:
+    - scheme: slate
+      primary: light blue
+      accent: cyan
+      toggle:
+        icon: material/brightness-4
+        name: Switch to light mode
+    - scheme: default
+      primary: indigo
+      accent: light blue
+      toggle:
+        icon: material/brightness-7
+        name: Switch to dark mode
+  features:
+    - content.code.copy
+    - navigation.sections
+    - navigation.top
+    - search.suggest
+    - search.highlight
+
+markdown_extensions:
+  - admonition
+  - attr_list
+  - md_in_html
+  - tables
+  - toc:
+      permalink: true
+  - pymdownx.arithmatex:
+      generic: true
+  - pymdownx.details
+  - pymdownx.highlight:
+      anchor_linenums: true
+  - pymdownx.inlinehilite
+  - pymdownx.superfences:
+      custom_fences:
+        - name: mermaid
+          class: mermaid
+          format: !!python/name:pymdownx.superfences.fence_code_format
+
+extra_javascript:
+  - https://unpkg.com/mathjax@3/es5/tex-mml-chtml.js
+
+nav:
+  - Home: index.md
+  - Getting Started & Reference:
+      - Getting Started: getting-started.md
+      - CLI, MCP, & Action Reference: cli-and-mcp-reference.md
+      - JBC v1.3 Codebook (32 Rules): jbc-codebook-reference.md
+      - Interactive CAD Blueprint (A-1 / E-1): interactive-blueprint.md
+      - Ecosystem Landscape Comparison: landscape-comparison.md
+      - Primary-Source Bibliography: references.md
+  - Architecture Pillars:
+      - White Paper: whitepaper.md
+      - Pillar 1 — Behavior Basis (F8 = 21): pillar-1-behavior-basis.md
+      - Pillar 2 — Building Codes & LVS: pillar-2-building-codes.md
+      - Pillar 3A — SDD Forensic Teardown: pillar-3a-sdd-teardown.md
+      - Pillar 3B — PCE Methodology: pillar-3b-pce-methodology.md
+      - Pillar 4 — Pydantic AI Runtime: pillar-4-pydantic-ai-runtime.md
+  - Empirical Trials & Benchmarks:
+      - Validation Roadmap (Tracks 1–26): empirical-testing-roadmap.md
+      - Track 2 — 7.41M Python LOC Audit: track-2-brownfield-field-trial.md
+      - Track 3 — Live Occupancy Probes: track-3-live-occupancy-trial.md
+      - Track 4 — Python SDD-vs-PCE A/B: track-4-sdd-vs-pce-benchmark.md
+      - Track 5 — Longitudinal Crucible: track-5-multi-mandate-crucible.md
+      - Track 6 — Full F8 = 21 Runtime: track-6-full-basis-runtime.md
+      - Track 7 — Prompt Caching & Providers: track-7-prompt-caching-and-providers.md
+      - Track 8 — 300K Polyglot LOC Audit: track-8-polyglot-inspector.md
+      - Track 9 — Polyglot PCE Runtime: track-9-polyglot-pce-runtime.md
+      - Track 10 — Claude & GPT-OSS A/B: track-10-cross-provider-benchmark.md
+      - Track 11 — OSS Ratchet Renovations: track-11-brownfield-renovation-crucible.md
+      - Track 12 — Distribution & CI Gate: track-12-distribution-and-ci-gate.md
+      - Track 21 — 24-Build Polyglot A/B: track-21-polyglot-live-benchmark.md
