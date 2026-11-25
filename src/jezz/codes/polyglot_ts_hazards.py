@@ -390,7 +390,14 @@ def _check_ts_json_or_path_call(
     out: list[RawDiscrepancy] = []
     if not is_test and callee == "JSON.parse":
         parent_node = call.parent
-        parent_txt = node_text(parent_node) if parent_node is not None else ""
+        ctx_node = (
+            parent_node.parent
+            if parent_node is not None
+            and parent_node.type == "arguments"
+            and parent_node.parent is not None
+            else parent_node
+        )
+        parent_txt = node_text(ctx_node) if ctx_node is not None else ""
         stripped = parent_txt.replace("JSON.parse(", "")
         if ".parse(" not in stripped and ".safeParse(" not in parent_txt:
             out.append(

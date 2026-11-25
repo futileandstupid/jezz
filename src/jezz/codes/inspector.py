@@ -32,6 +32,7 @@ from jezz.codes.permits import (
     InspectionReport,
     OccupancyRuling,
     RedTagError,
+    SealDigestStr,
     issue_certificate,
 )
 from jezz.codes.polyglot_ir import (
@@ -756,6 +757,7 @@ def certify_occupancy_in_state(
     report: InspectionReport,
     *,
     artifact_digest: Annotated[str, Field(min_length=8, max_length=128)],
+    blueprint_netlist_digest: SealDigestStr | None = None,
 ) -> CertificateOfOccupancy:
     """Enforce bound-code coverage and issue a ``CertificateOfOccupancy`` at BHV-21 CERTIFY."""
     if not state.problem.bound_code_ids:
@@ -767,7 +769,11 @@ def certify_occupancy_in_state(
         msg = f"Bound codes were omitted from final inspection: {sorted(uninspected)}."
         raise RedTagError(msg, report)
 
-    certificate = issue_certificate(report, artifact_digest=artifact_digest)
+    certificate = issue_certificate(
+        report,
+        artifact_digest=artifact_digest,
+        blueprint_netlist_digest=blueprint_netlist_digest,
+    )
     state.evidence.certified = True
     state.workspace.sealed_commit = certificate.inspector_seal
     return certificate

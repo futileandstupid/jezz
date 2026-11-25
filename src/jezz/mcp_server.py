@@ -22,7 +22,6 @@ from jezz.codes.ast_graph import (
     extract_symbol_source_slice,
 )
 from jezz.codes.codebook import CODE_BOOK, CODEBOOK_EDITION
-from jezz.codes.complexity import PermitProfile
 from jezz.codes.discovery import (
     build_workspace_inspector,
     discover_workspace_units,
@@ -31,7 +30,6 @@ from jezz.codes.discovery import (
     read_contained_json,
     require_workspace_units,
 )
-from jezz.codes.inspector import BuildingInspector
 from jezz.codes.permits import InspectionReport
 from jezz.codes.polyglot_ir import InspectedUnit, is_supported_source_path
 from jezz.codes.ratchet import (
@@ -62,17 +60,24 @@ from jezz.guards import (
     SourceCodeText,
     jezz_callable,
 )
+from jezz.mcp_blueprint import (
+    BlueprintExtractToolArgs,
+    BlueprintLvsToolArgs,
+    build_blueprint_mcp_tool_specs,
+    run_mcp_extract_blueprint,
+    run_mcp_verify_blueprint_lvs,
+)
 from jezz.mcp_charter import (
     CharterIntakeToolArgs,
     CharterSealToolArgs,
     build_charter_mcp_tool_specs,
+    run_mcp_lot_line_assessment,
     run_mcp_seal_charter,
     run_mcp_start_intake,
 )
 from jezz.mcp_reload import HotReloadSupervisor
 from jezz.methodology.dossier import DossierAuditReport, EngineeringDossier, audit_pce_dossier
-from jezz.methodology.lot_line import LotLineAssessment, assess_mandate_lot_line
-from jezz.methodology.mandate import EngineeringMandate
+from jezz.methodology.lot_line import LotLineAssessment
 
 SERVER_NAME: Final[str] = "jezz"
 SERVER_VERSION: Final[str] = __version__
@@ -214,6 +219,8 @@ class _ReloadToolArgs(BaseModel):
     caller_of: IdentifierStr | None = None
     intake_args: CharterIntakeToolArgs | None = None
     seal_charter_args: CharterSealToolArgs | None = None
+    blueprint_extract_args: BlueprintExtractToolArgs | None = None
+    blueprint_lvs_args: BlueprintLvsToolArgs | None = None
 
 
 @jezz_callable
@@ -400,20 +407,6 @@ def _load_dossier_payload(
     return EngineeringDossier.model_validate_json(read_contained_json(target))
 
 
-def _load_mandate_payload(
-    anchor_root: Path,
-    mandate_path: IdentifierStr | None,
-    mandate_json: SourceCodeText | None,
-) -> EngineeringMandate:
-    if (mandate_path is None) == (mandate_json is None):
-        msg = "Specify exactly one of 'mandate_path' or 'mandate_json'."
-        raise ToolError(msg)
-    if mandate_json is not None:
-        return EngineeringMandate.model_validate_json(mandate_json)
-    target = ContainedPath.from_parts(anchor_root, mandate_path or "")
-    return EngineeringMandate.model_validate_json(read_contained_json(target))
-
-
 def _run_dossier_audit(
     anchor_root: Path,
     dossier_path: IdentifierStr | None,
@@ -425,29 +418,6 @@ def _run_dossier_audit(
     dossier = _load_dossier_payload(anchor_root, dossier_path, dossier_json)
     _, units = require_workspace_units(target_repo, target_dirs=target_dirs)
     return audit_pce_dossier(dossier, units)
-
-
-def _run_lot_line_assessment(
-    anchor_root: Path,
-    mandate_path: IdentifierStr | None,
-    mandate_json: SourceCodeText | None,
-    workspace_subpath: IdentifierStr,
-    target_dirs: Sequence[IdentifierStr],
-    permit_path: IdentifierStr | None,
-) -> LotLineAssessment:
-    target_repo = _resolve_contained_dir(anchor_root, workspace_subpath)
-    mandate = _load_mandate_payload(anchor_root, mandate_path, mandate_json)
-    permit = load_contained_permit(_resolve_optional_file(anchor_root, permit_path))
-    units = discover_workspace_units(target_repo, target_dirs=target_dirs)
-    inspector = BuildingInspector.from_workspace(target_repo)
-    profile = permit.profile if permit is not None else PermitProfile.STANDARD
-    return assess_mandate_lot_line(
-        mandate,
-        units,
-        manifest=inspector.manifest,
-        polyglot_manifest=inspector.polyglot_manifest,
-        profile=profile,
-    )
 
 
 def _run_ast_graph_query(
@@ -598,7 +568,7 @@ class JezzWorkspaceGate:
     ) -> LotLineAssessment:
         """Assess pre-flight JBC-COG-006 floorplate capacity and CRP lot-line shear."""
         return _run_tool_safely(
-            lambda: _run_lot_line_assessment(
+            lambda: run_mcp_lot_line_assessment(
                 self._anchor_root,
                 mandate_path,
                 mandate_json,
@@ -625,6 +595,18 @@ def _dispatch_seal_charter(gate: JezzWorkspaceGate, args: _ReloadToolArgs) -> Ba
     if args.seal_charter_args is None:
         raise ToolError("Missing required 'seal_charter_args' payload for pce_seal_charter.")
     return run_mcp_seal_charter(gate.anchor_root, args.seal_charter_args)
+
+
+def _dispatch_extract_blueprint(gate: JezzWorkspaceGate, args: _ReloadToolArgs) -> BaseModel:
+    if args.blueprint_extract_args is None:
+        raise ToolError("Missing required 'blueprint_extract_args' for jbc_extract_blueprint.")
+    return run_mcp_extract_blueprint(gate.anchor_root, args.blueprint_extract_args)
+
+
+def _dispatch_verify_lvs(gate: JezzWorkspaceGate, args: _ReloadToolArgs) -> BaseModel:
+    if args.blueprint_lvs_args is None:
+        raise ToolError("Missing required 'blueprint_lvs_args' for jbc_verify_blueprint_lvs.")
+    return run_mcp_verify_blueprint_lvs(gate.anchor_root, args.blueprint_lvs_args)
 
 
 type _WorkerDispatchFn = Callable[[JezzWorkspaceGate, _ReloadToolArgs], BaseModel]
@@ -654,6 +636,8 @@ _WORKER_TOOL_DISPATCH: Final[Mapping[str, _WorkerDispatchFn]] = MappingProxyType
         ),
         "pce_start_intake": _dispatch_start_intake,
         "pce_seal_charter": _dispatch_seal_charter,
+        "jbc_extract_blueprint": _dispatch_extract_blueprint,
+        "jbc_verify_blueprint_lvs": _dispatch_verify_lvs,
     }
 )
 
@@ -941,6 +925,7 @@ def _register_statutory_tools(
             lot_line_fn,
         ),
         *build_charter_mcp_tool_specs(gate.anchor_root, sup),
+        *build_blueprint_mcp_tool_specs(gate.anchor_root, sup),
     )
     for name, title, description, handler in specs:
         server.add_tool(

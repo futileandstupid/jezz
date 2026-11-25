@@ -41,6 +41,7 @@ from jezz.agents.schemas import (
 )
 from jezz.agents.specialists import GuardedModel
 from jezz.agents.workspace import DynamicGatePort, InProcessGateRunner
+from jezz.cli_blueprint import handle_blueprint_command
 from jezz.cli_interactive import (
     CliIoStreams,
     handle_charter_command,
@@ -710,6 +711,7 @@ _COMMAND_HANDLERS: Final[Mapping[str, _CommandHandler]] = MappingProxyType(
         "init": handle_init_command,
         "hook": handle_hook_command,
         "charter": handle_charter_command,
+        "blueprint": handle_blueprint_command,
     }
 )
 

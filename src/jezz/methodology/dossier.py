@@ -10,6 +10,8 @@ from pydantic import BaseModel, Field
 
 from jezz.behaviors.graph import BehaviorGraph, verify_behavior_graph
 from jezz.behaviors.taxonomy import BehaviorKind
+from jezz.codes.blueprint import BlueprintGraph, extract_blueprint
+from jezz.codes.blueprint_lvs import verify_blueprint_lvs
 from jezz.codes.inspector import compute_units_digest
 from jezz.codes.permits import CertificateOfOccupancy, CodePermit, InspectionReport
 from jezz.codes.polyglot_ir import InspectedUnit, PolyglotUnit
@@ -47,6 +49,7 @@ class DossierViolationCode(StrEnum):
     UNINSPECTED_PERMIT_CODES = "uninspected_permit_codes"
     INSPECTION_RED_TAG = "inspection_red_tag"
     INVALID_OCCUPANCY_SEAL = "invalid_occupancy_seal"
+    BLUEPRINT_LVS_MISMATCH = "blueprint_lvs_mismatch"
 
 
 class DossierViolation(BaseModel):
@@ -70,6 +73,7 @@ class EngineeringDossier(BaseModel):
     behavior_graph: BehaviorGraph
     mutated_files: Annotated[frozenset[IdentifierStr], Field(max_length=1024)] = frozenset()
     ratchet_scoped: bool = False
+    target_blueprint: BlueprintGraph | None = None
     inspection_report: InspectionReport
     certificate: CertificateOfOccupancy | None = None
 
@@ -248,6 +252,52 @@ def _check_symbol_and_scope_grounding(
     return verified, violations
 
 
+def _check_blueprint_seal_and_lvs(
+    dossier: EngineeringDossier,
+    digest_units: Sequence[InspectedUnit],
+) -> list[DossierViolation]:
+    violations: list[DossierViolation] = []
+    cert = dossier.certificate
+    if cert is not None and cert.blueprint_netlist_digest is not None:
+        actual_netlist = extract_blueprint(digest_units, profile=dossier.permit.profile)
+        if cert.blueprint_netlist_digest != actual_netlist.netlist_digest:
+            violations.append(
+                DossierViolation(
+                    code=DossierViolationCode.INVALID_OCCUPANCY_SEAL,
+                    phase=PcePhase.OCCUPANCY,
+                    message=(
+                        "CertificateOfOccupancy blueprint_netlist_digest mismatches physical "
+                        "boundary netlist."
+                    ),
+                    remediation="Re-issue CertificateOfOccupancy over current blueprint netlist.",
+                )
+            )
+    if dossier.target_blueprint is not None:
+        pinned_ids = {ip.invariant_id for ip in dossier.target_blueprint.invariant_pins}
+        bindings = tuple(
+            (inv.invariant_id, inv.verification_symbol)
+            for inv in dossier.mandate.invariants
+            if inv.invariant_id in pinned_ids
+        )
+        actual_bp = extract_blueprint(
+            digest_units,
+            profile=dossier.permit.profile,
+            invariant_bindings=bindings,
+        )
+        lvs = verify_blueprint_lvs(actual_bp, dossier.target_blueprint)
+        if not lvs.is_lvs_clean:
+            first = lvs.defects[0]
+            violations.append(
+                DossierViolation(
+                    code=DossierViolationCode.BLUEPRINT_LVS_MISMATCH,
+                    phase=PcePhase.OCCUPANCY,
+                    message=f"Blueprint LVS {first.kind} ({first.layer}): {first.message}",
+                    remediation=first.remediation,
+                )
+            )
+    return violations
+
+
 def _check_inspection_and_occupancy(
     dossier: EngineeringDossier,
     units: Sequence[InspectedUnit],
@@ -291,6 +341,7 @@ def _check_inspection_and_occupancy(
         cert is None
         or cert.permit_id != dossier.permit.permit_id
         or cert.artifact_digest != expected_digest
+        or not cert.verify_seal()
     ):
         violations.append(
             DossierViolation(
@@ -300,6 +351,8 @@ def _check_inspection_and_occupancy(
                 remediation="Issue fresh CertificateOfOccupancy over current workspace units.",
             )
         )
+        return violations
+    violations.extend(_check_blueprint_seal_and_lvs(dossier, digest_units))
     return violations
 
 

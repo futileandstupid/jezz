@@ -34,6 +34,10 @@ type PermitIdStr = Annotated[
     str,
     Field(min_length=1, max_length=128, pattern=r"^[A-Za-z][A-Za-z0-9_-]*$"),
 ]
+type SealDigestStr = Annotated[
+    str,
+    Field(min_length=71, max_length=71, pattern=r"^sha256:[0-9a-f]{64}$"),
+]
 
 
 class CodeVariance(BaseModel):
@@ -393,6 +397,30 @@ class RedTagError(RuntimeError):
         self.report = report
 
 
+@jezz_callable
+def compute_certificate_seal(
+    permit_id: PermitIdStr,
+    ruling: OccupancyRuling,
+    cited_code_ids: Annotated[Sequence[IdentifierStr], Field(min_length=1, max_length=256)],
+    exercised_variance_ids: Annotated[Sequence[PermitIdStr], Field(max_length=256)],
+    artifact_digest: Annotated[str, Field(min_length=8, max_length=128)],
+    *,
+    blueprint_netlist_digest: SealDigestStr | None = None,
+) -> SealDigestStr:
+    """Compute canonical SHA-256 inspector seal over occupancy verdict, artifact, and netlist."""
+    parts: list[str] = [
+        permit_id,
+        ruling.value,
+        ",".join(cited_code_ids),
+        ",".join(exercised_variance_ids),
+        artifact_digest,
+    ]
+    if blueprint_netlist_digest is not None:
+        parts.append(blueprint_netlist_digest)
+    payload = "|".join(parts)
+    return "sha256:" + hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
 class CertificateOfOccupancy(BaseModel):
     """Cryptographically sealed compliance certificate emitted at BHV-21 CERTIFY."""
 
@@ -403,9 +431,8 @@ class CertificateOfOccupancy(BaseModel):
     cited_code_ids: Annotated[tuple[IdentifierStr, ...], Field(min_length=1, max_length=256)]
     exercised_variance_ids: Annotated[tuple[PermitIdStr, ...], Field(max_length=256)] = ()
     artifact_digest: Annotated[str, Field(min_length=8, max_length=128)]
-    inspector_seal: Annotated[
-        str, Field(min_length=71, max_length=71, pattern=r"^sha256:[0-9a-f]{64}$")
-    ]
+    blueprint_netlist_digest: SealDigestStr | None = None
+    inspector_seal: SealDigestStr
 
     @model_validator(mode="after")
     def _forbid_red_tag_certificate(self) -> Self:
@@ -413,6 +440,19 @@ class CertificateOfOccupancy(BaseModel):
             msg = "CertificateOfOccupancy can never be instantiated with RED_TAG ruling."
             raise ValueError(msg)
         return self
+
+    @jezz_callable
+    def verify_seal(self) -> bool:
+        """Return True iff ``inspector_seal`` matches the recomputed SHA-256 certificate payload."""
+        expected = compute_certificate_seal(
+            self.permit_id,
+            self.ruling,
+            self.cited_code_ids,
+            self.exercised_variance_ids,
+            self.artifact_digest,
+            blueprint_netlist_digest=self.blueprint_netlist_digest,
+        )
+        return self.inspector_seal == expected
 
 
 @icontract.require(lambda artifact_digest: len(artifact_digest.strip()) >= 8)
@@ -422,6 +462,7 @@ def issue_certificate(
     report: InspectionReport,
     *,
     artifact_digest: Annotated[str, Field(min_length=8, max_length=128)],
+    blueprint_netlist_digest: SealDigestStr | None = None,
 ) -> CertificateOfOccupancy:
     """Issue a sealed ``CertificateOfOccupancy`` if approved, else raise ``RedTagError``."""
     if not report.is_occupiable:
@@ -436,22 +477,20 @@ def issue_certificate(
     exercised_variances = tuple(
         sorted({f.variance_id for f in report.findings if f.variance_id is not None})
     )
-    payload = "|".join(
-        (
-            report.permit_id,
-            report.ruling.value,
-            ",".join(cited_codes),
-            ",".join(exercised_variances),
-            artifact_digest,
-        )
+    seal_value = compute_certificate_seal(
+        report.permit_id,
+        report.ruling,
+        cited_codes,
+        exercised_variances,
+        artifact_digest,
+        blueprint_netlist_digest=blueprint_netlist_digest,
     )
-    digest = hashlib.sha256(payload.encode("utf-8")).hexdigest()
-    seal_value = "sha256:" + digest
     return CertificateOfOccupancy(
         permit_id=report.permit_id,
         ruling=report.ruling,
         cited_code_ids=cited_codes,
         exercised_variance_ids=exercised_variances,
         artifact_digest=artifact_digest,
+        blueprint_netlist_digest=blueprint_netlist_digest,
         inspector_seal=seal_value,
     )

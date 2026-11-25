@@ -63,3 +63,16 @@ jobs:
           working-directory: "."
           mode: "full"
           language: "python"
+
+      - name: Setup Node.js for @jezz/blueprint CAD package
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: "npm"
+          cache-dependency-path: "packages/jezz-blueprint/package-lock.json"
+
+      - name: Gate 7 — @jezz/blueprint TypeScript strict check & Vitest CAD suite
+        run: |
+          npm --prefix packages/jezz-blueprint ci
+          npm --prefix packages/jezz-blueprint run typecheck
+          npm --prefix packages/jezz-blueprint test

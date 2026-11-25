@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Annotated
 
 from jezz.agents.caching import PromptCacheMode
+from jezz.cli_blueprint import register_blueprint_parser
 from jezz.cli_interactive import (
     register_charter_parser,
     register_hook_parser,
@@ -278,6 +279,12 @@ def build_cli_parser() -> GuardedArgParser:
         sub.add_parser(
             "charter",
             help="Execute Phase 0/I reality probe, 3-axis elicitation, and ProjectCharter sealing.",
+        )
+    )
+    register_blueprint_parser(
+        sub.add_parser(
+            "blueprint",
+            help="Extract BlueprintGraph IR, render Sheet A-1/E-1 CAD viewer, or verify LVS.",
         )
     )
     return parser

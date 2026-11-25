@@ -93,6 +93,7 @@ from jezz.behaviors.runtime import (
 )
 from jezz.behaviors.taxonomy import BehaviorKind
 from jezz.codes.ast_graph import build_workspace_ast_graph
+from jezz.codes.blueprint import extract_blueprint
 from jezz.codes.inspector import (
     bind_permit_to_state,
     certify_occupancy_in_state,
@@ -825,10 +826,15 @@ class CertifyNode(AtomicBehaviorGraphNode[PceGraphDeps, PceWorkflowResult]):
             if is_ratchet
             else units
         )
+        netlist_digest = extract_blueprint(
+            digest_units,
+            profile=ctx.deps.permit.profile,
+        ).netlist_digest
         cert = certify_occupancy_in_state(
             ctx.state,
             final_report,
             artifact_digest=compute_units_digest(digest_units),
+            blueprint_netlist_digest=netlist_digest,
         )
         induced = trace_to_behavior_graph(ctx.state.trace, name=f"pce_{mandate.mandate_id}")
         graph_verdict = verify_behavior_graph(induced)

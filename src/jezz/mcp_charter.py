@@ -34,6 +34,8 @@ from jezz.methodology.charter import (
     seal_project_charter,
     start_charter_intake,
 )
+from jezz.methodology.lot_line import LotLineAssessment, assess_mandate_lot_line
+from jezz.methodology.mandate import EngineeringMandate
 
 type GuardedSupervisor = Annotated[HotReloadSupervisor, InstanceGuard(HotReloadSupervisor)]
 type TargetDirsTuple = Annotated[
@@ -125,6 +127,48 @@ def _load_seal_input(
         return CharterSealInput.model_validate_json(seal_input_json)
     target = ContainedPath.from_parts(anchor_root, seal_input_path or "")
     return CharterSealInput.model_validate_json(read_contained_json(target))
+
+
+def _load_mandate_payload(
+    anchor_root: Path,
+    mandate_path: IdentifierStr | None,
+    mandate_json: str | None,
+) -> EngineeringMandate:
+    if (mandate_path is None) == (mandate_json is None):
+        msg = "Specify exactly one of 'mandate_path' or 'mandate_json'."
+        raise ToolError(msg)
+    if mandate_json is not None:
+        return EngineeringMandate.model_validate_json(mandate_json)
+    target = ContainedPath.from_parts(anchor_root, mandate_path or "")
+    return EngineeringMandate.model_validate_json(read_contained_json(target))
+
+
+@jezz_callable
+def run_mcp_lot_line_assessment(
+    anchor_root: Path,
+    mandate_path: IdentifierStr | None = None,
+    mandate_json: CharterWireJson | None = None,
+    workspace_subpath: IdentifierStr = ".",
+    target_dirs: TargetDirsTuple = (),
+    permit_path: IdentifierStr | None = None,
+) -> LotLineAssessment:
+    """Evaluate JBC-COG-006 floorplates and CRP lot-line shear jailed under ``anchor_root``."""
+    target_repo = _resolve_target_repo(anchor_root, workspace_subpath)
+    mandate = _load_mandate_payload(anchor_root, mandate_path, mandate_json)
+    permit_target = (
+        ContainedPath.from_parts(anchor_root, permit_path) if permit_path is not None else None
+    )
+    permit = load_contained_permit(permit_target)
+    units = discover_workspace_units(target_repo, target_dirs=target_dirs)
+    inspector = BuildingInspector.from_workspace(target_repo)
+    profile = permit.profile if permit is not None else PermitProfile.STANDARD
+    return assess_mandate_lot_line(
+        mandate,
+        units,
+        manifest=inspector.manifest,
+        polyglot_manifest=inspector.polyglot_manifest,
+        profile=profile,
+    )
 
 
 @jezz_callable
@@ -264,6 +308,7 @@ __all__ = [
     "CharterSealToolArgs",
     "CharterWireJson",
     "build_charter_mcp_tool_specs",
+    "run_mcp_lot_line_assessment",
     "run_mcp_seal_charter",
     "run_mcp_start_intake",
 ]

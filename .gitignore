@@ -7,8 +7,9 @@ build/
 dist/
 *.egg-info/
 
-# Virtual environments
+# Virtual environments & Node dependencies
 .venv/
+node_modules/
 
 # Tool caches & coverage
 .pytest_cache/

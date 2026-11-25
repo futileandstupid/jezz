@@ -41,9 +41,10 @@ _RULES_AGENTS_MD: Final[str] = """# Jezz Statutory Engineering Rules (JBC v1.3 &
   dry-run candidate source buffers in memory via MCP tool `jbc_preview_source` (`0` unwaived
   `RED_TAG` violations, including whole-workspace `JBC-COG-003` / `JBC-COG-006` topology,
   encapsulation, and inter-procedural call-flow checks).
-- Use `jbc_get_code`, `jbc_list_codes`, `jbc_assess_lot_line`, or `jbc_query_ast_graph` to inspect
-  normative **Jezz Software Building Code (`JBC` Edition 1.3)** requirements, lot-line shear, and
-  AST/CST symbol maps.
+- Use `jbc_get_code`, `jbc_list_codes`, `jbc_assess_lot_line`, `jbc_extract_blueprint`,
+  `jbc_verify_blueprint_lvs`, or `jbc_query_ast_graph` to inspect normative **Jezz Software
+  Building Code (`JBC` Edition 1.3)** requirements, lot-line shear, blueprint `LVS` equivalence,
+  and AST/CST symbol maps.
 - Before ending any turn that modifies governed source files, verify clean occupancy via
   `jbc_inspect_differential` and run workspace dynamic gates (e.g., `uv run pytest`,
   `uv run mypy .`, `uv run ruff check .` for Python; `tsc`/`vitest`, `cargo test`, or `go test`
@@ -75,8 +76,8 @@ specifications.
      symbols and pairwise-disjoint `ModuleWriteScope`s; evaluate package/compartment placement
      with `jbc_assess_lot_line` when introducing new capabilities.
 2. **Phase II — Permit (`BHV-03 BIND_CODES` / `BHV-04 INSPECT_CODE`):**
-   - Inspect baseline compliance with `jbc_inspect_workspace`, `jbc_inspect_differential`, or
-     `jbc_query_ast_graph`.
+   - Inspect baseline compliance and architectural schematic with `jbc_inspect_workspace`,
+     `jbc_inspect_differential`, `jbc_extract_blueprint`, or `jbc_query_ast_graph`.
    - Verify any multi-step behavior topology with `jbc_verify_behavior_graph`.
 3. **Phase III — Contract & Instrumentation (`BHV-14 SPECIFY` / `BHV-15 INSTRUMENT`):**
    - **Defect Repair (`build_abductive_bugfix_graph` — Mandatory `RED -> GREEN`):** Author a
@@ -92,12 +93,17 @@ specifications.
    - Implement or refactor strictly within authorized `ModuleWriteScope`s; preview each module
      via `jbc_preview_source`.
 5. **Phase V — Occupancy Verification (`BHV-18` / `BHV-19` / `BHV-21`):**
-   - Confirm zero unwaived `JBC` violations via `jbc_inspect_differential`.
+   - Confirm zero unwaived `JBC` violations via `jbc_inspect_differential` and coarse-grained
+     schematic equivalence via `jbc_verify_blueprint_lvs` when a target `BlueprintGraph` applies.
    - Execute dynamic gates (`uv run pytest`, `uv run mypy .`, `uv run ruff check .` for Python, or
      the target ecosystem's typecheck/test suite).
    - When an `EngineeringDossier` JSON is produced, verify seal integrity via `jbc_audit_dossier`.
 
 ## Mode 2: Autonomous `jezz` CLI Delegation
+
+- **Blueprint CAD Viewer & Coarse-Grained LVS Gate:**
+  `uv run jezz blueprint <repo> [--write-html blueprint.html] [--write-json blueprint.json]`
+  `[--redlines redlines.json] [--verify-target target_blueprint.json]`
 
 - **Project Charter Intake & Phased Permit Sealing:**
   `uv run jezz charter <repo> --title "..." --vision "..." [--interactive]`

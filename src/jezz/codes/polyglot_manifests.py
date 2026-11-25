@@ -217,9 +217,11 @@ def load_package_json_manifest(repo_root: Path) -> EcosystemManifest:
     """Parse ``package.json`` (including monorepo ``packages/*`` and ``apps/*`` members)."""
     resolved_root = repo_root.resolve()
     pkg_target = ContainedPath.from_parts(resolved_root, "package.json")
-    if not pkg_target.resolved_path.is_file():
-        return EcosystemManifest()
-    run_roots, dev_roots, ws_roots = _parse_single_package_json(pkg_target)
+    run_roots, dev_roots, ws_roots = (
+        _parse_single_package_json(pkg_target)
+        if pkg_target.resolved_path.is_file()
+        else (set(), set(), set())
+    )
     m_run, m_dev, m_ws = _discover_npm_workspace_manifests(resolved_root)
     merged_run = run_roots | m_run
     merged_dev = (dev_roots | m_dev) - merged_run
