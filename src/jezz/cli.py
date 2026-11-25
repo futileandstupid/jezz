@@ -356,11 +356,12 @@ def _resolve_credentials_for_models(
     search_roots: Sequence[Path],
 ) -> dict[str, GuardedSecretStr | None]:
     families = {fam for m in model_names if (fam := canonical_provider_family(m))}
-    if ns.pass_uri is not None and len(families) > 1:
+    explicit_uri: str | None = getattr(ns, "secret_uri", None)
+    if explicit_uri is not None and len(families) > 1:
         msg = (
-            f"Single --api-key-uri cannot be shared across multiple model providers "
-            f"{sorted(families)}; configure per-provider URIs under "
-            "[tool.jezz.secrets.providers] in pyproject.toml."
+            f"Single --secret-uri / --api-key-uri cannot be shared across multiple model "
+            f"providers {sorted(families)}; configure per-provider URIs under "
+            "[tool.jezz.secrets.providers] in pyproject.toml or user config.toml."
         )
         raise SecretResolutionError(msg)
 
@@ -371,7 +372,7 @@ def _resolve_credentials_for_models(
         if cache_slot not in family_cache:
             family_cache[cache_slot] = resolve_model_api_key(
                 model_name,
-                explicit_pass_uri=ns.pass_uri,
+                explicit_secret_uri=explicit_uri,
                 search_roots=tuple(search_roots),
                 reason_override=ns.agent_reason,
             )

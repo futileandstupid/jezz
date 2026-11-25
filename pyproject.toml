@@ -30,6 +30,7 @@ classifiers = [
 dependencies = [
     "icontract>=2.7.3",
     "mcp>=2.3.0",
+    "platformdirs>=4.3.0",
     "pydantic>=2.14.4",
     "pydantic-ai>=2.71.0",
     "pydantic-evals>=2.71.0",
@@ -94,9 +95,3 @@ exclude_also = [
 [tool.jezz.models]
 default = "google:gemini-3.8-flash"
 
-[tool.jezz.secrets]
-agent_reason = "jezz PCE runtime resolving model API credential"
-timeout_sec = 15.0
-
-[tool.jezz.secrets.providers]
-google = "pass://AI-Keys/Gemini Developer API/API Key"

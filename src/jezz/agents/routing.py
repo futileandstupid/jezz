@@ -23,7 +23,8 @@ from jezz.guards import (
 from jezz.secrets import canonical_provider_family, read_pyproject_jezz_table
 
 _CREDENTIAL_LIKE_SPEC_RE: Final[re.Pattern[str]] = re.compile(
-    r"^(?:pass://|sk-[A-Za-z0-9_-]{16,}|ghp_[A-Za-z0-9]{16,}|AKIA[0-9A-Z]{12,}|AIza[0-9A-Za-z_-]{20,})"
+    r"^(?:[a-z][a-z0-9+.-]*://|sk-[A-Za-z0-9_-]{16,}|ghp_[A-Za-z0-9]{16,}|"
+    r"AKIA[0-9A-Z]{12,}|AIza[0-9A-Za-z_-]{20,})"
 )
 
 
@@ -87,8 +88,8 @@ def _validate_model_spec_text(raw_spec: str, field_label: str) -> None:
         raise ValueError(msg)
     if _CREDENTIAL_LIKE_SPEC_RE.match(raw_spec):
         msg = (
-            f"Refusing credential or 'pass://' URI in model slot '{field_label}'; "
-            "use --api-key-uri or [tool.jezz.secrets.providers] for API keys."
+            f"Refusing credential or secret URI (e.g. 'pass://', 'env://', 'op://') in model "
+            f"slot '{field_label}'; use --secret-uri or [tool.jezz.secrets.providers]."
         )
         raise ValueError(msg)
 

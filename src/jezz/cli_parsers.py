@@ -55,16 +55,21 @@ def _register_model_routing_flags(parser: argparse.ArgumentParser) -> None:
 
 def _register_secret_flags(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
+        "--secret-uri",
         "--api-key-uri",
-        dest="pass_uri",
+        "--pass-uri",
+        dest="secret_uri",
         default=None,
-        help="Proton Pass secret URI (pass://vault/item/field) for model API key.",
+        help=(
+            "Secret URI (env://VAR, pass://vault/item/field, op://vault/item/field, "
+            "or keychain://service/account) for model API key."
+        ),
     )
     parser.add_argument(
         "--agent-reason",
         dest="agent_reason",
         default=None,
-        help="Audit reason logged via PROTON_PASS_AGENT_REASON during pass-cli access.",
+        help="Audit reason propagated to secret providers (e.g. PROTON_PASS_AGENT_REASON).",
     )
 
 
