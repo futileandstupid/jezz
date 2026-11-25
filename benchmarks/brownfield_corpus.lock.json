@@ -1,0 +1,102 @@
+{
+  "schema_version": "1.0",
+  "description": "Pinned external open-source repository corpus for $0 deterministic JBC brownfield reproduction (Tracks 2, 8, & 11).",
+  "repositories": [
+    {
+      "id": "go_chi",
+      "repo_url": "https://github.com/go-chi/chi.git",
+      "commit_or_tag": "c64ed7d663",
+      "subpath": ".",
+      "language": "go",
+      "tier": "smoke",
+      "expected_ruling": "red_tag",
+      "recorded_units": 90,
+      "recorded_loc": 13213,
+      "recorded_life_safety": 24
+    },
+    {
+      "id": "spf13_cobra",
+      "repo_url": "https://github.com/spf13/cobra.git",
+      "commit_or_tag": "adbc881390",
+      "subpath": ".",
+      "language": "go",
+      "tier": "smoke",
+      "expected_ruling": "red_tag",
+      "recorded_units": 36,
+      "recorded_loc": 16765,
+      "recorded_life_safety": 41
+    },
+    {
+      "id": "serde_json",
+      "repo_url": "https://github.com/serde-rs/json.git",
+      "commit_or_tag": "f51fa15a70",
+      "subpath": ".",
+      "language": "rust",
+      "tier": "core",
+      "expected_ruling": "red_tag",
+      "recorded_units": 61,
+      "recorded_loc": 23380,
+      "recorded_life_safety": 34
+    },
+    {
+      "id": "burntsushi_ripgrep",
+      "repo_url": "https://github.com/BurntSushi/ripgrep.git",
+      "commit_or_tag": "4a51093f78",
+      "subpath": ".",
+      "language": "rust",
+      "tier": "core",
+      "expected_ruling": "red_tag",
+      "recorded_units": 104,
+      "recorded_loc": 58463,
+      "recorded_life_safety": 53
+    },
+    {
+      "id": "honojs_hono",
+      "repo_url": "https://github.com/honojs/hono.git",
+      "commit_or_tag": "9075031ea4",
+      "subpath": ".",
+      "language": "typescript",
+      "tier": "core",
+      "expected_ruling": "red_tag",
+      "recorded_units": 316,
+      "recorded_loc": 85851,
+      "recorded_life_safety": 202
+    },
+    {
+      "id": "colinhacks_zod",
+      "repo_url": "https://github.com/colinhacks/zod.git",
+      "commit_or_tag": "d40c329910",
+      "subpath": ".",
+      "language": "typescript",
+      "tier": "core",
+      "expected_ruling": "red_tag",
+      "recorded_units": 503,
+      "recorded_loc": 102395,
+      "recorded_life_safety": 351
+    },
+    {
+      "id": "github_spec_kit",
+      "repo_url": "https://github.com/github/spec-kit.git",
+      "commit_or_tag": "a55782f1f1",
+      "subpath": ".",
+      "language": "python",
+      "tier": "full",
+      "expected_ruling": "red_tag",
+      "recorded_units": 699,
+      "recorded_loc": 291626,
+      "recorded_life_safety": 165
+    },
+    {
+      "id": "aws_kiro_sample",
+      "repo_url": "https://github.com/aws-samples/sample-e2e-product-development-with-kiro.git",
+      "commit_or_tag": "main",
+      "subpath": ".",
+      "language": "python",
+      "tier": "full",
+      "expected_ruling": "red_tag",
+      "recorded_units": 10,
+      "recorded_loc": 2751,
+      "recorded_life_safety": 1
+    }
+  ]
+}

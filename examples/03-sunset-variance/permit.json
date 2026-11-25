@@ -1,0 +1,62 @@
+{
+  "permit_id": "PERMIT-LEGACY-ORDER-03",
+  "active_triggers": [
+    "constrained_domain",
+    "verification_suite",
+    "sensitive_context",
+    "universal",
+    "external_boundary"
+  ],
+  "bound_code_ids": [
+    "JBC-FLT-004",
+    "JBC-VRF-005",
+    "JBC-SEC-004",
+    "JBC-COG-006",
+    "JBC-VRF-002",
+    "JBC-DBC-003",
+    "JBC-COG-005",
+    "JBC-DBC-005",
+    "JBC-COG-004",
+    "JBC-FLT-005",
+    "JBC-FLT-001",
+    "JBC-SEC-002",
+    "JBC-COG-003",
+    "JBC-SEC-001",
+    "JBC-OBS-001",
+    "JBC-DBC-001",
+    "JBC-VRF-001",
+    "JBC-VRF-004",
+    "JBC-SEC-005",
+    "JBC-FLT-003",
+    "JBC-SEC-006",
+    "JBC-FLT-006",
+    "JBC-DBC-002",
+    "JBC-OBS-003",
+    "JBC-COG-001",
+    "JBC-FLT-002",
+    "JBC-SEC-003",
+    "JBC-OBS-002",
+    "JBC-DBC-004",
+    "JBC-VRF-003",
+    "JBC-VRF-006",
+    "JBC-COG-002"
+  ],
+  "variances": [
+    {
+      "variance_id": "VAR-LEGACY-ORDER-01",
+      "code_id": "JBC-COG-002",
+      "file_path": "adapter.go",
+      "symbol": "TranslateLegacyOrder",
+      "authorized_by": "Principal Architect",
+      "justification": "Vendor C-ABI 7-leg adapter pending v2 struct migration.",
+      "expires_on": "2026-06-30"
+    }
+  ],
+  "profile": "standard",
+  "thresholds": {
+    "max_cognitive_complexity": null,
+    "max_nesting_depth": null,
+    "max_parameter_count": null,
+    "max_statement_count": null
+  }
+}

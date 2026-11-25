@@ -1,0 +1,546 @@
+{
+  "mandate": {
+    "mandate_id": "MND-QUOTA-EXAMPLE-04",
+    "title": "Bounded Quota Allocation With Deductive Z3 Postcondition",
+    "objective": "Ensure granted quota never exceeds cap_units and remains non-negative.",
+    "invariants": [
+      {
+        "invariant_id": "INV-001",
+        "statement": "allocate_quota returns granted units within 0..=cap_units.",
+        "verification_symbol": "allocate_quota"
+      },
+      {
+        "invariant_id": "INV-002",
+        "statement": "Test suite verifies clamping and invalid-cap rejection.",
+        "verification_symbol": "test_allocate_quota_clamps_to_cap"
+      }
+    ],
+    "write_scopes": [
+      {
+        "scope_id": "scope_quota",
+        "owned_files": [
+          "tests/quota_test.rs",
+          "src/lib.rs"
+        ],
+        "contract_symbols": [
+          "allocate_quota"
+        ],
+        "depends_on": []
+      }
+    ],
+    "required_dependencies": [],
+    "consultation_targets": [],
+    "out_of_scope": [],
+    "open_ambiguities": []
+  },
+  "permit": {
+    "permit_id": "PERMIT-QUOTA-04",
+    "active_triggers": [
+      "constrained_domain",
+      "verification_suite",
+      "sensitive_context",
+      "universal",
+      "external_boundary"
+    ],
+    "bound_code_ids": [
+      "JBC-FLT-004",
+      "JBC-VRF-005",
+      "JBC-SEC-004",
+      "JBC-COG-006",
+      "JBC-VRF-002",
+      "JBC-DBC-003",
+      "JBC-COG-005",
+      "JBC-DBC-005",
+      "JBC-COG-004",
+      "JBC-FLT-005",
+      "JBC-FLT-001",
+      "JBC-SEC-002",
+      "JBC-COG-003",
+      "JBC-SEC-001",
+      "JBC-OBS-001",
+      "JBC-DBC-001",
+      "JBC-VRF-001",
+      "JBC-VRF-004",
+      "JBC-SEC-005",
+      "JBC-FLT-003",
+      "JBC-SEC-006",
+      "JBC-FLT-006",
+      "JBC-DBC-002",
+      "JBC-OBS-003",
+      "JBC-COG-001",
+      "JBC-FLT-002",
+      "JBC-SEC-003",
+      "JBC-OBS-002",
+      "JBC-DBC-004",
+      "JBC-VRF-003",
+      "JBC-VRF-006",
+      "JBC-COG-002"
+    ],
+    "variances": [],
+    "profile": "standard",
+    "thresholds": {
+      "max_cognitive_complexity": null,
+      "max_nesting_depth": null,
+      "max_parameter_count": null,
+      "max_statement_count": null
+    }
+  },
+  "behavior_graph": {
+    "name": "greenfield_contract_first",
+    "description": "Resolves under-specification via ELICIT, then enforces SPECIFY before SYNTHESIZE.",
+    "entry_id": "frame_initial",
+    "nodes": [
+      {
+        "id": "frame_initial",
+        "kind": "frame",
+        "label": "Detect underspecified domain invariants",
+        "rationale": ""
+      },
+      {
+        "id": "elicit_constraints",
+        "kind": "elicit",
+        "label": "Query user for domain boundary decisions",
+        "rationale": ""
+      },
+      {
+        "id": "reframe_resolved",
+        "kind": "frame",
+        "label": "Integrate resolved constraints into objective",
+        "rationale": ""
+      },
+      {
+        "id": "bind_design_codes",
+        "kind": "bind_codes",
+        "label": "Bind DbC and static typing building codes",
+        "rationale": ""
+      },
+      {
+        "id": "decompose_modules",
+        "kind": "decompose",
+        "label": "Partition module interfaces and write scopes",
+        "rationale": ""
+      },
+      {
+        "id": "checkpoint_repo",
+        "kind": "checkpoint",
+        "label": "Snapshot baseline repository state",
+        "rationale": ""
+      },
+      {
+        "id": "specify_contracts",
+        "kind": "specify",
+        "label": "Author Pydantic schemas and icontract invariants",
+        "rationale": ""
+      },
+      {
+        "id": "author_property_tests",
+        "kind": "instrument",
+        "label": "Author Hypothesis property test suite",
+        "rationale": ""
+      },
+      {
+        "id": "synthesize_module",
+        "kind": "synthesize",
+        "label": "Implement module against formal contracts",
+        "rationale": ""
+      },
+      {
+        "id": "verify_static_strict",
+        "kind": "verify_static",
+        "label": "Run strict mypy and ruff gates",
+        "rationale": ""
+      },
+      {
+        "id": "verify_properties",
+        "kind": "verify_dynamic",
+        "label": "Execute property and contract suite",
+        "rationale": ""
+      },
+      {
+        "id": "certify_module",
+        "kind": "certify",
+        "label": "Certify compliance and commit module",
+        "rationale": ""
+      }
+    ],
+    "edges": [
+      {
+        "source": "frame_initial",
+        "target": "elicit_constraints",
+        "condition": ""
+      },
+      {
+        "source": "elicit_constraints",
+        "target": "reframe_resolved",
+        "condition": ""
+      },
+      {
+        "source": "reframe_resolved",
+        "target": "bind_design_codes",
+        "condition": ""
+      },
+      {
+        "source": "bind_design_codes",
+        "target": "decompose_modules",
+        "condition": ""
+      },
+      {
+        "source": "decompose_modules",
+        "target": "checkpoint_repo",
+        "condition": ""
+      },
+      {
+        "source": "checkpoint_repo",
+        "target": "specify_contracts",
+        "condition": ""
+      },
+      {
+        "source": "specify_contracts",
+        "target": "author_property_tests",
+        "condition": ""
+      },
+      {
+        "source": "author_property_tests",
+        "target": "synthesize_module",
+        "condition": ""
+      },
+      {
+        "source": "synthesize_module",
+        "target": "verify_static_strict",
+        "condition": ""
+      },
+      {
+        "source": "verify_static_strict",
+        "target": "verify_properties",
+        "condition": ""
+      },
+      {
+        "source": "verify_properties",
+        "target": "certify_module",
+        "condition": ""
+      }
+    ]
+  },
+  "mutated_files": [
+    "tests/quota_test.rs",
+    "src/lib.rs"
+  ],
+  "ratchet_scoped": false,
+  "require_smt_verification": true,
+  "target_blueprint": null,
+  "inspection_report": {
+    "permit_id": "PERMIT-QUOTA-04",
+    "ruling": "approved",
+    "auto_detected_triggers": [
+      "external_boundary",
+      "verification_suite",
+      "universal",
+      "constrained_domain"
+    ],
+    "effective_code_ids": [
+      "JBC-FLT-004",
+      "JBC-VRF-005",
+      "JBC-SEC-004",
+      "JBC-COG-006",
+      "JBC-VRF-002",
+      "JBC-DBC-003",
+      "JBC-COG-005",
+      "JBC-DBC-005",
+      "JBC-COG-004",
+      "JBC-FLT-005",
+      "JBC-FLT-001",
+      "JBC-SEC-002",
+      "JBC-COG-003",
+      "JBC-SEC-001",
+      "JBC-OBS-001",
+      "JBC-DBC-001",
+      "JBC-VRF-001",
+      "JBC-VRF-004",
+      "JBC-SEC-005",
+      "JBC-FLT-003",
+      "JBC-SEC-006",
+      "JBC-FLT-006",
+      "JBC-DBC-002",
+      "JBC-OBS-003",
+      "JBC-COG-001",
+      "JBC-FLT-002",
+      "JBC-SEC-003",
+      "JBC-OBS-002",
+      "JBC-DBC-004",
+      "JBC-VRF-003",
+      "JBC-VRF-006",
+      "JBC-COG-002"
+    ],
+    "section_verdicts": [
+      {
+        "code_id": "JBC-COG-001",
+        "passed": true,
+        "violation_count": 0,
+        "waived_count": 0,
+        "evidence_summary": "Inspected 2 unit(s) via ast_static: 0 violation(s), 0 waived."
+      },
+      {
+        "code_id": "JBC-COG-002",
+        "passed": true,
+        "violation_count": 0,
+        "waived_count": 0,
+        "evidence_summary": "Inspected 2 unit(s) via ast_static: 0 violation(s), 0 waived."
+      },
+      {
+        "code_id": "JBC-COG-003",
+        "passed": true,
+        "violation_count": 0,
+        "waived_count": 0,
+        "evidence_summary": "Inspected 2 unit(s) via module_graph: 0 violation(s), 0 waived."
+      },
+      {
+        "code_id": "JBC-COG-004",
+        "passed": true,
+        "violation_count": 0,
+        "waived_count": 0,
+        "evidence_summary": "Inspected 2 unit(s) via ast_static: 0 violation(s), 0 waived."
+      },
+      {
+        "code_id": "JBC-COG-005",
+        "passed": true,
+        "violation_count": 0,
+        "waived_count": 0,
+        "evidence_summary": "Inspected 2 unit(s) via ast_static: 0 violation(s), 0 waived."
+      },
+      {
+        "code_id": "JBC-COG-006",
+        "passed": true,
+        "violation_count": 0,
+        "waived_count": 0,
+        "evidence_summary": "Inspected 2 unit(s) via module_graph: 0 violation(s), 0 waived."
+      },
+      {
+        "code_id": "JBC-DBC-001",
+        "passed": true,
+        "violation_count": 0,
+        "waived_count": 0,
+        "evidence_summary": "Inspected 2 unit(s) via ast_static: 0 violation(s), 0 waived."
+      },
+      {
+        "code_id": "JBC-DBC-002",
+        "passed": true,
+        "violation_count": 0,
+        "waived_count": 0,
+        "evidence_summary": "Inspected 2 unit(s) via ast_static: 0 violation(s), 0 waived."
+      },
+      {
+        "code_id": "JBC-DBC-003",
+        "passed": true,
+        "violation_count": 0,
+        "waived_count": 0,
+        "evidence_summary": "Inspected 2 unit(s) via ast_static: 0 violation(s), 0 waived."
+      },
+      {
+        "code_id": "JBC-DBC-004",
+        "passed": true,
+        "violation_count": 0,
+        "waived_count": 0,
+        "evidence_summary": "Inspected 2 unit(s) via ast_static: 0 violation(s), 0 waived."
+      },
+      {
+        "code_id": "JBC-DBC-005",
+        "passed": true,
+        "violation_count": 0,
+        "waived_count": 0,
+        "evidence_summary": "Inspected 2 unit(s) via ast_static: 0 violation(s), 0 waived."
+      },
+      {
+        "code_id": "JBC-FLT-001",
+        "passed": true,
+        "violation_count": 0,
+        "waived_count": 0,
+        "evidence_summary": "Inspected 2 unit(s) via ast_static: 0 violation(s), 0 waived."
+      },
+      {
+        "code_id": "JBC-FLT-002",
+        "passed": true,
+        "violation_count": 0,
+        "waived_count": 0,
+        "evidence_summary": "Inspected 2 unit(s) via ast_static: 0 violation(s), 0 waived."
+      },
+      {
+        "code_id": "JBC-FLT-003",
+        "passed": true,
+        "violation_count": 0,
+        "waived_count": 0,
+        "evidence_summary": "Inspected 2 unit(s) via ast_static: 0 violation(s), 0 waived."
+      },
+      {
+        "code_id": "JBC-FLT-004",
+        "passed": true,
+        "violation_count": 0,
+        "waived_count": 0,
+        "evidence_summary": "Inspected 2 unit(s) via ast_static: 0 violation(s), 0 waived."
+      },
+      {
+        "code_id": "JBC-FLT-005",
+        "passed": true,
+        "violation_count": 0,
+        "waived_count": 0,
+        "evidence_summary": "Inspected 2 unit(s) via ast_static: 0 violation(s), 0 waived."
+      },
+      {
+        "code_id": "JBC-FLT-006",
+        "passed": true,
+        "violation_count": 0,
+        "waived_count": 0,
+        "evidence_summary": "Inspected 2 unit(s) via ast_static: 0 violation(s), 0 waived."
+      },
+      {
+        "code_id": "JBC-OBS-001",
+        "passed": true,
+        "violation_count": 0,
+        "waived_count": 0,
+        "evidence_summary": "Inspected 2 unit(s) via ast_static: 0 violation(s), 0 waived."
+      },
+      {
+        "code_id": "JBC-OBS-002",
+        "passed": true,
+        "violation_count": 0,
+        "waived_count": 0,
+        "evidence_summary": "Inspected 2 unit(s) via ast_static: 0 violation(s), 0 waived."
+      },
+      {
+        "code_id": "JBC-OBS-003",
+        "passed": true,
+        "violation_count": 0,
+        "waived_count": 0,
+        "evidence_summary": "Inspected 2 unit(s) via ast_static: 0 violation(s), 0 waived."
+      },
+      {
+        "code_id": "JBC-SEC-001",
+        "passed": true,
+        "violation_count": 0,
+        "waived_count": 0,
+        "evidence_summary": "Inspected 2 unit(s) via ast_static: 0 violation(s), 0 waived."
+      },
+      {
+        "code_id": "JBC-SEC-002",
+        "passed": true,
+        "violation_count": 0,
+        "waived_count": 0,
+        "evidence_summary": "Inspected 2 unit(s) via ast_static: 0 violation(s), 0 waived."
+      },
+      {
+        "code_id": "JBC-SEC-003",
+        "passed": true,
+        "violation_count": 0,
+        "waived_count": 0,
+        "evidence_summary": "Inspected 2 unit(s) via ast_static: 0 violation(s), 0 waived."
+      },
+      {
+        "code_id": "JBC-SEC-004",
+        "passed": true,
+        "violation_count": 0,
+        "waived_count": 0,
+        "evidence_summary": "Inspected 2 unit(s) via ast_static: 0 violation(s), 0 waived."
+      },
+      {
+        "code_id": "JBC-SEC-005",
+        "passed": true,
+        "violation_count": 0,
+        "waived_count": 0,
+        "evidence_summary": "Inspected 2 unit(s) via ast_static: 0 violation(s), 0 waived."
+      },
+      {
+        "code_id": "JBC-SEC-006",
+        "passed": true,
+        "violation_count": 0,
+        "waived_count": 0,
+        "evidence_summary": "Inspected 2 unit(s) via ast_static: 0 violation(s), 0 waived."
+      },
+      {
+        "code_id": "JBC-VRF-001",
+        "passed": true,
+        "violation_count": 0,
+        "waived_count": 0,
+        "evidence_summary": "Inspected 2 unit(s) via ast_static: 0 violation(s), 0 waived."
+      },
+      {
+        "code_id": "JBC-VRF-002",
+        "passed": true,
+        "violation_count": 0,
+        "waived_count": 0,
+        "evidence_summary": "Inspected 2 unit(s) via token_lexical: 0 violation(s), 0 waived."
+      },
+      {
+        "code_id": "JBC-VRF-003",
+        "passed": true,
+        "violation_count": 0,
+        "waived_count": 0,
+        "evidence_summary": "Inspected 2 unit(s) via module_graph: 0 violation(s), 0 waived."
+      },
+      {
+        "code_id": "JBC-VRF-004",
+        "passed": true,
+        "violation_count": 0,
+        "waived_count": 0,
+        "evidence_summary": "Inspected 2 unit(s) via token_lexical: 0 violation(s), 0 waived."
+      },
+      {
+        "code_id": "JBC-VRF-005",
+        "passed": true,
+        "violation_count": 0,
+        "waived_count": 0,
+        "evidence_summary": "Inspected 2 unit(s) via gate_attestation: 0 violation(s), 0 waived."
+      },
+      {
+        "code_id": "JBC-VRF-006",
+        "passed": true,
+        "violation_count": 0,
+        "waived_count": 0,
+        "evidence_summary": "Inspected 2 unit(s) via gate_attestation: 0 violation(s), 0 waived."
+      }
+    ],
+    "findings": []
+  },
+  "certificate": {
+    "permit_id": "PERMIT-QUOTA-04",
+    "ruling": "approved",
+    "cited_code_ids": [
+      "JBC-COG-001",
+      "JBC-COG-002",
+      "JBC-COG-003",
+      "JBC-COG-004",
+      "JBC-COG-005",
+      "JBC-COG-006",
+      "JBC-DBC-001",
+      "JBC-DBC-002",
+      "JBC-DBC-003",
+      "JBC-DBC-004",
+      "JBC-DBC-005",
+      "JBC-FLT-001",
+      "JBC-FLT-002",
+      "JBC-FLT-003",
+      "JBC-FLT-004",
+      "JBC-FLT-005",
+      "JBC-FLT-006",
+      "JBC-OBS-001",
+      "JBC-OBS-002",
+      "JBC-OBS-003",
+      "JBC-SEC-001",
+      "JBC-SEC-002",
+      "JBC-SEC-003",
+      "JBC-SEC-004",
+      "JBC-SEC-005",
+      "JBC-SEC-006",
+      "JBC-VRF-001",
+      "JBC-VRF-002",
+      "JBC-VRF-003",
+      "JBC-VRF-004",
+      "JBC-VRF-005",
+      "JBC-VRF-006"
+    ],
+    "exercised_variance_ids": [],
+    "artifact_digest": "1c24f5d21d2938092c0b6edde2ae13277b70e341ccb4fd83580db0ef01322702",
+    "blueprint_netlist_digest": null,
+    "smt_proof_digest": "sha256:47a2a1cc2456698a962dfeec0e7976fbcd3527faa19a0941ddd5231d5aaddfab",
+    "proved_deductive_count": 1,
+    "inspector_seal": "sha256:f5ad3076d312917fa9680e9d7785bea4bf02847a8bf104df1fac41379797f380"
+  }
+}

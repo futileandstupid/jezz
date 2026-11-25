@@ -1,0 +1,28 @@
+# Reproducible polyglot verification & benchmark environment for Jezz v0.6.0
+FROM python:3.14-slim-bookworm
+
+ENV DEBIAN_FRONTEND=noninteractive \
+    UV_LINK_MODE=copy \
+    CARGO_HOME=/usr/local/cargo \
+    RUSTUP_HOME=/usr/local/rustup \
+    PATH="/usr/local/cargo/bin:/usr/local/go/bin:/root/.local/bin:${PATH}"
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates \
+    curl \
+    git \
+    build-essential \
+    && curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
+    && apt-get install -y --no-install-recommends nodejs \
+    && curl -fsSL https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain stable \
+    && curl -fsSL https://go.dev/dl/go1.23.6.linux-amd64.tar.gz | tar -C /usr/local -xzf - \
+    && curl -LsSf https://astral.sh/uv/install.sh | sh \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /workspace
+COPY . /workspace
+
+RUN uv sync --locked --all-groups \
+    && npm --prefix packages/jezz-blueprint ci
+
+CMD ["sh", "-c", "uv run python benchmarks/verify_published_claims.py && uv run jezz inspect . && uv run jezz prove . --require-deductive && uv run pytest -q"]
