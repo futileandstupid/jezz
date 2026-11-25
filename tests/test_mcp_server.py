@@ -218,6 +218,8 @@ async def test_mcp_server_advertises_seven_readonly_structured_tools(
         "jbc_audit_dossier",
         "jbc_query_ast_graph",
         "jbc_assess_lot_line",
+        "pce_start_intake",
+        "pce_seal_charter",
     ]
     for tool in listed.tools:
         assert tool.output_schema is not None

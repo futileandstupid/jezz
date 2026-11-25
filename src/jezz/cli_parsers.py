@@ -6,6 +6,7 @@ from typing import Annotated
 
 from jezz.agents.caching import PromptCacheMode
 from jezz.cli_interactive import (
+    register_charter_parser,
     register_hook_parser,
     register_init_parser,
     register_interactive_workflow_flags,
@@ -272,5 +273,11 @@ def build_cli_parser() -> GuardedArgParser:
     )
     register_hook_parser(
         sub.add_parser("hook", help="Execute an Antigravity lifecycle hook handler over stdio.")
+    )
+    register_charter_parser(
+        sub.add_parser(
+            "charter",
+            help="Execute Phase 0/I reality probe, 3-axis elicitation, and ProjectCharter sealing.",
+        )
     )
     return parser

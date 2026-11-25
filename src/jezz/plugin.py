@@ -21,13 +21,17 @@ from jezz.guards import (
 
 JEZZ_REPO_URL: Final[str] = "https://github.com/futileandstupid/jezz"
 
-_RULES_AGENTS_MD: Final[str] = """# Jezz Statutory Engineering Rules (JBC v1.2 & PCE)
+_RULES_AGENTS_MD: Final[str] = """# Jezz Statutory Engineering Rules (JBC v1.3 & PCE)
 
 ## Methodology & Framing
 - Govern engineering work via **Permit-and-Contract Engineering (`PCE`)**.
 - Never frame deliverables around Agile ceremonies, persona user stories (`As a ..., I want ...`),
   or Markdown task checklists (`- [ ]`). Express requirements as falsifiable `DomainInvariant`s
   and disjoint `ModuleWriteScope`s.
+- For greenfield or multi-slice project visions, execute Phase 0/I intake via `pce_start_intake`
+  (empirical reality probe + 3-axis elicitation across `domain_ontology`,
+  `hazard_mutation_policy`, and `scope_and_exclusions`) and seal a phased `ProjectCharter` via
+  `pce_seal_charter` prior to mutating governed source files.
 - Never hardcode filesystem paths (`JBC-SEC-006`). Calculate every path dynamically from known
   file, package, or injected root anchors (`Path(__file__).resolve()`, `importlib.resources`,
   `tmp_path` / `tempfile`, or `ContainedPath.from_parts(anchor, rel)`).
@@ -35,10 +39,11 @@ _RULES_AGENTS_MD: Final[str] = """# Jezz Statutory Engineering Rules (JBC v1.2 &
 ## Statutory Verification Workflow
 - Before writing or editing non-trivial source modules (`.py`, `.ts`, `.tsx`, `.rs`, `.go`),
   dry-run candidate source buffers in memory via MCP tool `jbc_preview_source` (`0` unwaived
-  `RED_TAG` violations, including whole-workspace `JBC-COG-003` cycle, encapsulation, and
-  inter-procedural call-flow checks).
-- Use `jbc_get_code`, `jbc_list_codes`, or `jbc_query_ast_graph` to inspect normative **Jezz
-  Software Building Code (`JBC` Edition 1.2)** requirements, remediations, and AST/CST symbol maps.
+  `RED_TAG` violations, including whole-workspace `JBC-COG-003` / `JBC-COG-006` topology,
+  encapsulation, and inter-procedural call-flow checks).
+- Use `jbc_get_code`, `jbc_list_codes`, `jbc_assess_lot_line`, or `jbc_query_ast_graph` to inspect
+  normative **Jezz Software Building Code (`JBC` Edition 1.3)** requirements, lot-line shear, and
+  AST/CST symbol maps.
 - Before ending any turn that modifies governed source files, verify clean occupancy via
   `jbc_inspect_differential` and run workspace dynamic gates (e.g., `uv run pytest`,
   `uv run mypy .`, `uv run ruff check .` for Python; `tsc`/`vitest`, `cargo test`, or `go test`
@@ -49,9 +54,9 @@ _PCE_SKILL_MD: Final[str] = """---
 name: pce
 description: >-
   Executes the 5-phase Permit-and-Contract Engineering (PCE) workflow and enforces Jezz Software
-  Building Code (JBC Edition 1.2) occupancy gates across Python, TypeScript, Rust, and Go.
-  Activate when planning features, writing or renovating code under JBC governance, or auditing
-  PCE engineering dossiers.
+  Building Code (JBC Edition 1.3) occupancy gates across Python, TypeScript, Rust, and Go.
+  Activate when eliciting project charters, planning features, writing or renovating code under
+  JBC governance, or auditing PCE engineering dossiers.
 ---
 
 # Permit-and-Contract Engineering (`PCE`) Runbook
@@ -61,10 +66,14 @@ specifications.
 
 ## Mode 1: Interactive Co-Engineering via `jezz` MCP Tools
 
-1. **Phase I — Mandate (`BHV-01 FRAME` / `BHV-02 ELICIT`):**
-   - Enumerate open domain ambiguities and ask the user to resolve them before mutating code.
+1. **Phase 0/I — Charter & Mandate (`BHV-05` / `BHV-01 FRAME` / `BHV-02 ELICIT`):**
+   - For greenfield or multi-slice project visions, run `pce_start_intake` to capture workspace,
+     CLI, and package reality (`RealityProbeEvidence`), interview the user across all three
+     mandatory axes (`domain_ontology`, `hazard_mutation_policy`, `scope_and_exclusions`), and
+     seal a topologically ordered permit queue via `pce_seal_charter` before mutating code.
    - Establish falsifiable invariants (`INV-001`, ...) mapped to concrete AST/CST verification
-     symbols and pairwise-disjoint `ModuleWriteScope`s.
+     symbols and pairwise-disjoint `ModuleWriteScope`s; evaluate package/compartment placement
+     with `jbc_assess_lot_line` when introducing new capabilities.
 2. **Phase II — Permit (`BHV-03 BIND_CODES` / `BHV-04 INSPECT_CODE`):**
    - Inspect baseline compliance with `jbc_inspect_workspace`, `jbc_inspect_differential`, or
      `jbc_query_ast_graph`.
@@ -90,6 +99,9 @@ specifications.
 
 ## Mode 2: Autonomous `jezz` CLI Delegation
 
+- **Project Charter Intake & Phased Permit Sealing:**
+  `uv run jezz charter <repo> --title "..." --vision "..." [--interactive]`
+  `[--package-slug <pkg>] [--write-charter charter.json] [--write-mandates-dir permits/]`
 - **Plan & Mandate Preview (No Workspace Mutation):**
   `uv run jezz run <repo> [--model antigravity:<slug>] [--profile standard|strict_internal]`
   `--prompt "..." --plan-only`

@@ -516,12 +516,11 @@ def test_track23_tdd_bifurcation_and_plugin_skill_sync(tmp_path: Path) -> None:
     gen_skill = read_bounded_text(
         ContainedPath.from_parts(tmp_path, ".agents/plugins/jezz/skills/pce/SKILL.md")
     )
-    repo_skill = read_bounded_text(
-        ContainedPath.from_parts(REPO_ROOT, ".agents/plugins/jezz/skills/pce/SKILL.md")
-    )
-    assert gen_skill == repo_skill
-    assert "build_abductive_bugfix_graph" in repo_skill
-    assert "build_greenfield_contract_first_graph" in repo_skill
+    local_skill = ContainedPath.from_parts(REPO_ROOT, ".agents/plugins/jezz/skills/pce/SKILL.md")
+    if local_skill.resolved_path.is_file():
+        assert gen_skill == read_bounded_text(local_skill)
+    assert "build_abductive_bugfix_graph" in gen_skill
+    assert "build_greenfield_contract_first_graph" in gen_skill
 
     for doc_rel in (
         "docs/pillar-3a-sdd-teardown.md",

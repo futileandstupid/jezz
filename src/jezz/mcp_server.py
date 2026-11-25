@@ -62,6 +62,13 @@ from jezz.guards import (
     SourceCodeText,
     jezz_callable,
 )
+from jezz.mcp_charter import (
+    CharterIntakeToolArgs,
+    CharterSealToolArgs,
+    build_charter_mcp_tool_specs,
+    run_mcp_seal_charter,
+    run_mcp_start_intake,
+)
 from jezz.mcp_reload import HotReloadSupervisor
 from jezz.methodology.dossier import DossierAuditReport, EngineeringDossier, audit_pce_dossier
 from jezz.methodology.lot_line import LotLineAssessment, assess_mandate_lot_line
@@ -80,13 +87,14 @@ _READ_ONLY_ANNOTATIONS: Final[ToolAnnotations] = ToolAnnotations(
 _SERVER_INSTRUCTIONS: Final[str] = (
     "Jezz Software Building Code (JBC Edition 1.3) & Permit-and-Contract Engineering (PCE) "
     "polyglot statutory gate server across Python (.py), TypeScript (.ts, .tsx), Rust (.rs), "
-    "and Go (.go). Use jbc_preview_source to validate candidate source buffers in memory "
-    "(including whole-workspace JBC-COG-003/006 topology checks) before writing to disk; "
-    "use jbc_inspect_differential or jbc_inspect_workspace for Rough-In verification; use "
-    "jbc_assess_lot_line for pre-flight package/compartment shear checks; use "
-    "jbc_query_ast_graph for workspace AST/CST import/call/symbol slices; use jbc_get_code / "
-    "jbc_list_codes for normative JBC provisions; and use jbc_verify_behavior_graph and "
-    "jbc_audit_dossier for Pillar 1 and Pillar 3 verification."
+    "and Go (.go). Use pce_start_intake and pce_seal_charter for greenfield/multi-slice "
+    "Phase 0/I project elicitation and charter sealing; use jbc_preview_source to validate "
+    "candidate source buffers in memory (including whole-workspace JBC-COG-003/006 topology "
+    "checks) before writing to disk; use jbc_inspect_differential or jbc_inspect_workspace for "
+    "Rough-In verification; use jbc_assess_lot_line for pre-flight package/compartment shear "
+    "checks; use jbc_query_ast_graph for workspace AST/CST import/call/symbol slices; use "
+    "jbc_get_code / jbc_list_codes for normative JBC provisions; and use "
+    "jbc_verify_behavior_graph and jbc_audit_dossier for Pillar 1 and Pillar 3 verification."
 )
 
 type GuardedMcpServer = Annotated[MCPServer[object], InstanceGuard(MCPServer)]
@@ -204,6 +212,8 @@ class _ReloadToolArgs(BaseModel):
     mandate_json: WireJsonText | None = None
     symbol_query: IdentifierStr | None = None
     caller_of: IdentifierStr | None = None
+    intake_args: CharterIntakeToolArgs | None = None
+    seal_charter_args: CharterSealToolArgs | None = None
 
 
 @jezz_callable
@@ -605,6 +615,18 @@ def _dispatch_verify_graph(_gate: JezzWorkspaceGate, args: _ReloadToolArgs) -> B
     return verify_jbc_behavior_graph(args.graph)
 
 
+def _dispatch_start_intake(gate: JezzWorkspaceGate, args: _ReloadToolArgs) -> BaseModel:
+    if args.intake_args is None:
+        raise ToolError("Missing required 'intake_args' payload for pce_start_intake.")
+    return run_mcp_start_intake(gate.anchor_root, args.intake_args)
+
+
+def _dispatch_seal_charter(gate: JezzWorkspaceGate, args: _ReloadToolArgs) -> BaseModel:
+    if args.seal_charter_args is None:
+        raise ToolError("Missing required 'seal_charter_args' payload for pce_seal_charter.")
+    return run_mcp_seal_charter(gate.anchor_root, args.seal_charter_args)
+
+
 type _WorkerDispatchFn = Callable[[JezzWorkspaceGate, _ReloadToolArgs], BaseModel]
 
 _WORKER_TOOL_DISPATCH: Final[Mapping[str, _WorkerDispatchFn]] = MappingProxyType(
@@ -630,6 +652,8 @@ _WORKER_TOOL_DISPATCH: Final[Mapping[str, _WorkerDispatchFn]] = MappingProxyType
         "jbc_assess_lot_line": lambda g, a: g.assess_lot_line(
             a.mandate_path, a.mandate_json, a.workspace_subpath, a.target_dirs, a.permit_path
         ),
+        "pce_start_intake": _dispatch_start_intake,
+        "pce_seal_charter": _dispatch_seal_charter,
     }
 )
 
@@ -916,6 +940,7 @@ def _register_statutory_tools(
             "Evaluate JBC-COG-006 floorplates, API sufficiency, and CRP lot-line disposition.",
             lot_line_fn,
         ),
+        *build_charter_mcp_tool_specs(gate.anchor_root, sup),
     )
     for name, title, description, handler in specs:
         server.add_tool(
