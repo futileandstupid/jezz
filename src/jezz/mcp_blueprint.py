@@ -8,6 +8,7 @@ from typing import Annotated, Final
 from mcp.server.mcpserver.exceptions import ToolError
 from pydantic import BaseModel, BeforeValidator, Field, TypeAdapter, ValidationError
 
+from jezz.codes.adapters import parse_any_source_unit
 from jezz.codes.blueprint import (
     BlueprintGraph,
     InvariantIdStr,
@@ -25,6 +26,8 @@ from jezz.codes.discovery import (
     load_contained_permit,
     read_contained_json,
 )
+from jezz.codes.polyglot_ir import InspectedUnit, is_supported_source_path
+from jezz.codes.smt import BoundedSolverTimeoutMs, SmtProofReport, prove_workspace_contracts
 from jezz.guards import (
     STRICT_FROZEN_CONFIG,
     WIRE_TUPLE_VALIDATOR,
@@ -33,6 +36,7 @@ from jezz.guards import (
     IdentifierStr,
     InstanceGuard,
     ShortText,
+    SourceCodeText,
     jezz_callable,
 )
 from jezz.mcp_reload import HotReloadSupervisor
@@ -91,6 +95,19 @@ class BlueprintLvsToolArgs(BaseModel):
     workspace_subpath: IdentifierStr = "."
     target_dirs: TargetDirsTuple = ()
     permit_path: IdentifierStr | None = None
+
+
+class SmtProveToolArgs(BaseModel):
+    """Typed IPC argument bundle for ``jbc_prove_contracts``."""
+
+    model_config = STRICT_FROZEN_CONFIG
+
+    workspace_subpath: IdentifierStr = "."
+    target_dirs: TargetDirsTuple = ()
+    symbol_filter: IdentifierStr | None = None
+    timeout_ms: BoundedSolverTimeoutMs = 500
+    file_path: IdentifierStr | None = None
+    source_code: SourceCodeText | None = None
 
 
 def _run_blueprint_tool_safely[ResultT](operation: Callable[[], ResultT]) -> ResultT:
@@ -257,12 +274,94 @@ def _make_lvs_handler(
     return _lvs_tool
 
 
+def _overlay_smt_preview_units(
+    repo: Path,
+    base_units: Sequence[InspectedUnit],
+    file_path: str | None,
+    source_code: str | None,
+) -> tuple[InspectedUnit, ...]:
+    if file_path is None and source_code is None:
+        return tuple(base_units)
+    if file_path is None or source_code is None:
+        msg = "Specify both 'file_path' and 'source_code' for in-memory SMT contract preview."
+        raise ToolError(msg)
+    rel = ContainedPath.from_parts(repo, file_path).relative_posix
+    if rel == "." or not is_supported_source_path(rel):
+        msg = (
+            f"Preview file_path '{file_path}' must target a "
+            "'.py', '.ts', '.tsx', '.rs', or '.go' file."
+        )
+        raise ToolError(msg)
+    candidate = parse_any_source_unit(rel, source_code)
+    retained = [u for u in base_units if u.file_path != candidate.file_path]
+    retained.append(candidate)
+    retained.sort(key=lambda u: u.file_path)
+    return tuple(retained)
+
+
+@jezz_callable
+def run_mcp_prove_contracts(
+    anchor_root: Path,
+    args: SmtProveToolArgs,
+) -> SmtProofReport:
+    """Discharge polyglot AST/CST contracts via Z3 (with optional unsaved buffer overlay)."""
+
+    def _op() -> SmtProofReport:
+        repo = _resolve_repo_dir(anchor_root, args.workspace_subpath)
+        base_units = discover_workspace_units(repo, target_dirs=args.target_dirs)
+        effective_units = _overlay_smt_preview_units(
+            repo, base_units, args.file_path, args.source_code
+        )
+        eff_filter = args.symbol_filter
+        if eff_filter is None and args.file_path is not None:
+            rel = ContainedPath.from_parts(repo, args.file_path).relative_posix
+            effective_units = tuple(u for u in effective_units if u.file_path == rel)
+        return prove_workspace_contracts(
+            effective_units,
+            symbol_filter=eff_filter,
+            timeout_ms=args.timeout_ms,
+        )
+
+    return _run_blueprint_tool_safely(_op)
+
+
+def _make_prove_handler(
+    anchor_root: Path,
+    sup: HotReloadSupervisor,
+) -> Callable[..., SmtProofReport]:
+    def _prove_tool(
+        workspace_subpath: IdentifierStr = ".",
+        target_dirs: TargetDirsTuple = (),
+        symbol_filter: IdentifierStr | None = None,
+        timeout_ms: BoundedSolverTimeoutMs = 500,
+        file_path: IdentifierStr | None = None,
+        source_code: SourceCodeText | None = None,
+    ) -> SmtProofReport:
+        req = SmtProveToolArgs(
+            workspace_subpath=workspace_subpath,
+            target_dirs=target_dirs,
+            symbol_filter=symbol_filter,
+            timeout_ms=timeout_ms,
+            file_path=file_path,
+            source_code=source_code,
+        )
+        raw = json.dumps({"smt_prove_args": req.model_dump(mode="json")})
+        return sup.invoke_or_local(
+            "jbc_prove_contracts",
+            raw,
+            SmtProofReport,
+            lambda: run_mcp_prove_contracts(anchor_root, req),
+        )
+
+    return _prove_tool
+
+
 @jezz_callable
 def build_blueprint_mcp_tool_specs(
     anchor_root: Path,
     sup: GuardedSupervisor,
 ) -> Sequence[tuple[IdentifierStr, ShortText, ShortText, Callable[..., object]]]:
-    """Build ``(name, title, description, handler)`` tuples for blueprint & LVS MCP tools."""
+    """Build ``(name, title, description, handler)`` tuples for blueprint, LVS, & SMT tools."""
     return (
         (
             "jbc_extract_blueprint",
@@ -276,6 +375,12 @@ def build_blueprint_mcp_tool_specs(
             "Verify coarse-grained room walls, port pins, buses, risers, and invariants via LVS.",
             _make_lvs_handler(anchor_root, sup),
         ),
+        (
+            "jbc_prove_contracts",
+            "Prove Polyglot Contracts via Z3 SMT",
+            "Check contract non-vacuity and prove pure .py/.ts/.rs/.go bodies via Z3 VCGen.",
+            _make_prove_handler(anchor_root, sup),
+        ),
     )
 
 
@@ -283,7 +388,9 @@ __all__ = [
     "BlueprintExtractToolArgs",
     "BlueprintLvsToolArgs",
     "BlueprintWireJson",
+    "SmtProveToolArgs",
     "build_blueprint_mcp_tool_specs",
     "run_mcp_extract_blueprint",
+    "run_mcp_prove_contracts",
     "run_mcp_verify_blueprint_lvs",
 ]

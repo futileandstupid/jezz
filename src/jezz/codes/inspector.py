@@ -117,6 +117,7 @@ _PYPI_IMPORT_ALIASES: Final[Mapping[str, str]] = MappingProxyType(
         "python_multipart": "multipart",
         "pyyaml": "yaml",
         "scikit_learn": "sklearn",
+        "z3_solver": "z3",
     }
 )
 _DEV_EXTRA_GROUP_NAMES: Final[frozenset[str]] = frozenset(

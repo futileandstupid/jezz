@@ -63,8 +63,10 @@ from jezz.guards import (
 from jezz.mcp_blueprint import (
     BlueprintExtractToolArgs,
     BlueprintLvsToolArgs,
+    SmtProveToolArgs,
     build_blueprint_mcp_tool_specs,
     run_mcp_extract_blueprint,
+    run_mcp_prove_contracts,
     run_mcp_verify_blueprint_lvs,
 )
 from jezz.mcp_charter import (
@@ -221,6 +223,7 @@ class _ReloadToolArgs(BaseModel):
     seal_charter_args: CharterSealToolArgs | None = None
     blueprint_extract_args: BlueprintExtractToolArgs | None = None
     blueprint_lvs_args: BlueprintLvsToolArgs | None = None
+    smt_prove_args: SmtProveToolArgs | None = None
 
 
 @jezz_callable
@@ -609,6 +612,12 @@ def _dispatch_verify_lvs(gate: JezzWorkspaceGate, args: _ReloadToolArgs) -> Base
     return run_mcp_verify_blueprint_lvs(gate.anchor_root, args.blueprint_lvs_args)
 
 
+def _dispatch_prove_contracts(gate: JezzWorkspaceGate, args: _ReloadToolArgs) -> BaseModel:
+    if args.smt_prove_args is None:
+        raise ToolError("Missing required 'smt_prove_args' for jbc_prove_contracts.")
+    return run_mcp_prove_contracts(gate.anchor_root, args.smt_prove_args)
+
+
 type _WorkerDispatchFn = Callable[[JezzWorkspaceGate, _ReloadToolArgs], BaseModel]
 
 _WORKER_TOOL_DISPATCH: Final[Mapping[str, _WorkerDispatchFn]] = MappingProxyType(
@@ -638,6 +647,7 @@ _WORKER_TOOL_DISPATCH: Final[Mapping[str, _WorkerDispatchFn]] = MappingProxyType
         "pce_seal_charter": _dispatch_seal_charter,
         "jbc_extract_blueprint": _dispatch_extract_blueprint,
         "jbc_verify_blueprint_lvs": _dispatch_verify_lvs,
+        "jbc_prove_contracts": _dispatch_prove_contracts,
     }
 )
 

@@ -222,6 +222,7 @@ async def test_mcp_server_advertises_seven_readonly_structured_tools(
         "pce_seal_charter",
         "jbc_extract_blueprint",
         "jbc_verify_blueprint_lvs",
+        "jbc_prove_contracts",
     ]
     for tool in listed.tools:
         assert tool.output_schema is not None

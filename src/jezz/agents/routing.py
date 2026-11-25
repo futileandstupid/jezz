@@ -20,7 +20,11 @@ from jezz.guards import (
     InstanceGuard,
     jezz_callable,
 )
-from jezz.secrets import canonical_provider_family, read_pyproject_jezz_table
+from jezz.secrets import (
+    canonical_provider_family,
+    read_pyproject_jezz_table,
+    read_workspace_jezz_table,
+)
 
 _CREDENTIAL_LIKE_SPEC_RE: Final[re.Pattern[str]] = re.compile(
     r"^(?:[a-z][a-z0-9+.-]*://|sk-[A-Za-z0-9_-]{16,}|ghp_[A-Za-z0-9]{16,}|"
@@ -339,19 +343,16 @@ def load_pyproject_gates_config(pyproject_target: ContainedPath) -> JezzGatesCon
 def discover_models_config(
     search_roots: Annotated[Sequence[Path], Field(min_length=1, max_length=16)],
 ) -> JezzModelsConfig | None:
-    """Search ``pyproject.toml`` files across ``search_roots`` for ``[tool.jezz.models]``."""
+    """Search ``jezz.toml`` then ``pyproject.toml`` across ``search_roots`` for models config."""
     seen: set[Path] = set()
     for raw_root in search_roots:
         resolved = raw_root.resolve()
         if resolved in seen or not resolved.is_dir():
             continue
         seen.add(resolved)
-        pyproject = ContainedPath.from_parts(resolved, "pyproject.toml")
-        if not pyproject.resolved_path.is_file():
-            continue
-        cfg = load_pyproject_models_config(pyproject)
-        if cfg is not None:
-            return cfg
+        models_tbl = read_workspace_jezz_table(resolved, "models")
+        if models_tbl is not None:
+            return JezzModelsConfig.model_validate(models_tbl)
     return None
 
 
@@ -359,19 +360,16 @@ def discover_models_config(
 def discover_gates_config(
     search_roots: Annotated[Sequence[Path], Field(min_length=1, max_length=16)],
 ) -> JezzGatesConfig | None:
-    """Search ``pyproject.toml`` files across ``search_roots`` for ``[tool.jezz.gates]``."""
+    """Search ``jezz.toml`` then ``pyproject.toml`` across ``search_roots`` for gates config."""
     seen: set[Path] = set()
     for raw_root in search_roots:
         resolved = raw_root.resolve()
         if resolved in seen or not resolved.is_dir():
             continue
         seen.add(resolved)
-        pyproject = ContainedPath.from_parts(resolved, "pyproject.toml")
-        if not pyproject.resolved_path.is_file():
-            continue
-        cfg = load_pyproject_gates_config(pyproject)
-        if cfg is not None:
-            return cfg
+        gates_tbl = read_workspace_jezz_table(resolved, "gates")
+        if gates_tbl is not None:
+            return JezzGatesConfig.model_validate(gates_tbl)
     return None
 
 

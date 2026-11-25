@@ -22,6 +22,7 @@ from jezz.codes.taxonomy import CodeSeverity, CodeTrigger
 from jezz.guards import (
     STRICT_FROZEN_CONFIG,
     BoundedInt,
+    BoundedText,
     FiniteFloat,
     IdentifierStr,
     NonNegativeInt,
@@ -397,6 +398,19 @@ class RedTagError(RuntimeError):
         self.report = report
 
 
+def _build_seal_commitments(
+    blueprint_netlist_digest: SealDigestStr | None,
+    smt_proof_digest: SealDigestStr | None,
+    proved_deductive_count: int,
+) -> tuple[BoundedText, ...]:
+    items: list[str] = []
+    if blueprint_netlist_digest is not None:
+        items.append(blueprint_netlist_digest)
+    if smt_proof_digest is not None:
+        items.append(f"smt:{smt_proof_digest}:{proved_deductive_count}")
+    return tuple(items)
+
+
 @jezz_callable
 def compute_certificate_seal(
     permit_id: PermitIdStr,
@@ -405,18 +419,17 @@ def compute_certificate_seal(
     exercised_variance_ids: Annotated[Sequence[PermitIdStr], Field(max_length=256)],
     artifact_digest: Annotated[str, Field(min_length=8, max_length=128)],
     *,
-    blueprint_netlist_digest: SealDigestStr | None = None,
+    extra_commitments: Annotated[Sequence[BoundedText], Field(max_length=8)] = (),
 ) -> SealDigestStr:
-    """Compute canonical SHA-256 inspector seal over occupancy verdict, artifact, and netlist."""
+    """Compute canonical SHA-256 inspector seal over occupancy verdict and commitments."""
     parts: list[str] = [
         permit_id,
         ruling.value,
         ",".join(cited_code_ids),
         ",".join(exercised_variance_ids),
         artifact_digest,
+        *extra_commitments,
     ]
-    if blueprint_netlist_digest is not None:
-        parts.append(blueprint_netlist_digest)
     payload = "|".join(parts)
     return "sha256:" + hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
@@ -432,6 +445,8 @@ class CertificateOfOccupancy(BaseModel):
     exercised_variance_ids: Annotated[tuple[PermitIdStr, ...], Field(max_length=256)] = ()
     artifact_digest: Annotated[str, Field(min_length=8, max_length=128)]
     blueprint_netlist_digest: SealDigestStr | None = None
+    smt_proof_digest: SealDigestStr | None = None
+    proved_deductive_count: NonNegativeInt = 0
     inspector_seal: SealDigestStr
 
     @model_validator(mode="after")
@@ -450,7 +465,11 @@ class CertificateOfOccupancy(BaseModel):
             self.cited_code_ids,
             self.exercised_variance_ids,
             self.artifact_digest,
-            blueprint_netlist_digest=self.blueprint_netlist_digest,
+            extra_commitments=_build_seal_commitments(
+                self.blueprint_netlist_digest,
+                self.smt_proof_digest,
+                self.proved_deductive_count,
+            ),
         )
         return self.inspector_seal == expected
 
@@ -463,6 +482,8 @@ def issue_certificate(
     *,
     artifact_digest: Annotated[str, Field(min_length=8, max_length=128)],
     blueprint_netlist_digest: SealDigestStr | None = None,
+    smt_proof_digest: SealDigestStr | None = None,
+    proved_deductive_count: NonNegativeInt = 0,
 ) -> CertificateOfOccupancy:
     """Issue a sealed ``CertificateOfOccupancy`` if approved, else raise ``RedTagError``."""
     if not report.is_occupiable:
@@ -483,7 +504,11 @@ def issue_certificate(
         cited_codes,
         exercised_variances,
         artifact_digest,
-        blueprint_netlist_digest=blueprint_netlist_digest,
+        extra_commitments=_build_seal_commitments(
+            blueprint_netlist_digest,
+            smt_proof_digest,
+            proved_deductive_count,
+        ),
     )
     return CertificateOfOccupancy(
         permit_id=report.permit_id,
@@ -492,5 +517,7 @@ def issue_certificate(
         exercised_variance_ids=exercised_variances,
         artifact_digest=artifact_digest,
         blueprint_netlist_digest=blueprint_netlist_digest,
+        smt_proof_digest=smt_proof_digest,
+        proved_deductive_count=proved_deductive_count,
         inspector_seal=seal_value,
     )

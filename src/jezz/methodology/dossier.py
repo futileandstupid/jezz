@@ -15,6 +15,7 @@ from jezz.codes.blueprint_lvs import verify_blueprint_lvs
 from jezz.codes.inspector import compute_units_digest
 from jezz.codes.permits import CertificateOfOccupancy, CodePermit, InspectionReport
 from jezz.codes.polyglot_ir import InspectedUnit, PolyglotUnit
+from jezz.codes.smt import ContractProofStatus, prove_workspace_contracts
 from jezz.guards import STRICT_FROZEN_CONFIG, BoundedText, IdentifierStr, ShortText, jezz_callable
 from jezz.methodology.mandate import EngineeringMandate, PcePhase
 
@@ -50,6 +51,7 @@ class DossierViolationCode(StrEnum):
     INSPECTION_RED_TAG = "inspection_red_tag"
     INVALID_OCCUPANCY_SEAL = "invalid_occupancy_seal"
     BLUEPRINT_LVS_MISMATCH = "blueprint_lvs_mismatch"
+    SMT_CONTRACT_FAILURE = "smt_contract_failure"
 
 
 class DossierViolation(BaseModel):
@@ -73,6 +75,7 @@ class EngineeringDossier(BaseModel):
     behavior_graph: BehaviorGraph
     mutated_files: Annotated[frozenset[IdentifierStr], Field(max_length=1024)] = frozenset()
     ratchet_scoped: bool = False
+    require_smt_verification: bool = False
     target_blueprint: BlueprintGraph | None = None
     inspection_report: InspectionReport
     certificate: CertificateOfOccupancy | None = None
@@ -298,6 +301,55 @@ def _check_blueprint_seal_and_lvs(
     return violations
 
 
+def _check_smt_seal_and_obligations(
+    dossier: EngineeringDossier,
+    digest_units: Sequence[InspectedUnit],
+) -> list[DossierViolation]:
+    cert = dossier.certificate
+    need_smt = dossier.require_smt_verification or (
+        cert is not None and cert.smt_proof_digest is not None
+    )
+    if not need_smt:
+        return []
+    smt_rep = prove_workspace_contracts(digest_units)
+    violations: list[DossierViolation] = []
+    if (
+        cert is not None
+        and cert.smt_proof_digest is not None
+        and (
+            cert.smt_proof_digest != smt_rep.proof_digest
+            or cert.proved_deductive_count != smt_rep.proved_deductive_count
+        )
+    ):
+        violations.append(
+            DossierViolation(
+                code=DossierViolationCode.INVALID_OCCUPANCY_SEAL,
+                phase=PcePhase.OCCUPANCY,
+                message=(
+                    "CertificateOfOccupancy smt_proof_digest or proved_deductive_count "
+                    "mismatches workspace SMT proof report."
+                ),
+                remediation="Re-issue CertificateOfOccupancy over current Z3 proof report.",
+            )
+        )
+    if smt_rep.has_failures:
+        bad = next(
+            r
+            for r in smt_rep.results
+            if r.status
+            in {ContractProofStatus.VACUOUS_CONTRACT, ContractProofStatus.COUNTEREXAMPLE_FOUND}
+        )
+        violations.append(
+            DossierViolation(
+                code=DossierViolationCode.SMT_CONTRACT_FAILURE,
+                phase=PcePhase.OCCUPANCY,
+                message=f"SMT failure on '{bad.symbol}' ({bad.status}): {bad.detail}",
+                remediation="Repair vacuous contract or fix implementation counterexample.",
+            )
+        )
+    return violations
+
+
 def _check_inspection_and_occupancy(
     dossier: EngineeringDossier,
     units: Sequence[InspectedUnit],
@@ -353,6 +405,7 @@ def _check_inspection_and_occupancy(
         )
         return violations
     violations.extend(_check_blueprint_seal_and_lvs(dossier, digest_units))
+    violations.extend(_check_smt_seal_and_obligations(dossier, digest_units))
     return violations
 
 

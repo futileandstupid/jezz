@@ -27,6 +27,7 @@ from jezz.guards import (
 
 DEFAULT_AGENT_REASON: Final[str] = "jezz PCE runtime resolving model API credential"
 USER_CONFIG_FILENAME: Final[str] = "config.toml"
+WORKSPACE_CONFIG_FILENAME: Final[str] = "jezz.toml"
 BUILTIN_SECRET_SCHEMES: Final[frozenset[str]] = frozenset({"env", "pass", "op", "keychain"})
 
 _ENV_URI_PREFIX: Final[str] = "env://"
@@ -448,6 +449,54 @@ def read_pyproject_jezz_table(
 
 
 @jezz_callable
+def read_jezz_toml_table(
+    jezz_toml_target: ContainedPath,
+    table_key: IdentifierStr,
+) -> dict[IdentifierStr, object] | None:
+    """Read ``[<table_key>]`` (or ``[tool.jezz.<table_key>]``) from ``jezz.toml``."""
+    raw_toml = read_bounded_text(jezz_toml_target, max_bytes=524_288)
+    data = tomllib.loads(raw_toml)
+    top_tbl = data.get(table_key)
+    tool_tbl = data.get("tool")
+    nested_tbl = (
+        tool_tbl.get("jezz", {}).get(table_key)
+        if isinstance(tool_tbl, dict) and isinstance(tool_tbl.get("jezz"), dict)
+        else None
+    )
+    if top_tbl is not None and nested_tbl is not None:
+        msg = (
+            f"Ambiguous '{jezz_toml_target.relative_posix}': define '[{table_key}]' or "
+            f"'[tool.jezz.{table_key}]', not both."
+        )
+        raise ValueError(msg)
+    chosen = top_tbl if top_tbl is not None else nested_tbl
+    if chosen is None:
+        return None
+    if not isinstance(chosen, dict):
+        msg = f"Expected '[{table_key}]' table in '{jezz_toml_target.relative_posix}'."
+        raise ValueError(msg)
+    return {str(k): v for k, v in chosen.items()}
+
+
+@jezz_callable
+def read_workspace_jezz_table(
+    workspace_root: Path,
+    table_key: IdentifierStr,
+) -> dict[IdentifierStr, object] | None:
+    """Resolve ``table_key`` from ``jezz.toml`` first, falling back to ``pyproject.toml``."""
+    resolved = workspace_root.resolve()
+    jezz_toml = ContainedPath.from_parts(resolved, WORKSPACE_CONFIG_FILENAME)
+    if jezz_toml.resolved_path.is_file():
+        hit = read_jezz_toml_table(jezz_toml, table_key)
+        if hit is not None:
+            return hit
+    pyproject = ContainedPath.from_parts(resolved, "pyproject.toml")
+    if pyproject.resolved_path.is_file():
+        return read_pyproject_jezz_table(pyproject, table_key)
+    return None
+
+
+@jezz_callable
 def load_pyproject_secrets_config(pyproject_target: ContainedPath) -> JezzSecretsConfig | None:
     """Load ``[tool.jezz.secrets]`` from ``pyproject_target``, or return ``None`` if absent."""
     sec_tbl = read_pyproject_jezz_table(pyproject_target, "secrets")
@@ -460,7 +509,7 @@ def discover_secrets_config(
     *,
     provider_name: IdentifierStr | None = None,
 ) -> JezzSecretsConfig | None:
-    """Search ``pyproject.toml`` files across ``search_roots`` for ``[tool.jezz.secrets]``."""
+    """Search ``jezz.toml`` then ``pyproject.toml`` across ``search_roots`` for secrets config."""
     seen: set[Path] = set()
     first_found: JezzSecretsConfig | None = None
     for raw_root in search_roots:
@@ -468,12 +517,10 @@ def discover_secrets_config(
         if resolved in seen or not resolved.is_dir():
             continue
         seen.add(resolved)
-        pyproject = ContainedPath.from_parts(resolved, "pyproject.toml")
-        if not pyproject.resolved_path.is_file():
+        sec_tbl = read_workspace_jezz_table(resolved, "secrets")
+        if sec_tbl is None:
             continue
-        cfg = load_pyproject_secrets_config(pyproject)
-        if cfg is None:
-            continue
+        cfg = JezzSecretsConfig.model_validate(sec_tbl)
         if first_found is None:
             first_found = cfg
         if provider_name is None or lookup_provider_secret_uri(cfg, provider_name) is not None:

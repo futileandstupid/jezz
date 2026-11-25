@@ -31,6 +31,7 @@ from jezz.codes.blueprint_lvs import (
 )
 from jezz.codes.complexity import PermitProfile
 from jezz.codes.discovery import discover_workspace_units, read_contained_json
+from jezz.codes.smt import SmtProofReport, prove_workspace_contracts
 from jezz.guards import ContainedPath, InstanceGuard, SourceCodeText, jezz_callable
 
 _REDLINE_SEQ_ADAPTER: Final[TypeAdapter[tuple[RedlineDelta, ...]]] = TypeAdapter(
@@ -733,10 +734,93 @@ def handle_blueprint_command(
     return 0
 
 
+@jezz_callable
+def register_prove_parser(parser: GuardedArgParser) -> None:
+    """Register CLI flags for ``jezz prove`` polyglot Z3 contract verification."""
+    parser.add_argument("repo_path", type=Path, help="Target workspace root directory.")
+    parser.add_argument(
+        "--target-dir",
+        dest="target_dirs",
+        action="append",
+        default=None,
+        help="Optional subdirectory filter (repeatable).",
+    )
+    parser.add_argument(
+        "--symbol",
+        dest="symbol_filter",
+        default=None,
+        help="Optional symbol or obligation_id filter.",
+    )
+    parser.add_argument(
+        "--timeout-ms",
+        dest="timeout_ms",
+        type=int,
+        default=500,
+        help="Per-obligation Z3 timeout in milliseconds (10..30000, default: 500).",
+    )
+    parser.add_argument(
+        "--require-deductive",
+        dest="require_deductive",
+        action="store_true",
+        default=False,
+        help="Fail closed (exit 1) unless >= 1 obligation is proved deductively (UNSAT).",
+    )
+    parser.add_argument(
+        "--write-json",
+        dest="write_json",
+        default=None,
+        help="Optional path to persist SmtProofReport JSON.",
+    )
+    parser.add_argument(
+        "--format",
+        dest="output_format",
+        choices=("markdown", "json"),
+        default="markdown",
+        help="Stdout projection format ('markdown' or 'json').",
+    )
+
+
+@jezz_callable
+def handle_prove_command(
+    ns: Annotated[argparse.Namespace, InstanceGuard(argparse.Namespace)],
+    streams: Annotated[CliIoStreams, InstanceGuard(CliIoStreams)],
+) -> CliExitCode:
+    """Execute ``jezz prove`` across Python, TypeScript, Rust, and Go contracts via Z3."""
+    resolved_repo = Path(ns.repo_path).resolve()
+    if not resolved_repo.is_dir():
+        msg = f"Workspace directory does not exist: '{ns.repo_path}'."
+        raise FileNotFoundError(msg)
+    target_dirs = tuple(ns.target_dirs) if ns.target_dirs else ()
+    units = discover_workspace_units(resolved_repo, target_dirs=target_dirs)
+    sym_filter = str(ns.symbol_filter) if ns.symbol_filter else None
+    report: SmtProofReport = prove_workspace_contracts(
+        units,
+        symbol_filter=sym_filter,
+        timeout_ms=int(ns.timeout_ms),
+    )
+    if ns.write_json is not None:
+        _persist_contained_output(
+            resolved_repo, str(ns.write_json), report.model_dump_json(indent=2)
+        )
+    rendered = (
+        report.model_dump_json(indent=2)
+        if str(ns.output_format) == "json"
+        else report.to_markdown()
+    )
+    _write_out_line(streams.stdout, rendered)
+    if report.has_failures:
+        return 1
+    if bool(ns.require_deductive) and report.proved_deductive_count < 1:
+        return 1
+    return 0
+
+
 __all__ = [
     "BlueprintOutputFormat",
     "handle_blueprint_command",
+    "handle_prove_command",
     "register_blueprint_parser",
+    "register_prove_parser",
     "render_sheet_a1_svg",
     "render_sheet_e1_svg",
     "render_switchable_cad_html",
