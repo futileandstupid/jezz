@@ -88,3 +88,38 @@ jobs:
         run: |
           uv build
           uv publish --trusted-publishing always
+
+  sync-templates:
+    name: Sync Polyglot GitHub Template Repositories
+    needs: build-dist
+    if: vars.ENABLE_TEMPLATE_SYNC == 'true'
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        lang: [python, typescript, rust, go]
+    steps:
+      - name: Checkout jezz release tag
+        uses: actions/checkout@v7
+
+      - name: Push templates/${{ matrix.lang }} to jezz-template-${{ matrix.lang }}
+        env:
+          TEMPLATE_LANG: ${{ matrix.lang }}
+          SYNC_TOKEN: ${{ secrets.TEMPLATE_SYNC_PAT }}
+          REPO_OWNER: ${{ github.repository_owner }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          if [[ -z "$SYNC_TOKEN" ]]; then
+            echo "TEMPLATE_SYNC_PAT secret is empty; skipping sync."
+            exit 0
+          fi
+          WORK="$(mktemp -d)"
+          cp -R "templates/$TEMPLATE_LANG/." "$WORK/"
+          git -C "$WORK" init -b main
+          git -C "$WORK" config user.name "jezz-release-bot"
+          git -C "$WORK" config user.email "ci@jezz.local"
+          git -C "$WORK" add -A
+          git -C "$WORK" commit -m "chore(template): sync from jezz $RELEASE_TAG"
+          git -C "$WORK" push --force "https://x-access-token:${SYNC_TOKEN}@github.com/${REPO_OWNER}/jezz-template-${TEMPLATE_LANG}.git" main
+          rm -rf "$WORK"

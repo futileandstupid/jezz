@@ -183,7 +183,7 @@ def test_release_version_and_pyproject_metadata_parity() -> None:
     project = pyproject["project"]
     assert project["name"] == "jezz"
     assert project["version"] == __version__
-    assert __version__ in {"0.2.1", "0.3.0", "0.4.0", "0.5.0"}
+    assert __version__ in {"0.2.1", "0.3.0", "0.4.0", "0.5.0", "0.6.0"}
     assert __version__ == SERVER_VERSION
     assert project["requires-python"] == ">=3.14"
     assert project["scripts"]["jezz"] == "jezz.cli:main"
