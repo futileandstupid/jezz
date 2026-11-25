@@ -2,7 +2,7 @@
 
 ## 1. Foundational Definition
 
-**Permit-and-Contract Engineering (`PCE`)** is `jezz`'s formal software engineering methodology built atop Pillar 1's 21-behavior state algebra (`BHV-01`..`BHV-21`) and Pillar 2's 31-provision Software Building Code (`JBC` Edition 1.2 across Python, TypeScript/TSX, Rust, and Go).
+**Permit-and-Contract Engineering (`PCE`)** is `jezz`'s formal software engineering methodology built atop Pillar 1's 21-behavior state algebra (`BHV-01`..`BHV-21`) and Pillar 2's 32-provision Software Building Code (`JBC` Edition 1.3 across Python, TypeScript/TSX, Rust, and Go).
 
 `PCE` rejects both Agile ceremony theatre (user stories, sprints, story points, backlog grooming) and unverified prose "Spec-Driven Development" (`spec.md` / `plan.md` / `tasks.md`). Instead, `PCE` governs software construction the way civil and electrical engineering govern physical structures—through two machine-checkable instruments and an independent inspection gate:
 
@@ -30,17 +30,19 @@ flowchart TD
     P5Final -->|"APPROVED"| Seal["BHV-21 CERTIFY: Seal EngineeringDossier + CertificateOfOccupancy"]
 ```
 
-### Phase I — `MANDATE` (Framing, Epistemic Grounding, & Authority Disambiguation)
-- **Behaviors:** `BHV-01 FRAME`, `BHV-04 INSPECT_CODE`, `BHV-05 INSPECT_ENV`, `BHV-06 CONSULT`, `BHV-02 ELICIT`.
-- **Artifact:** Immutable `EngineeringMandate`.
+### Phase 0 / I — `CHARTER & MANDATE` (Reality-Probed Intake, Framing, & Authority Disambiguation)
+- **Behaviors:** `BHV-05 INSPECT_ENV`, `BHV-01 FRAME`, `BHV-04 INSPECT_CODE`, `BHV-06 CONSULT`, `BHV-02 ELICIT`.
+- **Artifacts:** Phased `ProjectCharter` (`jezz charter`, `pce_start_intake` / `pce_seal_charter`) for multi-slice / greenfield visions, and immutable `EngineeringMandate` per atomic slice.
 - **Hard Laws:**
-  1. **Anti-Agile / Anti-Weasel Grammar:** Rejects persona user stories (`"As a <role>, I want..., so that..."`), Agile ceremony fields (story points, sprints), Markdown `- [ ]` checkbox lists, and non-normative weasel modals (`"should"`, `"ideally"`, `"maybe"`, `"try to"`, `"nice to have"`).
-  2. **Mandatory Authority Escalation:** If `open_ambiguities` is non-empty, autonomous progression to Phase II is **blocked**; execution must terminate at `BHV-02 ELICIT` rather than silently inventing requirements.
-  3. **Disjoint Module Write Scopes:** Every target file belongs to at most one `ModuleWriteScope` (`s_i.owned_files & s_j.owned_files == ∅` for $i \neq j$), preventing multi-worker write collisions before decomposition begins.
+  1. **Empirical Reality Probe & 3-Axis Completeness Gate (`charter.py`):** Before interviewing a user or synthesizing permits on greenfield/multi-slice visions, `probe_workspace_reality` captures workspace manifests, languages, binaries, and installed SDKs into a SHA-256-sealed `RealityProbeEvidence`. `seal_project_charter` refuses to seal until non-theatre `AxisResolution`s resolve all three mandatory axes (`domain_ontology`, `hazard_mutation_policy`, `scope_and_exclusions`), explicit `scope_exclusions` are declared, and `HazardMutationPolicy` satisfies active `EXTERNAL_BOUNDARY` / `SENSITIVE_CONTEXT` triggers—compiling a topologically ordered `EngineeringMandate` DAG (`MandateDependency`).
+  2. **Anti-Agile / Anti-Weasel Grammar:** Rejects persona user stories (`"As a <role>, I want..., so that..."`), Agile ceremony fields (story points, sprints), Markdown checkbox lists, and non-normative weasel modals (`"should"`, `"ideally"`, `"maybe"`, `"try to"`, `"nice to have"`).
+  3. **Mandatory Authority Escalation:** If `open_ambiguities` is non-empty, autonomous progression to Phase II is **blocked**; execution must terminate at `BHV-02 ELICIT` rather than silently inventing requirements.
+  4. **Disjoint Module Write Scopes:** Every target file belongs to at most one `ModuleWriteScope` (`s_i.owned_files & s_j.owned_files == ∅` for $i \neq j$), preventing multi-worker write collisions before decomposition begins.
 
-### Phase II — `PERMIT` (Statutory Code Binding)
+### Phase II — `PERMIT` (Statutory Code Binding & Lot-Line Shear Pre-Flight)
 - **Behaviors:** `BHV-03 BIND_CODES`, `BHV-08 HYPOTHESIZE`, `BHV-09 DECOMPOSE`.
-- **Artifact:** `CodePermit` binding `CodeTrigger.UNIVERSAL` plus scope hazard triggers (`CONSTRAINED_DOMAIN`, `EXTERNAL_BOUNDARY`, `SENSITIVE_CONTEXT`, `VERIFICATION_SUITE`) and any pre-authorized `CodeVariance` grants obtained via `ELICIT`.
+- **Artifacts:** `CodePermit` binding `CodeTrigger.UNIVERSAL` plus scope hazard triggers (`CONSTRAINED_DOMAIN`, `EXTERNAL_BOUNDARY`, `SENSITIVE_CONTEXT`, `VERIFICATION_SUITE`) and any pre-authorized `CodeVariance` grants obtained via `ELICIT`, paired with `LotLineAssessment` (`lot_line.py`, `jbc_assess_lot_line`) and optional target `BlueprintGraph` ($B^* = B_0 \oplus \Delta B$).
+- **Lot-Line Shear Law:** During `BHV-09 DECOMPOSE`, `assess_mandate_lot_line` evaluates `JBC-COG-006` floorplate headroom, **Public-API Sufficiency**, **Dependency Closure Shear (`CRP`)**, and **`CodeTrigger` Escalation**, classifying slices into `IN_PACKAGE` (sparing inward-facing Hexagonal ports with core fan-in), `WORKSPACE_COMPARTMENT`, or `LOT_LINE_SPLIT` (routing unapproved package/repo splits to `BHV-02 ELICIT` prior to workspace mutation).
 
 ### Phase III — `CONTRACT` (Executable Specification & Falsification Harness)
 - **Behaviors:** `BHV-12 CHECKPOINT`, `BHV-14 SPECIFY`, `BHV-15 INSTRUMENT`.
@@ -58,13 +60,14 @@ flowchart TD
 ### Phase V — `OCCUPANCY` (Rough-In Inspection, Final Inspection, & Dossier Seal)
 - **Behaviors:** `BHV-18 VERIFY_STATIC`, `BHV-19 VERIFY_DYNAMIC`, `BHV-20 REVERT`, `BHV-08 HYPOTHESIZE`, `BHV-07 CURATE_MEMORY`, `BHV-21 CERTIFY`.
 - **Formal Occupancy Relation ($\mathcal{I} \models_{\text{PCE}} \mathcal{M}$):**
-  `audit_pce_dossier(dossier, units)` certifies `OCCUPANCY` over workspace `InspectedUnit`s (`SourceUnit | PolyglotUnit`) if and only if **all six** conditions hold simultaneously:
+  `audit_pce_dossier(dossier, units)` certifies `OCCUPANCY` over workspace `InspectedUnit`s (`SourceUnit | PolyglotUnit`) if and only if **all seven** conditions hold simultaneously:
   1. **Zero Open Ambiguities:** `dossier.mandate.open_ambiguities == ()`.
   2. **Valid Behavioral Execution Graph:** `verify_behavior_graph(dossier.behavior_graph).is_valid is True` (entry at `FRAME`, `BIND_CODES` & `CHECKPOINT` dominance, static & dynamic dirty bits cleared before `CERTIFY`, all `DELEGATE` branches reconciled).
   3. **Contract-Before-Synthesis Ordering:** Any task graph executing `SYNTHESIZE` on a mandate with invariants includes contract/instrumentation verification symbols grounded in the workspace AST/CST.
   4. **Write-Scope Confinement:** `dossier.mutated_files <= dossier.mandate.authorized_files()`.
   5. **100% Symbol-Grounded Invariants:** Every `inv.verification_symbol` in `dossier.mandate.invariants` resolves to a compiled type, callable, or test symbol in `units` (eliminating floating prose specs across `.py`, `.ts`/`.tsx`, `.rs`, and `.go`).
-  6. **Building-Code & Cryptographic Seal Integrity:** `dossier.inspection_report.is_occupiable is True`, `dossier.permit.bound_code_ids <= dossier.inspection_report.effective_code_ids`, and `dossier.certificate.artifact_digest == compute_units_digest(digest_units)` (where `digest_units` is the full workspace `units` by default, or the `mandate.authorized_files() | dossier.mutated_files` slice when `dossier.ratchet_scoped is True` while still verifying `verification_symbol` grounding across all `units`).
+  6. **Building-Code & Dual-Digest Seal Integrity:** `dossier.inspection_report.is_occupiable is True`, `dossier.permit.bound_code_ids <= dossier.inspection_report.effective_code_ids`, `dossier.certificate.verify_seal() is True`, `dossier.certificate.artifact_digest == compute_units_digest(digest_units)`, and (when sealed) `dossier.certificate.blueprint_netlist_digest == extract_blueprint(digest_units).netlist_digest`.
+  7. **Coarse-Grained Target Schematic `LVS` Equivalence (`BLUEPRINT_LVS_MISMATCH`):** Whenever `dossier.target_blueprint` is present, `verify_blueprint_lvs(actual_blueprint, dossier.target_blueprint).is_lvs_clean is True` (`0` `OPEN_CIRCUIT` or `SHORT_CIRCUIT` boundary defects across room walls, perimeter ports, cross-room buses, external risers, and invariant pins, while leaving interior room helpers unconstrained).
 
 ---
 

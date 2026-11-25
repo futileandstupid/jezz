@@ -1,4 +1,4 @@
-# Pillar 2 — Enforceable Software Building Codes (`JBC` Edition 1.2)
+# Pillar 2 — Enforceable Software Building Codes (`JBC` Edition 1.3) & Blueprint `LVS`
 
 ## 1. Statutory Rationale: The Building Inspector Model
 
@@ -9,11 +9,11 @@ Existing software standards fail to serve as an enforceable code book for three 
 2. **Post-Mortem Pathology Catalogs:** MITRE CWE enumerates ~900 overlapping weaknesses at inconsistent abstraction levels rather than affirmative construction standards.
 3. **Human-Era Blind Spots:** Existing standards assume human authorship cost structures. Coding agents exhibit fundamentally different failure modes—hallucinating nonexistent packages, authoring assertion-free or tautological test theatre (`assert True`), leaving `pass`/`NotImplementedError` stubs behind typed headers, and injecting `Any` or `# type: ignore` to silence static gates.
 
-Pillar 2 establishes the **Jezz Software Building Code (`JBC` Edition 1.2 — 31 provisions across 6 Articles)** and an automated **Building Inspector** (`BuildingInspector`) that gates occupancy across Pillar 1's behavioral state machine.
+Pillar 2 establishes the **Jezz Software Building Code (`JBC` Edition 1.3 — 32 provisions across 6 Articles)**, an automated **Building Inspector** (`BuildingInspector`), and a deterministic **`BlueprintGraph` Layout-Versus-Schematic (`LVS`)** verifier that gate occupancy across Pillar 1's behavioral state machine.
 
 ---
 
-## 2. Key Architectural Design Decisions in Edition 1.2
+## 2. Key Architectural Design Decisions in Edition 1.3
 
 ### A. Option A Runtime Signature Breakers (`JBC-DBC-004` + `JBC-COG-003`)
 In Python, static annotations (`def charge(acct: str, amt: float) -> Receipt:`) are inert `__annotations__` metadata at runtime—labeling a panel slot `"20A"` with a Sharpie while installing no breaker.
@@ -47,9 +47,15 @@ While `JBC` Edition `1.2` was originally implemented against Python's stdlib `as
 - **Universal Structural Evaluators + Whole-Workspace Inter-Procedural Guard & Taint Propagation (`polyglot_cst.py`, `polyglot_rules.py`, `polyglot_ts*.py`, `polyglot_rust*.py`, `polyglot_go*.py`, `rules_sec_obs.py`, `call_flow*.py`):** Evaluates SonarSource Cognitive Complexity (`JBC-COG-001`), nesting/arity/span (`JBC-COG-002`), iterative Tarjan SCC cycles & private/internal module breaches (`JBC-COG-003`), `else if` dispatch caps (`JBC-COG-004`), Hitz–Montazeri `LCOM4` / `WMC` / schema purity (`JBC-COG-005`), per-parameter backward-closed boundary guards and cross-callable/cross-module validator-helper delegation (`JBC-DBC-001`..`005`), fault/concurrency/resource envelopes (`JBC-FLT-001`..`006`), `LoopBudget`-bounded monotone fixed-point inter-procedural SQL/shell/eval (`JBC-SEC-001`) and path-sink (`JBC-SEC-005`) taint propagation across wrapper helpers and imported modules (`build_workspace_call_flow` & `refine_discrepancies_with_call_flow`, preserving differential ratchet anchoring), state determinism (`JBC-OBS-001`..`003`), and anti-theatre verification (`JBC-VRF-001`..`004`) uniformly across all four languages.
 - **Four-Ecosystem Manifest Grounding (`polyglot_manifests.py`, `JBC-VRF-003`):** Grounds third-party and workspace imports against `pyproject.toml`/`setup.cfg` (Python), `package.json` + `packages/*`/`apps/*` monorepo workspaces & `@types/*` companions (TypeScript), `Cargo.toml` + `[workspace.members]`/`[workspace.dependencies]` crate renames (Rust), and `go.mod` `module`/`require`/`replace` directives (Go).
 
+### G. Subpackage Compartmentation (`JBC-COG-006`), Switchable CAD Blueprints, & Coarse-Grained `LVS` (`jezz.codes.compartment`, `jezz.codes.blueprint`, `jezz.codes.blueprint_lvs`, `@jezz/blueprint`)
+Module-level cycle detection (`JBC-COG-003`) alone permits two classic architectural regressions in growing agent-authored codebases: cross-folder mutual tangling (`alpha/x -> beta/y` + `beta/z -> alpha/w`, which has zero file-level cycles!) and unpartitioned flat-package sprawl that blows past cold-start agent localization budgets. Edition `1.3` closes both at the architectural scale:
+- **Subpackage Quotient Acyclicity, Floorplate Caps, Portal Ratios, & Workspace Fire-Walls (`JBC-COG-006`):** Collapses sibling subpackage compartments and workspace members (`packages/*`, `apps/*`, `crates/*`, `libs/*`, `services/*`) into a quotient graph $G/\sim$ and enforces: (1) zero Tarjan SCC cycles in $G/\sim$, (2) per-compartment direct module caps (`standard <= 35`, `strict_internal <= 25`) and per-package module caps (`standard <= 100`, `strict_internal <= 75`), (3) bounded external portal ratios ($|\partial C| / |C| \le 0.65$ `standard` / $\le 0.55$ `strict_internal` for $|C| \ge 10$ to block sham folder splits without forcing eager `__init__.py` / `index.ts` barrel imports), and (4) strict public-boundary fire-walls across multi-package workspace members (plus Go `internal/` trees).
+- **Zero-Drift `BlueprintGraph` Netlist & Switchable `A-1`/`E-1` CAD Projections (`jezz blueprint`, `packages/jezz-blueprint`):** `extract_blueprint` deterministically projects AST/CST, imports, call-flow, `@jezz_callable`/strict-schema circuit breakers, and ecosystem manifests into a SHA-256-sealed `BlueprintGraph` (`Rooms`, fire-rated `Walls`, `PerimeterPortPins`, `Buses`, `CircuitBreakers`, `ExternalRisers`, `InvariantPins`, and algebraic `RedlineDelta`s $B^* = B_0 \oplus \Delta B$). Both `jezz blueprint` (`cli_blueprint.py`) and the self-hosted TypeScript `@jezz/blueprint` package (`elkjs` + strict `zod`) render synchronized switchable CAD views uniting **Sheet `A-1` (Architectural Floor Plan: spatial permanence, proportional room mass, wall fire-rating strokes, `34/35` occupancy gauges)** and **Sheet `E-1` (Electrical Wiring Schematic: IC blocks with `FIXED_SIDE` `WEST`/`EAST`/`SOUTH` perimeter pins and `elkjs` `ORTHOGONAL` Manhattan bus routing)** with shared selection/camera state, Title Block, toggleable CAD layers (`Structure`, `Breakers`, `Taint & I/O Risers`, `Redline Diff`), and `.svg` export.
+- **Coarse-Grained Boundary `LVS` Equivalence (`verify_blueprint_lvs` & Dual-Digest `CertificateOfOccupancy`):** Modeled after EDA Layout-Versus-Schematic verification, `verify_blueprint_lvs(actual, target)` enforces strict homomorphic equivalence at **room walls, inbound perimeter port pins, cross-room buses, external I/O risers, and invariant pins** (`OPEN_CIRCUIT` on missing obligations; `SHORT_CIRCUIT` on unauthorized cross-wall buses, demolished `REMOVE_BUS` conduits, cyclic rooms, or undeclared external sinks/packages), while leaving **interior module helpers and algorithms 100% unconstrained and idiomatic**. `CertificateOfOccupancy` cryptographically seals both `artifact_digest` and `blueprint_netlist_digest`.
+
 ---
 
-## 3. Edition 1.2 Code Book — 31 Provisions Across 6 Articles
+## 3. Edition 1.3 Code Book — 32 Provisions Across 6 Articles
 
 ### Article I: `DBC` — Design by Contract, Signature Breakers & Bounded Domains (5)
 | Code | Title | Severity | Waivable | Primary Lineage & Verbatim Anchor |
@@ -80,7 +86,7 @@ While `JBC` Edition `1.2` was originally implemented against Python's stdlib `as
 | `JBC-SEC-005` | Taint Separation & Canonicalized Sink Types | `life_safety` | No | CWE-22 (*"...uses external input to construct a pathname... underneath a restricted parent directory, but it does not properly neutralize special elements..."*) |
 | `JBC-SEC-006` | Dynamic Path Anchoring & Hardcoded Path Prohibition | `structural` | Yes | ISO/IEC 25010 §4.2.8; CWE-426 (*"The application searches for critical resources using an untrusted search path"*); `AGT-PATH-01` |
 
-### Article IV: `COG` — Complexity, Dispatch Tables & Class Duty Isolation (5)
+### Article IV: `COG` — Complexity, Dispatch Tables, Class Cohesion & Compartmentation (6)
 | Code | Title | Severity | Waivable | Primary Lineage & Verbatim Anchor |
 | :--- | :--- | :--- | :---: | :--- |
 | `JBC-COG-001` | Callable Cognitive Complexity Ceiling ($\le 15$) | `workmanship` | Yes | Sonar (Campbell 2017: *"Increment (add one) for each break in the linear flow... Increment when flow-breaking structures are nested."*) |
@@ -88,6 +94,7 @@ While `JBC` Edition `1.2` was originally implemented against Python's stdlib `as
 | `JBC-COG-003` | Acyclic Module Topology, Wildcard Ban & Sealed `_private` Enclosures | `structural` | No | Parnas 1972 (*"Every module in the second decomposition is characterized by its knowledge of a design decision which it hides from all others."*) |
 | `JBC-COG-004` | Table-Driven Dispatch (`circuit_board`) & Guard-Clause Discipline | `workmanship` | Yes | McConnell *Code Complete* Ch. 18; Object Calisthenics Rule 2 |
 | `JBC-COG-005` | Single-Duty Class Cohesion (`LCOM4 == 1`) & Panel Capacity | `workmanship` | Yes | Hitz & Montazeri `LCOM4` (1995); Chidamber & Kemerer `WMC`/`CBO` (1994) |
+| `JBC-COG-006` | Subpackage Quotient Acyclicity, Floorplate Caps & Workspace Fire-Walls | `structural` | Yes | Parnas 1972; Baldwin & Clark *Design Rules* DSM (2000); Martin `CCP`/`CRP` |
 
 ### Article V: `OBS` — Observability, State Hygiene & Determinism (3)
 | Code | Title | Severity | Waivable | Primary Lineage |
