@@ -1,4 +1,4 @@
-"""Read-only Model Context Protocol (MCP) statutory gate server for polyglot JBC v1.2 and PCE."""
+"""Read-only Model Context Protocol (MCP) statutory gate server for polyglot JBC v1.3 and PCE."""
 
 import asyncio
 import json
@@ -22,6 +22,7 @@ from jezz.codes.ast_graph import (
     extract_symbol_source_slice,
 )
 from jezz.codes.codebook import CODE_BOOK, CODEBOOK_EDITION
+from jezz.codes.complexity import PermitProfile
 from jezz.codes.discovery import (
     build_workspace_inspector,
     discover_workspace_units,
@@ -30,6 +31,7 @@ from jezz.codes.discovery import (
     read_contained_json,
     require_workspace_units,
 )
+from jezz.codes.inspector import BuildingInspector
 from jezz.codes.permits import InspectionReport
 from jezz.codes.polyglot_ir import InspectedUnit, is_supported_source_path
 from jezz.codes.ratchet import (
@@ -62,6 +64,8 @@ from jezz.guards import (
 )
 from jezz.mcp_reload import HotReloadSupervisor
 from jezz.methodology.dossier import DossierAuditReport, EngineeringDossier, audit_pce_dossier
+from jezz.methodology.lot_line import LotLineAssessment, assess_mandate_lot_line
+from jezz.methodology.mandate import EngineeringMandate
 
 SERVER_NAME: Final[str] = "jezz"
 SERVER_VERSION: Final[str] = __version__
@@ -74,11 +78,12 @@ _READ_ONLY_ANNOTATIONS: Final[ToolAnnotations] = ToolAnnotations(
 )
 
 _SERVER_INSTRUCTIONS: Final[str] = (
-    "Jezz Software Building Code (JBC Edition 1.2) & Permit-and-Contract Engineering (PCE) "
+    "Jezz Software Building Code (JBC Edition 1.3) & Permit-and-Contract Engineering (PCE) "
     "polyglot statutory gate server across Python (.py), TypeScript (.ts, .tsx), Rust (.rs), "
     "and Go (.go). Use jbc_preview_source to validate candidate source buffers in memory "
-    "(including whole-workspace JBC-COG-003 cycle/encapsulation checks) before writing to disk; "
+    "(including whole-workspace JBC-COG-003/006 topology checks) before writing to disk; "
     "use jbc_inspect_differential or jbc_inspect_workspace for Rough-In verification; use "
+    "jbc_assess_lot_line for pre-flight package/compartment shear checks; use "
     "jbc_query_ast_graph for workspace AST/CST import/call/symbol slices; use jbc_get_code / "
     "jbc_list_codes for normative JBC provisions; and use jbc_verify_behavior_graph and "
     "jbc_audit_dossier for Pillar 1 and Pillar 3 verification."
@@ -108,7 +113,7 @@ type WireJsonText = Annotated[
 
 
 class BuildingCodeSummary(BaseModel):
-    """Compact statutory summary of a single JBC Edition 1.2 BuildingCode provision."""
+    """Compact statutory summary of a single JBC Edition 1.3 BuildingCode provision."""
 
     model_config = STRICT_FROZEN_CONFIG
 
@@ -143,7 +148,7 @@ class BuildingCodeSummary(BaseModel):
 
 
 class JbcCatalogPayload(BaseModel):
-    """Filtered JBC Edition 1.2 catalog response returned by ``jbc_list_codes``."""
+    """Filtered JBC Edition 1.3 catalog response returned by ``jbc_list_codes``."""
 
     model_config = STRICT_FROZEN_CONFIG
 
@@ -195,6 +200,8 @@ class _ReloadToolArgs(BaseModel):
     source_code: SourceCodeText = ""
     dossier_path: IdentifierStr | None = None
     dossier_json: WireJsonText | None = None
+    mandate_path: IdentifierStr | None = None
+    mandate_json: WireJsonText | None = None
     symbol_query: IdentifierStr | None = None
     caller_of: IdentifierStr | None = None
 
@@ -204,7 +211,7 @@ def list_jbc_codes(
     article: CodeArticle | None = None,
     trigger: CodeTrigger | None = None,
 ) -> JbcCatalogPayload:
-    """List JBC Edition 1.2 provisions filtered optionally by ``article`` and ``trigger``."""
+    """List JBC Edition 1.3 provisions filtered optionally by ``article`` and ``trigger``."""
     matched: list[BuildingCodeSummary] = []
     for code_id in sorted(CODE_BOOK):
         code = CODE_BOOK[code_id]
@@ -229,7 +236,7 @@ def get_jbc_code(code_id: IdentifierStr) -> BuildingCode:
     if code is None:
         msg = (
             f"Unknown BuildingCode '{code_id}'. Expected an Edition {CODEBOOK_EDITION} "
-            "identifier such as 'JBC-DBC-001' or 'JBC-COG-003' (call jbc_list_codes)."
+            "identifier such as 'JBC-DBC-001' or 'JBC-COG-006' (call jbc_list_codes)."
         )
         raise ToolError(msg)
     return code
@@ -383,6 +390,20 @@ def _load_dossier_payload(
     return EngineeringDossier.model_validate_json(read_contained_json(target))
 
 
+def _load_mandate_payload(
+    anchor_root: Path,
+    mandate_path: IdentifierStr | None,
+    mandate_json: SourceCodeText | None,
+) -> EngineeringMandate:
+    if (mandate_path is None) == (mandate_json is None):
+        msg = "Specify exactly one of 'mandate_path' or 'mandate_json'."
+        raise ToolError(msg)
+    if mandate_json is not None:
+        return EngineeringMandate.model_validate_json(mandate_json)
+    target = ContainedPath.from_parts(anchor_root, mandate_path or "")
+    return EngineeringMandate.model_validate_json(read_contained_json(target))
+
+
 def _run_dossier_audit(
     anchor_root: Path,
     dossier_path: IdentifierStr | None,
@@ -394,6 +415,29 @@ def _run_dossier_audit(
     dossier = _load_dossier_payload(anchor_root, dossier_path, dossier_json)
     _, units = require_workspace_units(target_repo, target_dirs=target_dirs)
     return audit_pce_dossier(dossier, units)
+
+
+def _run_lot_line_assessment(
+    anchor_root: Path,
+    mandate_path: IdentifierStr | None,
+    mandate_json: SourceCodeText | None,
+    workspace_subpath: IdentifierStr,
+    target_dirs: Sequence[IdentifierStr],
+    permit_path: IdentifierStr | None,
+) -> LotLineAssessment:
+    target_repo = _resolve_contained_dir(anchor_root, workspace_subpath)
+    mandate = _load_mandate_payload(anchor_root, mandate_path, mandate_json)
+    permit = load_contained_permit(_resolve_optional_file(anchor_root, permit_path))
+    units = discover_workspace_units(target_repo, target_dirs=target_dirs)
+    inspector = BuildingInspector.from_workspace(target_repo)
+    profile = permit.profile if permit is not None else PermitProfile.STANDARD
+    return assess_mandate_lot_line(
+        mandate,
+        units,
+        manifest=inspector.manifest,
+        polyglot_manifest=inspector.polyglot_manifest,
+        profile=profile,
+    )
 
 
 def _run_ast_graph_query(
@@ -418,7 +462,7 @@ def _run_ast_graph_query(
 
 
 class JezzWorkspaceGate:
-    """Workspace-jailed polyglot JBC v1.2 and PCE verification gate bound to ``anchor_root``."""
+    """Workspace-jailed polyglot JBC v1.3 and PCE verification gate bound to ``anchor_root``."""
 
     @jezz_callable
     def __init__(self, workspace_root: Path | None = None) -> None:
@@ -442,7 +486,7 @@ class JezzWorkspaceGate:
         permit_path: IdentifierStr | None = None,
         as_of: IdentifierStr | None = None,
     ) -> InspectionReport:
-        """Run JBC Edition 1.2 Rough-In static inspection across workspace source files."""
+        """Run JBC Edition 1.3 Rough-In static inspection across workspace source files."""
         return _run_tool_safely(
             lambda: _run_workspace_inspection(
                 self._anchor_root,
@@ -533,6 +577,27 @@ class JezzWorkspaceGate:
             )
         )
 
+    @jezz_callable
+    def assess_lot_line(
+        self,
+        mandate_path: IdentifierStr | None = None,
+        mandate_json: WireJsonText | None = None,
+        workspace_subpath: IdentifierStr = ".",
+        target_dirs: TargetDirsArg = (),
+        permit_path: IdentifierStr | None = None,
+    ) -> LotLineAssessment:
+        """Assess pre-flight JBC-COG-006 floorplate capacity and CRP lot-line shear."""
+        return _run_tool_safely(
+            lambda: _run_lot_line_assessment(
+                self._anchor_root,
+                mandate_path,
+                mandate_json,
+                workspace_subpath,
+                target_dirs,
+                permit_path,
+            )
+        )
+
 
 def _dispatch_verify_graph(_gate: JezzWorkspaceGate, args: _ReloadToolArgs) -> BaseModel:
     if args.graph is None:
@@ -561,6 +626,9 @@ _WORKER_TOOL_DISPATCH: Final[Mapping[str, _WorkerDispatchFn]] = MappingProxyType
         ),
         "jbc_query_ast_graph": lambda g, a: g.query_ast_graph(
             a.workspace_subpath, a.target_dirs, a.symbol_query, a.caller_of
+        ),
+        "jbc_assess_lot_line": lambda g, a: g.assess_lot_line(
+            a.mandate_path, a.mandate_json, a.workspace_subpath, a.target_dirs, a.permit_path
         ),
     }
 )
@@ -710,7 +778,11 @@ def _build_inspection_handlers(
 def _build_dossier_and_graph_handlers(
     gate: JezzWorkspaceGate,
     sup: HotReloadSupervisor,
-) -> tuple[Callable[..., DossierAuditReport], Callable[..., AstGraphQueryResult]]:
+) -> tuple[
+    Callable[..., DossierAuditReport],
+    Callable[..., AstGraphQueryResult],
+    Callable[..., LotLineAssessment],
+]:
     def _dossier_tool(
         dossier_path: IdentifierStr | None = None,
         dossier_json: WireJsonText | None = None,
@@ -753,7 +825,32 @@ def _build_dossier_and_graph_handlers(
             lambda: gate.query_ast_graph(workspace_subpath, target_dirs, symbol_query, caller_of),
         )
 
-    return _dossier_tool, _ast_tool
+    def _lot_line_tool(
+        mandate_path: IdentifierStr | None = None,
+        mandate_json: WireJsonText | None = None,
+        workspace_subpath: IdentifierStr = ".",
+        target_dirs: TargetDirsArg = (),
+        permit_path: IdentifierStr | None = None,
+    ) -> LotLineAssessment:
+        raw = json.dumps(
+            {
+                "mandate_path": mandate_path,
+                "mandate_json": mandate_json,
+                "workspace_subpath": workspace_subpath,
+                "target_dirs": list(target_dirs),
+                "permit_path": permit_path,
+            }
+        )
+        return sup.invoke_or_local(
+            "jbc_assess_lot_line",
+            raw,
+            LotLineAssessment,
+            lambda: gate.assess_lot_line(
+                mandate_path, mandate_json, workspace_subpath, target_dirs, permit_path
+            ),
+        )
+
+    return _dossier_tool, _ast_tool, _lot_line_tool
 
 
 def _register_statutory_tools(
@@ -763,12 +860,12 @@ def _register_statutory_tools(
 ) -> None:
     list_fn, get_fn, verify_fn = _build_catalog_handlers(sup)
     ws_fn, diff_fn, preview_fn = _build_inspection_handlers(gate, sup)
-    dossier_fn, ast_fn = _build_dossier_and_graph_handlers(gate, sup)
+    dossier_fn, ast_fn, lot_line_fn = _build_dossier_and_graph_handlers(gate, sup)
     specs: tuple[tuple[str, str, str, Callable[..., object]], ...] = (
         (
             "jbc_list_codes",
-            "List JBC Edition 1.2 Building Codes",
-            "List JBC v1.2 provisions filtered optionally by CodeArticle or CodeTrigger.",
+            "List JBC Edition 1.3 Building Codes",
+            "List JBC v1.3 provisions filtered optionally by CodeArticle or CodeTrigger.",
             list_fn,
         ),
         (
@@ -786,7 +883,7 @@ def _register_statutory_tools(
         (
             "jbc_inspect_workspace",
             "Inspect Workspace (JBC Rough-In)",
-            "Run JBC v1.2 Rough-In static inspection across workspace .py/.ts/.tsx/.rs/.go files.",
+            "Run JBC v1.3 Rough-In static inspection across workspace .py/.ts/.tsx/.rs/.go files.",
             ws_fn,
         ),
         (
@@ -812,6 +909,12 @@ def _register_statutory_tools(
             "Query Workspace AST Graph",
             "Inspect deterministic module import layers, symbol call sites, and AST/CST slices.",
             ast_fn,
+        ),
+        (
+            "jbc_assess_lot_line",
+            "Assess Mandate Lot-Line Shear",
+            "Evaluate JBC-COG-006 floorplates, API sufficiency, and CRP lot-line disposition.",
+            lot_line_fn,
         ),
     )
     for name, title, description, handler in specs:

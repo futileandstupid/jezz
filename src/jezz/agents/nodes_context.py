@@ -55,6 +55,7 @@ from jezz.guards import (
     jezz_callable,
 )
 from jezz.methodology.dossier import extract_compiled_symbols
+from jezz.methodology.lot_line import assess_mandate_lot_line
 from jezz.methodology.mandate import (
     DependencyRequirement,
     DomainInvariant,
@@ -101,6 +102,7 @@ class PceGraphDeps:
     progress_callback: ProgressCallback | None = None
     plan_only: bool = False
     mandate_was_framed: bool = False
+    lot_line_reviewed: bool = False
     ast_graph_brief: str = ""
     baseline_red_tag_summary: str = ""
     memory_ledger: WorkspaceMemoryLedger = field(default_factory=WorkspaceMemoryLedger)
@@ -440,6 +442,46 @@ def try_in_process_elicitation(deps: GuardedPceDeps) -> bool:
     deps.clarifications = cleaned
     deps.mandate = None
     return True
+
+
+@jezz_callable
+def evaluate_preflight_lot_line(
+    state: AgentExecutionState,
+    deps: GuardedPceDeps,
+    mandate: EngineeringMandate,
+) -> ShortText | None:
+    """Evaluate JBC-COG-006 lot-line shear and return an elicitation prompt when unapproved."""
+    assessment = assess_mandate_lot_line(
+        mandate,
+        deps.sandbox.load_units(),
+        manifest=deps.inspector.manifest,
+        polyglot_manifest=deps.inspector.polyglot_manifest,
+        profile=deps.permit.profile,
+    )
+    state.world_model.observations.append(
+        f"LotLine({assessment.disposition}): {assessment.rationale}"[:512]
+    )
+    already_decomposed = any(step.kind == BehaviorKind.DECOMPOSE for step in state.trace)
+    if (
+        not assessment.requires_boundary_review
+        or not deps.mandate_was_framed
+        or deps.lot_line_reviewed
+        or already_decomposed
+    ):
+        return None
+
+    deps.lot_line_reviewed = True
+    question = (
+        f"Lot-line shear ({assessment.disposition}): {assessment.rationale} "
+        "Confirm compartment/package boundary placement."
+    )[:512]
+    if question not in mandate.open_ambiguities:
+        updated = mandate.model_copy(
+            update={"open_ambiguities": (*mandate.open_ambiguities, question)}
+        )
+        deps.mandate = updated
+        state.problem.ambiguities = list(updated.open_ambiguities)
+    return question
 
 
 @jezz_callable

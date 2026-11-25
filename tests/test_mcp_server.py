@@ -217,6 +217,7 @@ async def test_mcp_server_advertises_seven_readonly_structured_tools(
         "jbc_preview_source",
         "jbc_audit_dossier",
         "jbc_query_ast_graph",
+        "jbc_assess_lot_line",
     ]
     for tool in listed.tools:
         assert tool.output_schema is not None
@@ -237,11 +238,11 @@ async def test_mcp_list_and_get_code_provisions_and_unknown_code_error(tmp_path:
 
     assert all_res.structured_content is not None
     catalog = JbcCatalogPayload.model_validate_json(_first_text_block(list(all_res.content)))
-    assert catalog.edition == "1.2"
-    assert catalog.total_matching == 31
+    assert catalog.edition == "1.3"
+    assert catalog.total_matching == 32
 
     cog_catalog = JbcCatalogPayload.model_validate_json(_first_text_block(list(cog_res.content)))
-    assert cog_catalog.total_matching == 5
+    assert cog_catalog.total_matching == 6
     assert all(item.article == CodeArticle.COG for item in cog_catalog.provisions)
 
     provision = BuildingCode.model_validate_json(_first_text_block(list(code_res.content)))

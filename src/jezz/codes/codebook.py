@@ -1,4 +1,4 @@
-"""Edition 1.2 of the Jezz Software Building Code (JBC) — 31 provisions across 6 Articles."""
+"""Edition 1.3 of the Jezz Software Building Code (JBC) — 32 provisions across 6 Articles."""
 
 from collections.abc import Mapping
 from collections.abc import Set as AbstractSet
@@ -21,10 +21,10 @@ from jezz.codes.taxonomy import (
 )
 from jezz.guards import IdentifierStr, jezz_callable
 
-CODEBOOK_EDITION: Final[str] = "1.2"
+CODEBOOK_EDITION: Final[str] = "1.3"
 
 _ARTICLES_IV_TO_VI_CODES: tuple[BuildingCode, ...] = (
-    # --- Article IV: COG — Complexity, Dispatch Tables & Class Duty Isolation (5) ---
+    # --- Article IV: COG — Complexity, Dispatch Tables & Class Duty Isolation (6) ---
     BuildingCode(
         code_id="JBC-COG-001",
         article=CodeArticle.COG,
@@ -213,6 +213,47 @@ _ARTICLES_IV_TO_VI_CODES: tuple[BuildingCode, ...] = (
                 body=StandardBody.PARNAS_MODULARITY,
                 clause="Parnas 1972",
                 summary="One design secret per class/module.",
+            ),
+        ),
+    ),
+    BuildingCode(
+        code_id="JBC-COG-006",
+        article=CodeArticle.COG,
+        title="Subpackage Quotient Acyclicity, Floorplate Ceilings & Compartment Fire-Walls",
+        normative_rule=(
+            "Subpackage compartment quotient graphs (G/~) SHALL form a strict DAG; compartments "
+            "and packages SHALL NOT exceed profile floorplate or external portal-ratio ceilings; "
+            "and workspace members SHALL NOT traverse sibling relative paths or private internals."
+        ),
+        hazard=(
+            "Cross-folder import cycles that evade file-level DAG checks, sprawling unpartitioned "
+            "god-packages, sham folder splits with porous surfaces, and leaky monorepo boundaries."
+        ),
+        pass_criteria=(
+            "Zero Tarjan SCCs in compartment quotient graph G/~, module counts and portal ratios "
+            "within profile ceilings, and zero cross-member relative or internal imports."
+        ),
+        severity=CodeSeverity.STRUCTURAL,
+        variance_permitted=True,
+        triggers=frozenset({CodeTrigger.UNIVERSAL}),
+        enforced_at=frozenset({BehaviorKind.VERIFY_STATIC}),
+        inspection_method=InspectionMethod.MODULE_GRAPH,
+        origin=CodeOrigin.EXTENDED_HYBRID,
+        standard_refs=(
+            StandardReference(
+                body=StandardBody.PARNAS_MODULARITY,
+                clause="Parnas 1972",
+                summary="Information-hiding compartment walls and minimal exported portals.",
+            ),
+            StandardReference(
+                body=StandardBody.ISO_IEC_25010,
+                clause="§4.2.7",
+                summary="Modularity and bounded inter-subsystem propagation cost.",
+            ),
+            StandardReference(
+                body=StandardBody.JEZZ_AGENTIC,
+                clause="AGT-COMPART-01",
+                summary="Bounds cold-start localization search and closes cross-folder cycles.",
             ),
         ),
     ),

@@ -27,6 +27,9 @@ from jezz.guards import (
 
 _MAX_SCOPE_WALK: Final[int] = 100_000
 _MAX_COLLECTOR_DEPTH: Final[int] = 200
+_MEMBER_CONTAINERS: Final[frozenset[str]] = frozenset(
+    {"packages", "apps", "crates", "libs", "services"}
+)
 
 
 class SourceSpan(BaseModel):
@@ -307,9 +310,11 @@ def infer_is_test_file(file_path: IdentifierStr) -> bool:
 
 @jezz_callable
 def infer_module_name(file_path: IdentifierStr) -> BoundedText:
-    """Derive a dotted Python module name from ``file_path`` (stripping leading ``src/``)."""
+    """Derive a dotted Python module name from ``file_path`` (stripping member/``src/``)."""
     posix = PurePosixPath(file_path.replace("\\", "/"))
     parts = list(posix.parts)
+    if len(parts) >= 3 and parts[0] in _MEMBER_CONTAINERS:
+        parts = parts[2:]
     if parts and parts[0] == "src":
         parts = parts[1:]
     if parts and parts[-1].endswith(".py"):

@@ -66,7 +66,7 @@ def test_decomposed_pce_graph_resolves_all_node_transitions() -> None:
     board = validate_execution_board_invariants()
     assert len(board) == 21
     validate_codebook_invariants(CODE_BOOK)
-    assert len(CODE_BOOK) == 31
+    assert len(CODE_BOOK) == 32
 
     graph = build_pce_workflow_graph()
     assert graph is not None

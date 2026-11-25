@@ -649,7 +649,7 @@ async def test_single_scope_workflow_certifies_occupancy_and_seals_pce_dossier(
     assert result.status == PceRunStatus.OCCUPANCY_CERTIFIED
     assert result.graph_verification.is_valid
     assert result.certificate is not None
-    assert len(result.certificate.cited_code_ids) == 31
+    assert len(result.certificate.cited_code_ids) == 32
     assert result.dossier_audit is not None
     assert result.dossier_audit.is_occupancy_sealed
     assert result.dossier_audit.highest_verified_phase == PcePhase.OCCUPANCY

@@ -84,14 +84,14 @@ def _parse_snippet(source: str, *, file_path: str = "src/sample/mod.py") -> list
 
 
 def test_codebook_edition_1_1_counts_and_verbatim_quotes() -> None:
-    assert CODEBOOK_EDITION == "1.2"
-    assert len(CODE_BOOK) == 31
+    assert CODEBOOK_EDITION == "1.3"
+    assert len(CODE_BOOK) == 32
     counts = {article: len(codes_by_article(article)) for article in CodeArticle}
     assert counts == {
         CodeArticle.DBC: 5,
         CodeArticle.FLT: 6,
         CodeArticle.SEC: 6,
-        CodeArticle.COG: 5,
+        CodeArticle.COG: 6,
         CodeArticle.OBS: 3,
         CodeArticle.VRF: 6,
     }
@@ -616,7 +616,7 @@ def test_jezz_repository_passes_edition_1_1_inspection_with_zero_variances() -> 
 
     certificate = issue_certificate(final_report, artifact_digest=compute_units_digest(units))
     assert certificate.ruling == OccupancyRuling.APPROVED
-    assert len(certificate.cited_code_ids) == 31
+    assert len(certificate.cited_code_ids) == 32
     assert certificate.exercised_variance_ids == ()
 
 
@@ -846,7 +846,7 @@ async def test_pydantic_graph_red_tags_ungrounded_code_and_certifies_remediated_
     assert isinstance(certificate, CertificateOfOccupancy)
 
     assert certificate.ruling == OccupancyRuling.APPROVED
-    assert len(certificate.cited_code_ids) == 31
+    assert len(certificate.cited_code_ids) == 32
     assert state.evidence.certified is True
     assert state.workspace.sealed_commit == certificate.inspector_seal
     assert state.world_model.falsified_paths == ["red-tag-v1"]

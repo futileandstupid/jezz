@@ -8,6 +8,11 @@ from jezz.methodology.dossier import (
     audit_pce_dossier,
     extract_compiled_symbols,
 )
+from jezz.methodology.lot_line import (
+    LotLineAssessment,
+    LotLineDisposition,
+    assess_mandate_lot_line,
+)
 from jezz.methodology.mandate import (
     METHODOLOGY_ACRONYM,
     METHODOLOGY_NAME,
@@ -34,8 +39,11 @@ __all__ = [
     "DossierViolationCode",
     "EngineeringDossier",
     "EngineeringMandate",
+    "LotLineAssessment",
+    "LotLineDisposition",
     "ModuleWriteScope",
     "PcePhase",
+    "assess_mandate_lot_line",
     "audit_pce_dossier",
     "compute_scope_execution_waves",
     "extract_compiled_symbols",

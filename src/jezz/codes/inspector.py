@@ -1,4 +1,4 @@
-"""Automated Software Building Inspector (JBC v1.2) and Pillar 1 runtime governance bridge."""
+"""Automated Software Building Inspector (JBC v1.3) and Pillar 1 runtime governance bridge."""
 
 import configparser
 import hashlib
@@ -19,7 +19,8 @@ from jezz.codes.adapters import detect_unit_triggers
 from jezz.codes.ast_utils import RawDiscrepancy, SourceUnit, parse_source_unit
 from jezz.codes.call_flow import refine_discrepancies_with_call_flow
 from jezz.codes.codebook import CODE_BOOK, codes_for_triggers
-from jezz.codes.complexity import ResolvedComplexityLimits
+from jezz.codes.compartment import check_cog_006
+from jezz.codes.complexity import PermitProfile, ResolvedComplexityLimits
 from jezz.codes.permits import (
     CertificateOfOccupancy,
     CodePermit,
@@ -597,7 +598,7 @@ def _load_python_manifest_for_repo(repo_root: Path) -> ManifestDependencies:
 
 
 class BuildingInspector:
-    """Deterministic polyglot enforcement engine for the Jezz Software Building Code (JBC v1.2)."""
+    """Deterministic polyglot enforcement engine for the Jezz Software Building Code (JBC v1.3)."""
 
     @jezz_callable
     def __init__(
@@ -638,6 +639,7 @@ class BuildingInspector:
         units: Sequence[InspectedUnit],
         active_code_ids: AbstractSet[str],
         limits: ResolvedComplexityLimits | None = None,
+        profile: PermitProfile = PermitProfile.STANDARD,
     ) -> list[RawDiscrepancy]:
         py_units, poly_units = _partition_inspected_units(units)
         discrepancies: list[RawDiscrepancy] = []
@@ -647,6 +649,9 @@ class BuildingInspector:
                     discrepancies.extend(check_cog_003(py_units))
                 if poly_units:
                     discrepancies.extend(check_polyglot_cog_003(poly_units))
+                continue
+            if code_id == "JBC-COG-006":
+                discrepancies.extend(check_cog_006(units, profile=profile))
                 continue
             if py_units:
                 discrepancies.extend(
@@ -685,6 +690,7 @@ class BuildingInspector:
             units,
             static_ids,
             limits=active_permit.effective_complexity_limits(),
+            profile=active_permit.profile,
         )
         return assemble_inspection_report(
             active_permit, detected, static_ids, raw, len(units), active_date
@@ -710,6 +716,7 @@ class BuildingInspector:
             units,
             effective_ids,
             limits=active_permit.effective_complexity_limits(),
+            profile=active_permit.profile,
         )
         if "JBC-VRF-005" in effective_ids:
             raw.extend(check_vrf_005(attestations))

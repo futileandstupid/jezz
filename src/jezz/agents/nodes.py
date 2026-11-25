@@ -23,6 +23,7 @@ from jezz.agents.nodes_context import (
     assemble_halted_result,
     build_deterministic_env_observation,
     build_frame_prompt,
+    evaluate_preflight_lot_line,
     format_baseline_red_tags,
     format_deps_prompt,
     frame_step_id,
@@ -362,12 +363,15 @@ class DecomposeNode(AtomicBehaviorGraphNode[PceGraphDeps, PceWorkflowResult]):
             for w_idx, wave in enumerate(waves)
             for s in wave
         ]
+        lot_line_reason = evaluate_preflight_lot_line(ctx.state, ctx.deps, mandate)
         record_pce_step(
             self,
             ctx,
             "decompose",
             f"Partitioned {len(mandate.write_scopes)} scope(s) across {len(waves)} wave(s)",
         )
+        if lot_line_reason is not None:
+            return ElicitNode(reason=lot_line_reason)
         if ctx.deps.plan_only:
             return ElicitNode(
                 reason="EngineeringMandate and write-scope plan ready for human sign-off.",

@@ -1,4 +1,4 @@
-"""Git-aware Differential Occupancy Ratchet for incremental polyglot JBC v1.2 enforcement."""
+"""Git-aware Differential Occupancy Ratchet for incremental polyglot JBC v1.3 enforcement."""
 
 import re
 import subprocess
@@ -14,7 +14,7 @@ from pydantic import BaseModel, Field, model_validator
 from jezz.codes.ast_utils import RawDiscrepancy, SourceUnit
 from jezz.codes.call_flow import refine_discrepancies_with_call_flow
 from jezz.codes.codebook import CODE_BOOK, codes_for_triggers
-from jezz.codes.complexity import ResolvedComplexityLimits
+from jezz.codes.compartment import check_cog_006_for_paths
 from jezz.codes.inspector import (
     BuildingInspector,
     assemble_inspection_report,
@@ -277,16 +277,35 @@ def resolve_git_changed_paths(
     return frozenset(discovered)
 
 
+def _collect_graph_discrepancies(
+    all_units: Sequence[InspectedUnit],
+    touched_paths: frozenset[str],
+    static_ids: frozenset[str],
+    active_permit: CodePermit,
+) -> list[RawDiscrepancy]:
+    out: list[RawDiscrepancy] = []
+    if "JBC-COG-003" in static_ids:
+        all_py = [u for u in all_units if isinstance(u, SourceUnit)]
+        all_poly = [u for u in all_units if isinstance(u, PolyglotUnit)]
+        if all_py:
+            out.extend(check_cog_003_for_paths(all_py, touched_paths))
+        if all_poly:
+            out.extend(check_polyglot_cog_003_for_paths(all_poly, touched_paths))
+    if "JBC-COG-006" in static_ids:
+        out.extend(check_cog_006_for_paths(all_units, touched_paths, profile=active_permit.profile))
+    return out
+
+
 def _collect_differential_discrepancies(
     inspector: BuildingInspector,
     all_units: Sequence[InspectedUnit],
     touched_units: Sequence[InspectedUnit],
-    touched_paths: frozenset[str],
     static_ids: frozenset[str],
-    limits: ResolvedComplexityLimits | None = None,
+    active_permit: CodePermit,
 ) -> list[RawDiscrepancy]:
     if not touched_units:
         return []
+    touched_paths = frozenset(u.file_path for u in touched_units)
     per_unit = refine_discrepancies_with_call_flow(
         all_units,
         collect_per_unit_discrepancies(
@@ -294,20 +313,15 @@ def _collect_differential_discrepancies(
             touched_units,
             static_ids,
             polyglot_manifest=inspector.polyglot_manifest,
-            limits=limits,
+            limits=active_permit.effective_complexity_limits(),
         ),
         static_ids,
         target_paths=touched_paths,
     )
-    if "JBC-COG-003" not in static_ids:
-        return per_unit
-    all_py = [u for u in all_units if isinstance(u, SourceUnit)]
-    all_poly = [u for u in all_units if isinstance(u, PolyglotUnit)]
-    cog_003 = [
-        *(check_cog_003_for_paths(all_py, touched_paths) if all_py else []),
-        *(check_polyglot_cog_003_for_paths(all_poly, touched_paths) if all_poly else []),
-    ]
-    combined = [*per_unit, *cog_003]
+    graph_findings = _collect_graph_discrepancies(
+        all_units, touched_paths, static_ids, active_permit
+    )
+    combined = [*per_unit, *graph_findings]
     combined.sort(key=lambda item: (item.code_id, item.location.file_path, item.location.line))
     return combined
 
@@ -339,9 +353,8 @@ def _run_differential_inspection(
         inspector,
         all_units,
         touched_units,
-        touched_paths,
         static_ids,
-        limits=active_permit.effective_complexity_limits(),
+        active_permit,
     )
     effective_ids = candidate_ids if include_gates else static_ids
     if include_gates and "JBC-VRF-005" in effective_ids:
@@ -376,7 +389,7 @@ def inspect_differential_rough_in(
     *,
     permit: CodePermit | None = None,
 ) -> DifferentialInspectionReport:
-    """Gate touched units under JBC v1.2 while preserving whole-workspace cycle analysis."""
+    """Gate touched units under JBC v1.3 while preserving whole-workspace cycle analysis."""
     active_permit = permit or CodePermit.full_book(permit_id="PERMIT-RATCHET")
     return _run_differential_inspection(
         inspector,
