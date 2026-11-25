@@ -1,5 +1,6 @@
 """Portable Antigravity plugin generator and workspace bootstrapper for ``jezz init``."""
 
+import importlib.resources
 import json
 import shutil
 import sys
@@ -15,11 +16,27 @@ from jezz.guards import (
     BoundedText,
     ContainedPath,
     IdentifierStr,
+    LoopBudget,
     jezz_callable,
     read_bounded_text,
 )
 
 JEZZ_REPO_URL: Final[str] = "https://github.com/futileandstupid/jezz"
+
+_SCAFFOLD_SKIP_DIRS: Final[frozenset[str]] = frozenset(
+    {
+        "node_modules",
+        "target",
+        ".venv",
+        "__pycache__",
+        ".pytest_cache",
+        ".mypy_cache",
+        ".ruff_cache",
+        ".hypothesis",
+        "dist",
+        ".git",
+    }
+)
 
 _RULES_AGENTS_MD: Final[str] = """# Jezz Statutory Engineering Rules (JBC v1.3 & PCE)
 
@@ -40,11 +57,12 @@ _RULES_AGENTS_MD: Final[str] = """# Jezz Statutory Engineering Rules (JBC v1.3 &
 - Before writing or editing non-trivial source modules (`.py`, `.ts`, `.tsx`, `.rs`, `.go`),
   dry-run candidate source buffers in memory via MCP tool `jbc_preview_source` (`0` unwaived
   `RED_TAG` violations, including whole-workspace `JBC-COG-003` / `JBC-COG-006` topology,
-  encapsulation, and inter-procedural call-flow checks).
+  encapsulation, and inter-procedural call-flow checks) and verify contract non-vacuity and
+  deductive postconditions via `jbc_prove_contracts`.
 - Use `jbc_get_code`, `jbc_list_codes`, `jbc_assess_lot_line`, `jbc_extract_blueprint`,
-  `jbc_verify_blueprint_lvs`, or `jbc_query_ast_graph` to inspect normative **Jezz Software
-  Building Code (`JBC` Edition 1.3)** requirements, lot-line shear, blueprint `LVS` equivalence,
-  and AST/CST symbol maps.
+  `jbc_verify_blueprint_lvs`, `jbc_prove_contracts`, or `jbc_query_ast_graph` to inspect normative
+  **Jezz Software Building Code (`JBC` Edition 1.3)** requirements, lot-line shear, blueprint
+  `LVS` equivalence, Z3 symbolic contract proofs, and AST/CST symbol maps.
 - Before ending any turn that modifies governed source files, verify clean occupancy via
   `jbc_inspect_differential` and run workspace dynamic gates (e.g., `uv run pytest`,
   `uv run mypy .`, `uv run ruff check .` for Python; `tsc`/`vitest`, `cargo test`, or `go test`
@@ -88,18 +106,26 @@ specifications.
      signature guards (`@jezz_callable` / `@icontract` / `.Validate()`), and universally
      quantified property/falsification suites upfront—never baby-step Red-Green stub cycles.
    - Validate candidate `.py`, `.ts`, `.tsx`, `.rs`, and `.go` buffers in memory with
-     `jbc_preview_source` prior to writing to disk.
+     `jbc_preview_source` and verify Z3 contract non-vacuity via `jbc_prove_contracts` prior to
+     writing to disk.
 4. **Phase IV — Scoped Construction (`BHV-16 SYNTHESIZE` / `BHV-17 REFACTOR`):**
    - Implement or refactor strictly within authorized `ModuleWriteScope`s; preview each module
      via `jbc_preview_source`.
 5. **Phase V — Occupancy Verification (`BHV-18` / `BHV-19` / `BHV-21`):**
-   - Confirm zero unwaived `JBC` violations via `jbc_inspect_differential` and coarse-grained
-     schematic equivalence via `jbc_verify_blueprint_lvs` when a target `BlueprintGraph` applies.
+   - Confirm zero unwaived `JBC` violations via `jbc_inspect_differential`, deductive Z3 contract
+     proofs via `jbc_prove_contracts`, and coarse-grained schematic equivalence via
+     `jbc_verify_blueprint_lvs` when a target `BlueprintGraph` applies.
    - Execute dynamic gates (`uv run pytest`, `uv run mypy .`, `uv run ruff check .` for Python, or
      the target ecosystem's typecheck/test suite).
    - When an `EngineeringDossier` JSON is produced, verify seal integrity via `jbc_audit_dossier`.
 
 ## Mode 2: Autonomous `jezz` CLI Delegation
+
+- **Workspace Bootstrap & Polyglot Starter Scaffolds:**
+  `uv run jezz init <repo> [--scaffold python|typescript|rust|go] [--pre-commit]`
+
+- **Polyglot Z3 Symbolic Contract Discharge:**
+  `uv run jezz prove <repo> [--target-dir <subpath>] [--symbol <name>] [--require-deductive]`
 
 - **Blueprint CAD Viewer & Coarse-Grained LVS Gate:**
   `uv run jezz blueprint <repo> [--write-html blueprint.html] [--write-json blueprint.json]`
@@ -134,6 +160,15 @@ class PluginInstallScope(StrEnum):
     NONE = "none"
 
 
+class ScaffoldTemplate(StrEnum):
+    """Canonical turnkey polyglot starter templates shipped with ``jezz init --scaffold``."""
+
+    PYTHON = "python"
+    TYPESCRIPT = "typescript"
+    RUST = "rust"
+    GO = "go"
+
+
 class PluginInstallSpec(BaseModel):
     """Declarative specification for ``initialize_jezz_workspace``."""
 
@@ -141,6 +176,7 @@ class PluginInstallSpec(BaseModel):
 
     repo_root: Path
     scope: PluginInstallScope = PluginInstallScope.WORKSPACE
+    scaffold: ScaffoldTemplate | None = None
     global_config_dir: Path | None = None
     jezz_executable: Path | None = None
     default_model: IdentifierStr = "google:gemini-3.8-flash"
@@ -156,17 +192,18 @@ class WorkspaceInitReport(BaseModel):
 
     repo_root: Path
     plugin_scope: PluginInstallScope
+    scaffold_applied: ScaffoldTemplate | None = None
     plugin_dir: Path | None = None
     jezz_executable: Path
     written_files: Annotated[
         tuple[BoundedText, ...],
         WIRE_TUPLE_VALIDATOR,
-        Field(max_length=64),
+        Field(max_length=128),
     ] = ()
     skipped_files: Annotated[
         tuple[BoundedText, ...],
         WIRE_TUPLE_VALIDATOR,
-        Field(max_length=64),
+        Field(max_length=128),
     ] = ()
     pyproject_updated: bool = False
     pre_commit_installed: bool = False
@@ -178,10 +215,16 @@ class WorkspaceInitReport(BaseModel):
             f"# Jezz Workspace Initialization — `{self.repo_root.name}`",
             f"- **Workspace Root:** `{self.repo_root}`",
             f"- **Plugin Scope:** `{self.plugin_scope}`",
-            f"- **Jezz Executable:** `{self.jezz_executable}`",
-            f"- **`pyproject.toml` Updated:** `{self.pyproject_updated}`",
-            f"- **Git Pre-Commit Installed:** `{self.pre_commit_installed}`",
         ]
+        if self.scaffold_applied is not None:
+            lines.append(f"- **Scaffold Template:** `{self.scaffold_applied}`")
+        lines.extend(
+            [
+                f"- **Jezz Executable:** `{self.jezz_executable}`",
+                f"- **`pyproject.toml` Updated:** `{self.pyproject_updated}`",
+                f"- **Git Pre-Commit Installed:** `{self.pre_commit_installed}`",
+            ]
+        )
         if self.plugin_dir is not None:
             lines.append(f"- **Plugin Directory:** `{self.plugin_dir}`")
         if self.written_files:
@@ -191,6 +234,21 @@ class WorkspaceInitReport(BaseModel):
             lines.extend(["", "## Preserved Existing Artifacts (Use `--overwrite` to Replace)"])
             lines.extend(f"- `{item}`" for item in self.skipped_files)
         return "\n".join(lines)
+
+
+@jezz_callable
+def resolve_scaffold_template_dir(template: ScaffoldTemplate) -> Path:
+    """Resolve the bundled or editable-checkout starter template directory dynamically."""
+    pkg_root = Path(str(importlib.resources.files("jezz"))).resolve()
+    bundled = ContainedPath.from_parts(pkg_root, f"_templates/{template.value}")
+    if bundled.resolved_path.is_dir():
+        return bundled.resolved_path
+    checkout_root = Path(__file__).resolve().parents[2]
+    checkout_tpl = ContainedPath.from_parts(checkout_root, f"templates/{template.value}")
+    if checkout_tpl.resolved_path.is_dir():
+        return checkout_tpl.resolved_path
+    msg = f"Bundled starter template '{template.value}' could not be located."
+    raise FileNotFoundError(msg)
 
 
 @jezz_callable
@@ -281,6 +339,34 @@ def _write_or_skip_contained(
     return True, display
 
 
+def _materialize_scaffold_template(
+    template_dir: Path,
+    resolved_repo: Path,
+    *,
+    overwrite: bool,
+) -> tuple[list[str], list[str]]:
+    written: list[str] = []
+    skipped: list[str] = []
+    budget = LoopBudget(max_steps=4096)
+    for src_path in sorted(template_dir.rglob("*")):
+        budget.tick()
+        if not src_path.is_file():
+            continue
+        rel_parts = src_path.relative_to(template_dir).parts
+        if any(part in _SCAFFOLD_SKIP_DIRS for part in rel_parts):
+            continue
+        rel_posix = "/".join(rel_parts)
+        content = read_bounded_text(ContainedPath.from_parts(template_dir, rel_posix))
+        did_write, full_str = _write_or_skip_contained(
+            resolved_repo,
+            rel_posix,
+            content,
+            overwrite=overwrite,
+        )
+        (written if did_write else skipped).append(full_str)
+    return written, skipped
+
+
 def _resolve_plugin_target_dir(spec: PluginInstallSpec, resolved_repo: Path) -> Path | None:
     if spec.scope == PluginInstallScope.NONE:
         return None
@@ -324,6 +410,8 @@ def _maybe_bootstrap_pyproject(
     resolved_repo: Path,
     default_model: str,
 ) -> tuple[bool, str | None]:
+    if ContainedPath.from_parts(resolved_repo, "jezz.toml").resolved_path.is_file():
+        return False, None
     pyproject = ContainedPath.from_parts(resolved_repo, "pyproject.toml")
     if not pyproject.resolved_path.is_file():
         return False, None
@@ -366,14 +454,20 @@ def _maybe_install_pre_commit(
     return False, None, path_str
 
 
-@jezz_callable
-def initialize_jezz_workspace(spec: PluginInstallSpec) -> WorkspaceInitReport:
-    """Install the Antigravity ``jezz`` plugin bundle and optional workspace config hooks."""
+def _ensure_target_workspace_dir(spec: PluginInstallSpec) -> Path:
     resolved_repo = spec.repo_root.resolve()
+    if spec.scaffold is not None:
+        resolved_repo.mkdir(parents=True, exist_ok=True)
     if not resolved_repo.is_dir():
         msg = f"Target workspace directory does not exist: '{spec.repo_root}'."
         raise FileNotFoundError(msg)
+    return resolved_repo
 
+
+@jezz_callable
+def initialize_jezz_workspace(spec: PluginInstallSpec) -> WorkspaceInitReport:
+    """Install the Antigravity ``jezz`` plugin bundle and optional workspace config hooks."""
+    resolved_repo = _ensure_target_workspace_dir(spec)
     jezz_exe = (
         spec.jezz_executable.resolve()
         if spec.jezz_executable is not None
@@ -382,34 +476,42 @@ def initialize_jezz_workspace(spec: PluginInstallSpec) -> WorkspaceInitReport:
     written: list[str] = []
     skipped: list[str] = []
 
+    if spec.scaffold is not None:
+        tpl_dir = resolve_scaffold_template_dir(spec.scaffold)
+        s_written, s_skipped = _materialize_scaffold_template(
+            tpl_dir, resolved_repo, overwrite=spec.overwrite
+        )
+        written.extend(s_written)
+        skipped.extend(s_skipped)
+
     plugin_dir = _resolve_plugin_target_dir(spec, resolved_repo)
     if plugin_dir is not None:
         p_written, p_skipped = _install_plugin_bundle(plugin_dir, spec)
         written.extend(p_written)
         skipped.extend(p_skipped)
 
-    pyproject_updated = False
-    if spec.bootstrap_pyproject:
-        pyproject_updated, updated_path = _maybe_bootstrap_pyproject(
-            resolved_repo, spec.default_model
-        )
-        if updated_path is not None:
-            written.append(updated_path)
+    pyproject_updated, updated_path = (
+        _maybe_bootstrap_pyproject(resolved_repo, spec.default_model)
+        if spec.bootstrap_pyproject
+        else (False, None)
+    )
+    if updated_path is not None:
+        written.append(updated_path)
 
-    pre_commit_installed = False
-    if spec.install_pre_commit:
-        pre_commit_installed, hook_written, hook_skipped = _maybe_install_pre_commit(
-            resolved_repo,
-            overwrite=spec.overwrite,
-        )
-        if hook_written is not None:
-            written.append(hook_written)
-        if hook_skipped is not None:
-            skipped.append(hook_skipped)
+    pre_commit_installed, hook_written, hook_skipped = (
+        _maybe_install_pre_commit(resolved_repo, overwrite=spec.overwrite)
+        if spec.install_pre_commit
+        else (False, None, None)
+    )
+    if hook_written is not None:
+        written.append(hook_written)
+    if hook_skipped is not None:
+        skipped.append(hook_skipped)
 
     return WorkspaceInitReport(
         repo_root=resolved_repo,
         plugin_scope=spec.scope,
+        scaffold_applied=spec.scaffold,
         plugin_dir=plugin_dir,
         jezz_executable=jezz_exe,
         written_files=tuple(written),

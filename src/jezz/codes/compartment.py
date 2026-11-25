@@ -611,13 +611,21 @@ def _go_owner_matches_unit_dir(owner_tail: str, unit_dir: str, owner_leaf: str) 
     return owner_leaf in {s for s in unit_dir.split("/") if s}
 
 
-def _check_go_internal_visibility(unit: PolyglotUnit, imp: PolyglotImport) -> RawDiscrepancy | None:
+def _check_go_internal_visibility(
+    unit: PolyglotUnit,
+    imp: PolyglotImport,
+    src_member: str,
+    root_go_dirs: AbstractSet[str],
+) -> RawDiscrepancy | None:
     segs = [s for s in imp.raw_target.strip("/").split("/") if s]
     if "internal" not in segs:
         return None
     idx = segs.index("internal")
     owner_tail = "/".join(segs[:idx])
     if not owner_tail:
+        return None
+    internal_rel = "/".join(segs[idx:])
+    if src_member == "." and internal_rel in root_go_dirs:
         return None
     unit_dir = PurePosixPath(unit.file_path).parent.as_posix().strip("/")
     if _go_owner_matches_unit_dir(owner_tail, unit_dir, segs[idx - 1]):
@@ -668,6 +676,7 @@ def _check_single_polyglot_import_firewall(
     imp: PolyglotImport,
     src_member: str,
     member_slugs: Mapping[str, str],
+    root_go_dirs: AbstractSet[str],
 ) -> RawDiscrepancy | None:
     span = SourceSpan(file_path=unit.file_path, line=imp.line, column=imp.column)
     if imp.raw_target.startswith("."):
@@ -687,7 +696,7 @@ def _check_single_polyglot_import_firewall(
             )
         return None
     if unit.language == SupportedLanguage.GO:
-        go_hit = _check_go_internal_visibility(unit, imp)
+        go_hit = _check_go_internal_visibility(unit, imp, src_member, root_go_dirs)
         if go_hit is not None:
             return go_hit
     other_src = _targets_other_member_src(imp.raw_target, src_member, member_slugs)
@@ -708,11 +717,16 @@ def _check_polyglot_unit_firewalls(
     unit: PolyglotUnit,
     src_member: str,
     member_slugs: Mapping[str, str],
+    root_go_dirs: AbstractSet[str],
 ) -> list[RawDiscrepancy]:
     return [
         hit
         for imp in unit.imports
-        if (hit := _check_single_polyglot_import_firewall(unit, imp, src_member, member_slugs))
+        if (
+            hit := _check_single_polyglot_import_firewall(
+                unit, imp, src_member, member_slugs, root_go_dirs
+            )
+        )
         is not None
     ]
 
@@ -825,6 +839,16 @@ def _index_python_package_owners(
     return owners
 
 
+def _root_go_package_dirs(units: Sequence[InspectedUnit]) -> frozenset[str]:
+    return frozenset(
+        PurePosixPath(u.file_path).parent.as_posix().strip("/")
+        for u in units
+        if not isinstance(u, SourceUnit)
+        and u.language == SupportedLanguage.GO
+        and classify_unit_placement(u.file_path, SupportedLanguage.GO).member_id == "."
+    )
+
+
 def _check_workspace_firewalls(
     units: Sequence[InspectedUnit],
     placements: Mapping[str, UnitPlacement],
@@ -832,6 +856,7 @@ def _check_workspace_firewalls(
 ) -> list[RawDiscrepancy]:
     member_slugs = _member_slugs_index(placements)
     py_pkg_owners = _index_python_package_owners(units, placements)
+    root_go_dirs = _root_go_package_dirs(units)
     findings: list[RawDiscrepancy] = []
     for u in units:
         if u.file_path not in target_paths:
@@ -840,7 +865,9 @@ def _check_workspace_firewalls(
         if isinstance(u, SourceUnit):
             findings.extend(_check_python_unit_firewalls(u, u_pl, py_pkg_owners))
         else:
-            findings.extend(_check_polyglot_unit_firewalls(u, u_pl.member_id, member_slugs))
+            findings.extend(
+                _check_polyglot_unit_firewalls(u, u_pl.member_id, member_slugs, root_go_dirs)
+            )
     return findings
 
 

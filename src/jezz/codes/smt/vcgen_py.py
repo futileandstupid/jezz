@@ -50,7 +50,7 @@ from jezz.guards import (
 _MAX_AST_DEPTH: Final[int] = 64
 _MAX_STMT_STEPS: Final[int] = 512
 _DIRECTIVE_RE: Final[re.Pattern[str]] = re.compile(
-    r"^(?:#|//+|/\*+|\*+)\s*@(requires|ensures)\s*:\s*(.+?)(?:\*/)?$"
+    r"^(?:#|//+|/\*+|\*+)\s*@(requires|ensures)(?::\s*|\s+)(.+?)(?:\*/)?$"
 )
 _LOGICAL_NOT_RE: Final[re.Pattern[str]] = re.compile(r"(?<![=!<>])!(?!=)")
 
@@ -277,11 +277,22 @@ def _collect_module_type_aliases(tree: ast.Module) -> dict[str, TypeBoundSpec]:
 
 
 def _normalize_directive_syntax(raw: str) -> str:
-    step = raw.replace("&&", " and ").replace("||", " or ")
+    flat = " ".join(raw.splitlines())
+    step = flat.replace("&&", " and ").replace("||", " or ")
     step = step.replace("===", "==").replace("!==", "!=")
     step = re.sub(r"\btrue\b", "True", step)
     step = re.sub(r"\bfalse\b", "False", step)
     return _LOGICAL_NOT_RE.sub(" not ", step)
+
+
+def _consume_directive_line(raw_line: str, reqs: list[str], ens: list[str]) -> None:
+    match = _DIRECTIVE_RE.match(raw_line.strip())
+    if match is None:
+        return
+    if match.group(1) == "requires":
+        reqs.append(match.group(2).strip()[:2048])
+    else:
+        ens.append(match.group(2).strip()[:2048])
 
 
 @jezz_callable
@@ -295,15 +306,11 @@ def extract_comment_directives(
     ens: list[str] = []
     window_start = max(1, start_line - 6)
     for tok in comments:
-        if not (window_start <= tok.line <= end_line):
+        tok_end = tok.line + tok.text.count("\n")
+        if tok_end < window_start or tok.line > end_line:
             continue
-        match = _DIRECTIVE_RE.match(tok.text.strip())
-        if match is None:
-            continue
-        if match.group(1) == "requires":
-            reqs.append(match.group(2).strip()[:2048])
-        else:
-            ens.append(match.group(2).strip()[:2048])
+        for raw_line in tok.text.splitlines():
+            _consume_directive_line(raw_line, reqs, ens)
     return tuple(reqs), tuple(ens)
 
 

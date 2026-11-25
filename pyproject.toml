@@ -50,6 +50,34 @@ Documentation = "https://github.com/futileandstupid/jezz/blob/main/docs/whitepap
 [project.scripts]
 jezz = "jezz.cli:main"
 
+[tool.hatch.build]
+exclude = [
+    "**/node_modules",
+    "**/target",
+    "**/.venv",
+    "**/__pycache__",
+    "**/.pytest_cache",
+    "**/.mypy_cache",
+    "**/.ruff_cache",
+    "**/.hypothesis",
+    "**/dist",
+]
+
+[tool.hatch.build.targets.sdist]
+include = [
+    "src/jezz",
+    "templates",
+    "LICENSE",
+    "README.md",
+    "pyproject.toml",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/jezz"]
+
+[tool.hatch.build.targets.wheel.force-include]
+"templates" = "jezz/_templates"
+
 [dependency-groups]
 dev = [
     "hypothesis>=6.170.16",

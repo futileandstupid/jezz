@@ -1,5 +1,5 @@
-name: "Jezz Software Building Code (JBC v1.2) & PCE Statutory Gate"
-description: "Enforce polyglot JBC Edition 1.2 Rough-In / Differential Occupancy Ratchets (.py, .ts, .tsx, .rs, .go) and PCE Dossier seals."
+name: "Jezz Software Building Code (JBC v1.3) & PCE Statutory Gate"
+description: "Enforce polyglot JBC Edition 1.3 Rough-In / Differential Occupancy Ratchets, Blueprint LVS, Z3 Contract Proofs, and PCE Dossier seals."
 author: "jezz contributors"
 
 branding:
@@ -39,6 +39,14 @@ inputs:
     description: "Optional relative path to a 5-phase PCE EngineeringDossier JSON file to verify via 'jezz audit'."
     required: false
     default: ""
+  blueprint-target:
+    description: "Optional relative path to a target BlueprintGraph JSON file to verify via 'jezz blueprint --verify-target'."
+    required: false
+    default: ""
+  prove:
+    description: "Optional Z3 SMT contract proof mode: '' (disabled), 'check', or 'require-deductive'."
+    required: false
+    default: ""
   python-version:
     description: "Python runtime version for executing jezz (>=3.14)."
     required: false
@@ -55,6 +63,12 @@ outputs:
   audit-exit-code:
     description: "Exit code returned by 'jezz audit' when 'dossier' is provided (0 = OCCUPANCY_SEALED, 'skipped' otherwise)."
     value: ${{ steps.run-gate.outputs.audit_rc }}
+  blueprint-exit-code:
+    description: "Exit code returned by 'jezz blueprint --verify-target' when 'blueprint-target' is provided ('skipped' otherwise)."
+    value: ${{ steps.run-gate.outputs.blueprint_rc }}
+  prove-exit-code:
+    description: "Exit code returned by 'jezz prove' when 'prove' is enabled ('skipped' otherwise)."
+    value: ${{ steps.run-gate.outputs.prove_rc }}
 
 runs:
   using: "composite"
@@ -70,7 +84,7 @@ runs:
         JEZZ_PYTHON_VERSION: ${{ inputs.python-version }}
       run: uv python install "$JEZZ_PYTHON_VERSION"
 
-    - name: Execute JBC Edition 1.2 & PCE Statutory Gate
+    - name: Execute JBC Edition 1.3 & PCE Statutory Gate
       id: run-gate
       shell: bash
       env:
@@ -86,16 +100,19 @@ runs:
         JEZZ_PROFILE: ${{ inputs.profile }}
         JEZZ_AS_OF: ${{ inputs.as-of }}
         JEZZ_DOSSIER: ${{ inputs.dossier }}
+        JEZZ_BLUEPRINT_TARGET: ${{ inputs.blueprint-target }}
+        JEZZ_PROVE: ${{ inputs.prove }}
       run: |
         set -euo pipefail
 
-        COMMON_ARGS=()
+        LANG_ARGS=()
         if [[ -n "$JEZZ_LANGUAGES" ]]; then
           NORMALIZED_LANGS="${JEZZ_LANGUAGES//,/ }"
           for lang_tok in $NORMALIZED_LANGS; do
-            COMMON_ARGS+=(--language "$lang_tok")
+            LANG_ARGS+=(--language "$lang_tok")
           done
         fi
+        COMMON_ARGS=("${LANG_ARGS[@]}")
         if [[ -n "$JEZZ_PERMIT" ]]; then
           COMMON_ARGS+=(--permit "$JEZZ_PERMIT")
         fi
@@ -113,23 +130,41 @@ runs:
         INSPECT_RC=0
         if [[ "$JEZZ_MODE" == "differential" || "$JEZZ_MODE" == "both" ]]; then
           RESOLVED_BASE="$JEZZ_BASE_REF"
+          IMPLICIT_HEAD_PARENT=0
           if [[ -z "$RESOLVED_BASE" ]]; then
             if [[ "$JEZZ_EVENT_NAME" == "pull_request" && -n "$JEZZ_PR_BASE_REF" ]]; then
               RESOLVED_BASE="origin/$JEZZ_PR_BASE_REF"
             else
               RESOLVED_BASE="HEAD~1"
+              IMPLICIT_HEAD_PARENT=1
             fi
           fi
-          set +e
-          DIFF_MD="$(run_jezz inspect "$JEZZ_WORKDIR" --changed-since "$RESOLVED_BASE" "${COMMON_ARGS[@]}")"
-          RC=$?
-          set -e
-          printf '%s\n' "$DIFF_MD"
-          if [[ -n "${GITHUB_STEP_SUMMARY:-}" ]]; then
-            printf '%s\n\n' "$DIFF_MD" >> "$GITHUB_STEP_SUMMARY"
-          fi
-          if [[ $RC -ne 0 ]]; then
-            INSPECT_RC=$RC
+          if [[ $IMPLICIT_HEAD_PARENT -eq 1 ]] && ! git -C "$JEZZ_WORKDIR" rev-parse --verify "$RESOLVED_BASE^{commit}" >/dev/null 2>&1; then
+            if [[ "$JEZZ_MODE" == "differential" ]]; then
+              set +e
+              DIFF_MD="$(run_jezz inspect "$JEZZ_WORKDIR" "${COMMON_ARGS[@]}")"
+              RC=$?
+              set -e
+              printf '%s\n' "$DIFF_MD"
+              if [[ -n "${GITHUB_STEP_SUMMARY:-}" ]]; then
+                printf '%s\n\n' "$DIFF_MD" >> "$GITHUB_STEP_SUMMARY"
+              fi
+              if [[ $RC -ne 0 ]]; then
+                INSPECT_RC=$RC
+              fi
+            fi
+          else
+            set +e
+            DIFF_MD="$(run_jezz inspect "$JEZZ_WORKDIR" --changed-since "$RESOLVED_BASE" "${COMMON_ARGS[@]}")"
+            RC=$?
+            set -e
+            printf '%s\n' "$DIFF_MD"
+            if [[ -n "${GITHUB_STEP_SUMMARY:-}" ]]; then
+              printf '%s\n\n' "$DIFF_MD" >> "$GITHUB_STEP_SUMMARY"
+            fi
+            if [[ $RC -ne 0 ]]; then
+              INSPECT_RC=$RC
+            fi
           fi
         fi
 
@@ -154,6 +189,43 @@ runs:
 
         echo "inspect_rc=$INSPECT_RC" >> "$GITHUB_OUTPUT"
 
+        BLUEPRINT_OUT="skipped"
+        BLUEPRINT_RC=0
+        if [[ -n "${JEZZ_BLUEPRINT_TARGET:-}" ]]; then
+          set +e
+          BLUEPRINT_MD="$(run_jezz blueprint "$JEZZ_WORKDIR" --verify-target "$JEZZ_BLUEPRINT_TARGET")"
+          BLUEPRINT_RC=$?
+          set -e
+          printf '%s\n' "$BLUEPRINT_MD"
+          if [[ -n "${GITHUB_STEP_SUMMARY:-}" ]]; then
+            printf '%s\n\n' "$BLUEPRINT_MD" >> "$GITHUB_STEP_SUMMARY"
+          fi
+          BLUEPRINT_OUT="$BLUEPRINT_RC"
+        fi
+        echo "blueprint_rc=$BLUEPRINT_OUT" >> "$GITHUB_OUTPUT"
+
+        PROVE_OUT="skipped"
+        PROVE_RC=0
+        if [[ -n "${JEZZ_PROVE:-}" ]]; then
+          PROVE_ARGS=("$JEZZ_WORKDIR")
+          if [[ "${JEZZ_PROVE}" == "require-deductive" ]]; then
+            PROVE_ARGS+=(--require-deductive)
+          elif [[ "${JEZZ_PROVE}" != "check" ]]; then
+            echo "jezz-action error: unsupported prove mode '${JEZZ_PROVE}' (expected '', 'check', or 'require-deductive')." >&2
+            exit 2
+          fi
+          set +e
+          PROVE_MD="$(run_jezz prove "${PROVE_ARGS[@]}")"
+          PROVE_RC=$?
+          set -e
+          printf '%s\n' "$PROVE_MD"
+          if [[ -n "${GITHUB_STEP_SUMMARY:-}" ]]; then
+            printf '%s\n\n' "$PROVE_MD" >> "$GITHUB_STEP_SUMMARY"
+          fi
+          PROVE_OUT="$PROVE_RC"
+        fi
+        echo "prove_rc=$PROVE_OUT" >> "$GITHUB_OUTPUT"
+
         AUDIT_OUT="skipped"
         AUDIT_RC=0
         if [[ -n "$JEZZ_DOSSIER" ]]; then
@@ -171,6 +243,12 @@ runs:
 
         if [[ $INSPECT_RC -ne 0 ]]; then
           exit "$INSPECT_RC"
+        fi
+        if [[ $BLUEPRINT_RC -ne 0 ]]; then
+          exit "$BLUEPRINT_RC"
+        fi
+        if [[ $PROVE_RC -ne 0 ]]; then
+          exit "$PROVE_RC"
         fi
         if [[ $AUDIT_RC -ne 0 ]]; then
           exit "$AUDIT_RC"

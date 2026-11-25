@@ -30,7 +30,12 @@ from jezz.methodology.charter import (
     start_charter_intake,
 )
 from jezz.methodology.mandate import EngineeringMandate
-from jezz.plugin import PluginInstallScope, PluginInstallSpec, initialize_jezz_workspace
+from jezz.plugin import (
+    PluginInstallScope,
+    PluginInstallSpec,
+    ScaffoldTemplate,
+    initialize_jezz_workspace,
+)
 
 _MAX_ANSWER_LINE_CHARS: Final[int] = 4096
 
@@ -241,6 +246,13 @@ def register_init_parser(p_init: GuardedArgParser) -> None:
         help="Target workspace root directory (defaults to current directory).",
     )
     p_init.add_argument(
+        "--scaffold",
+        dest="scaffold",
+        choices=tuple(t.value for t in ScaffoldTemplate),
+        default=None,
+        help="Materialize a turnkey JBC v1.3 starter template (python, typescript, rust, go).",
+    )
+    p_init.add_argument(
         "--plugin-scope",
         dest="plugin_scope",
         choices=("workspace", "global", "none"),
@@ -434,9 +446,12 @@ def handle_init_command(
 ) -> CliExitCode:
     """Execute ``jezz init`` and render the ``WorkspaceInitReport``."""
     target_repo = ns.repo_path if isinstance(ns.repo_path, Path) else Path.cwd()
+    raw_scaffold = getattr(ns, "scaffold", None)
+    scaffold_val = ScaffoldTemplate(str(raw_scaffold)) if raw_scaffold is not None else None
     spec = PluginInstallSpec(
         repo_root=target_repo,
         scope=PluginInstallScope(str(ns.plugin_scope)),
+        scaffold=scaffold_val,
         global_config_dir=ns.global_config_dir,
         default_model=str(ns.default_model),
         overwrite=bool(ns.overwrite),

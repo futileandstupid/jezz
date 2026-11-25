@@ -126,13 +126,13 @@ _ASSIGN_CST_TYPES: Final[frozenset[str]] = frozenset(
     }
 )
 _ZOD_SCHEMA_RE: Final[re.Pattern[str]] = re.compile(
-    r"(?:const|export\s+const)\s+([A-Za-z_][A-Za-z0-9_]*)\s*=\s*z\.object\(\{([\s\S]*?)}\)"
+    r"(?:const|export\s+const)\s+([A-Za-z_][A-Za-z0-9_]*)\s*=\s*z\s*\.\s*object\(\{([\s\S]*?)}\)"
 )
 _ZOD_FIELD_RE: Final[re.Pattern[str]] = re.compile(
     r"([A-Za-z_][A-Za-z0-9_]*)\s*:\s*z\.(number|string)\(\)([^\n,;]*)"
 )
 _ZOD_CALL_RE: Final[re.Pattern[str]] = re.compile(
-    r"\.(min|max|gt|lt|positive|nonnegative|int)\(\s*(-?[0-9]+(?:\.[0-9]+)?)?\s*\)"
+    r"\.(min|max|gt|lt|positive|nonnegative|int)\(\s*(-?[0-9][0-9_]*(?:\.[0-9_]+)?)?\s*\)"
 )
 _LEN_CALL_RE: Final[re.Pattern[str]] = re.compile(r"\b([A-Za-z_][A-Za-z0-9_]*)\.(?:length|len\(\))")
 _MATH_FN_RE: Final[re.Pattern[str]] = re.compile(r"\bMath\.(abs|min|max)\(")
@@ -142,6 +142,7 @@ _RS_WRAP_RE: Final[re.Pattern[str]] = re.compile(
 _GO_TUPLE_RET_RE: Final[re.Pattern[str]] = re.compile(
     r"^\(\s*(?:[A-Za-z_][A-Za-z0-9_]*\s+)?([^,)]+),\s*error\s*\)$"
 )
+_GO_ERR_RETURN_RE: Final[re.Pattern[str]] = re.compile(r",\s*(?:err|Err)[A-Za-z0-9_]*\s*$")
 
 
 @dataclass(frozen=True)
@@ -357,7 +358,10 @@ def _is_abort_or_err_block(block: ts.Node) -> tuple[bool, bool]:
         return False, True
     if only.type in {"return_statement", "return_expression"} or txt.startswith("return "):
         is_err = (
-            "Err(" in txt or txt.endswith(", err") or "fmt.Errorf" in txt or "errors.New" in txt
+            "Err(" in txt
+            or _GO_ERR_RETURN_RE.search(txt) is not None
+            or "fmt.Errorf" in txt
+            or "errors.New" in txt
         )
         return is_err, False
     return False, False
@@ -718,7 +722,7 @@ def _apply_zod_modifier(
         return no_arg_map[op]
     if arg is None:
         return spec
-    num = float(arg)
+    num = float(arg.replace("_", ""))
     if is_str and op in {"min", "max"}:
         return (
             dataclasses.replace(spec, min_len=int(num), has_explicit_bound=True)
