@@ -70,9 +70,13 @@ specifications.
      `jbc_query_ast_graph`.
    - Verify any multi-step behavior topology with `jbc_verify_behavior_graph`.
 3. **Phase III — Contract & Instrumentation (`BHV-14 SPECIFY` / `BHV-15 INSTRUMENT`):**
-   - Author strict closed schemas (`extra="forbid"` / `.strict()` / `deny_unknown_fields`),
-     runtime signature guards (`@jezz_callable` / `@icontract` / `.Validate()`), and property or
-     falsification suites before implementation bodies.
+   - **Defect Repair (`build_abductive_bugfix_graph` — Mandatory `RED -> GREEN`):** Author a
+     deterministic reproduction test and execute it against unmodified `HEAD` (`BHV-19`) to
+     confirm failure prior to mutating implementation (`BHV-16`), proving non-vacuity.
+   - **Greenfield & Renovation (`build_greenfield_contract_first_graph` — Property-First):**
+     Author closed schemas (`extra="forbid"` / `.strict()` / `deny_unknown_fields`), runtime
+     signature guards (`@jezz_callable` / `@icontract` / `.Validate()`), and universally
+     quantified property/falsification suites upfront—never baby-step Red-Green stub cycles.
    - Validate candidate `.py`, `.ts`, `.tsx`, `.rs`, and `.go` buffers in memory with
      `jbc_preview_source` prior to writing to disk.
 4. **Phase IV — Scoped Construction (`BHV-16 SYNTHESIZE` / `BHV-17 REFACTOR`):**
@@ -90,7 +94,8 @@ specifications.
   `uv run jezz run <repo> [--model antigravity:<slug>] [--profile standard|strict_internal]`
   `--prompt "..." --plan-only`
 - **Greenfield Synthesis from Prompt or Mandate:**
-  `uv run jezz run <repo> [--model antigravity:<slug>] [--gate-timeout 120] --mandate mandate.json`
+  `uv run jezz run <repo> [--model antigravity:<slug>] [--secret-uri <scheme>://...]`
+  `[--gate-timeout 120] --mandate mandate.json`
 - **Brownfield JBC Renovation (Full or Scoped `--ratchet`):**
   `uv run jezz renovate <repo> [--ratchet] [--profile standard|strict_internal]`
   `[--permit permit.json] [--gate-timeout 120] --prompt "..."`

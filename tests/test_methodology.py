@@ -13,6 +13,7 @@ from jezz.behaviors import (
     BehaviorGraph,
     BehaviorKind,
     BehaviorNode,
+    build_abductive_bugfix_graph,
     build_greenfield_contract_first_graph,
 )
 from jezz.codes import (
@@ -28,6 +29,7 @@ from jezz.codes import (
     load_workspace_units,
     parse_source_unit,
 )
+from jezz.guards import ContainedPath, read_bounded_text
 from jezz.methodology import (
     METHODOLOGY_ACRONYM,
     METHODOLOGY_NAME,
@@ -40,6 +42,7 @@ from jezz.methodology import (
     audit_pce_dossier,
     validate_engineering_prose,
 )
+from jezz.plugin import PluginInstallSpec, initialize_jezz_workspace
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
@@ -497,3 +500,35 @@ def test_property_validate_engineering_prose_rejects_injected_theatre(
     assert validate_engineering_prose(clean_clause, field_label="stmt") is None
     with pytest.raises(ValueError):
         validate_engineering_prose(f"{theatre_token} ({prefix_num})", field_label="stmt")
+
+
+def test_track23_tdd_bifurcation_and_plugin_skill_sync(tmp_path: Path) -> None:
+    """Verify INV-023-01/02 empirical grounding, archetype bifurcation, and SKILL.md sync."""
+    bugfix_edges = {(e.source, e.target) for e in build_abductive_bugfix_graph().edges}
+    assert ("write_repro_test", "confirm_repro_red") in bugfix_edges
+    assert ("confirm_repro_red", "apply_candidate_fix") in bugfix_edges
+
+    green_edges = {(e.source, e.target) for e in build_greenfield_contract_first_graph().edges}
+    assert ("specify_contracts", "author_property_tests") in green_edges
+    assert ("author_property_tests", "synthesize_module") in green_edges
+
+    initialize_jezz_workspace(PluginInstallSpec(repo_root=tmp_path, bootstrap_pyproject=False))
+    gen_skill = read_bounded_text(
+        ContainedPath.from_parts(tmp_path, ".agents/plugins/jezz/skills/pce/SKILL.md")
+    )
+    repo_skill = read_bounded_text(
+        ContainedPath.from_parts(REPO_ROOT, ".agents/plugins/jezz/skills/pce/SKILL.md")
+    )
+    assert gen_skill == repo_skill
+    assert "build_abductive_bugfix_graph" in repo_skill
+    assert "build_greenfield_contract_first_graph" in repo_skill
+
+    for doc_rel in (
+        "docs/pillar-3a-sdd-teardown.md",
+        "docs/pillar-3b-pce-methodology.md",
+        "docs/whitepaper.md",
+    ):
+        doc_text = read_bounded_text(ContainedPath.from_parts(REPO_ROOT, doc_rel))
+        assert "Fucci" in doc_text and "Rafique" in doc_text
+        assert "build_abductive_bugfix_graph" in doc_text
+        assert "build_greenfield_contract_first_graph" in doc_text

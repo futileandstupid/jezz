@@ -65,3 +65,16 @@ flowchart TD
   4. **Write-Scope Confinement:** `dossier.mutated_files <= dossier.mandate.authorized_files()`.
   5. **100% Symbol-Grounded Invariants:** Every `inv.verification_symbol` in `dossier.mandate.invariants` resolves to a compiled type, callable, or test symbol in `units` (eliminating floating prose specs across `.py`, `.ts`/`.tsx`, `.rs`, and `.go`).
   6. **Building-Code & Cryptographic Seal Integrity:** `dossier.inspection_report.is_occupiable is True`, `dossier.permit.bound_code_ids <= dossier.inspection_report.effective_code_ids`, and `dossier.certificate.artifact_digest == compute_units_digest(digest_units)` (where `digest_units` is the full workspace `units` by default, or the `mandate.authorized_files() | dossier.mutated_files` slice when `dossier.ratchet_scoped is True` while still verifying `verification_symbol` grounding across all `units`).
+
+---
+
+## 3. Verification Topology Bifurcation: Defect Repair (`RED -> GREEN`) vs. Greenfield (`Contract + Property-First`)
+
+Controlled empirical software-engineering studies distinguish observational reports confounded by test presence (Nagappan et al., 2008) from controlled experiments isolating Test-First sequencing against Iterative Test-Last (`ITL`) development (Rafique & Mišić, *IEEE TSE* 2013; Fucci et al., *IEEE TSE* 2017): **quality is driven by bounded, fine-grained slice granularity and executable invariants—not by baby-step Red-Green stub triangulation**, which stalls in local minima on constraint-heavy domains (Norvig vs. Jeffries) and multiplies subprocess/token overhead for coding agents while leaving single-LLM point-example blind spots unchallenged (`Track 21`: `12/12` SDD self-test pass vs. `33.3%` held-out property oracle escape).
+
+`PCE` encodes this distinction directly in `src/jezz/behaviors/archetypes.py`:
+
+| Task Class | Canonical Archetype (`archetypes.py`) | Statutory Execution Sequence | Formal Engineering Rationale |
+| :--- | :--- | :--- | :--- |
+| **Defect Repair / Regression** | `build_abductive_bugfix_graph` | `HYPOTHESIZE` $\to$ `INSTRUMENT` (`write_repro_test`) $\to$ **`VERIFY_DYNAMIC` (`confirm_repro_red`)** $\to$ `SYNTHESIZE` (`apply_candidate_fix`) $\to$ `VERIFY_STATIC` $\to$ `VERIFY_DYNAMIC` | **Mandatory `RED -> GREEN`:** Executing the reproduction test against unmodified `HEAD` proves **non-vacuity**—confirming the test actually fails on the defect rather than passing trivially (`JBC-VRF-001`). |
+| **Greenfield & Renovation** | `build_greenfield_contract_first_graph` | `SPECIFY` (`specify_contracts`) $\to$ `INSTRUMENT` (`author_property_tests`) $\to$ `SYNTHESIZE` (`synthesize_module`) $\to$ `VERIFY_STATIC` $\to$ `VERIFY_DYNAMIC` | **Contract + Property-First:** Upfront domain schemas, `@jezz_callable` / `@icontract` predicates, and universally quantified property generators ($\forall x \in D: P(f(x))$) defeat correlated LLM point-example blind spots without wasteful Red-Green stub micro-cycles. |
