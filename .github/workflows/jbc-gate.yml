@@ -73,10 +73,15 @@ jobs:
         with:
           node-version: "22"
           cache: "npm"
-          cache-dependency-path: "packages/jezz-blueprint/package-lock.json"
+          cache-dependency-path: |
+            packages/jezz-blueprint/package-lock.json
+            templates/typescript/package-lock.json
 
-      - name: Gate 8 — @jezz/blueprint TypeScript strict check & Vitest CAD suite
+      - name: Gate 8 — @jezz/blueprint & TypeScript template strict check & Vitest suite
         run: |
           npm --prefix packages/jezz-blueprint ci
           npm --prefix packages/jezz-blueprint run typecheck
           npm --prefix packages/jezz-blueprint test
+          npm --prefix templates/typescript ci
+          npm --prefix templates/typescript run typecheck
+          npm --prefix templates/typescript test
