@@ -11,6 +11,7 @@
 
 ## Quick Navigation
 
+- [**Framing & Ethos**](ethos.md) — Why seven-figure enterprise AI rollouts produce unmaintainable slop, and why mechanical building codes invert the leverage curve.
 - [**Getting Started (`5 min`)**](getting-started.md) — Zero-config `uvx jezz inspect` / `prove` / `blueprint`, 4-language starter scaffolds, and GitHub Action setup.
 - [**Interactive CAD Blueprint (`A-1` $\leftrightarrow$ `E-1`)**](interactive-blueprint.md) — Explore `jezz`'s own self-hosted compartment floor plan and wiring schematic in the browser.
 - [**JBC Edition 1.3 Reference Manual (`32` Rules)**](jbc-codebook-reference.md) — Every provision, normative rule, hazard, pass criterion, and CWE/CERT/ISO/NASA lineage.

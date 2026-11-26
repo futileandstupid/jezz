@@ -50,6 +50,7 @@ extra_javascript:
 
 nav:
   - Home: index.md
+  - Framing & Ethos: ethos.md
   - Getting Started & Reference:
       - Getting Started: getting-started.md
       - CLI, MCP, & Action Reference: cli-and-mcp-reference.md
