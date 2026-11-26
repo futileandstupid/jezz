@@ -1,0 +1,42 @@
+name: Defect Report
+description: Report a reproducible runtime, CLI, MCP, Z3 prover, or CAD viewer defect.
+labels: ["bug"]
+body:
+  - type: dropdown
+    id: component
+    attributes:
+      label: Affected Subsystem
+      options:
+        - "jezz.codes (JBC Static / Polyglot Inspector)"
+        - "jezz.codes.smt (Z3 Symbolic Contract Prover)"
+        - "jezz.codes.blueprint / @jezz/blueprint (A-1/E-1 CAD & LVS)"
+        - "jezz.methodology (PCE Charter, Lot-Line, & Dossier Audit)"
+        - "jezz.agents (Pydantic AI Runtime & Providers)"
+        - "jezz.cli / jezz.mcp_server / action.yml"
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: jezz Version & OS / Runtime
+      placeholder: "jezz 0.6.0, Python 3.14.5, macOS 15 / Ubuntu 24.04"
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Deterministic Reproduction
+      description: Minimal command, source snippet, or configuration reproducing the failure.
+      render: shell
+    validations:
+      required: true
+
+  - type: textarea
+    id: observed_vs_expected
+    attributes:
+      label: Observed vs. Expected Behavior
+      description: State the violated invariant and paste relevant traceback or JSON/Markdown output.
+    validations:
+      required: true

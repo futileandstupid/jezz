@@ -1,0 +1,28 @@
+changelog:
+  exclude:
+    authors:
+      - dependabot
+  categories:
+    - title: "Breaking Changes"
+      labels:
+        - "breaking"
+    - title: "Software Building Codes (JBC) & Symbolic Proofs (Z3)"
+      labels:
+        - "codes"
+        - "smt"
+    - title: "Permit-and-Contract Engineering (PCE) & Runtime"
+      labels:
+        - "pce"
+        - "runtime"
+        - "mcp"
+    - title: "Blueprint CAD & Layout-vs-Schematic (LVS)"
+      labels:
+        - "blueprint"
+    - title: "Templates, Benchmarks & Documentation"
+      labels:
+        - "templates"
+        - "benchmarks"
+        - "documentation"
+    - title: "Maintenance & CI"
+      labels:
+        - "*"

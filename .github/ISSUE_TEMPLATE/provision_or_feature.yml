@@ -1,0 +1,27 @@
+name: Provision or Capability Proposal
+description: Propose a new JBC provision, SMT VCGen extension, or PCE capability grounded in falsifiable invariants.
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Engineering Failure Mode or Gap
+      description: Describe the concrete defect class or workflow limitation not covered by existing provisions/tools.
+    validations:
+      required: true
+
+  - type: textarea
+    id: invariants
+    attributes:
+      label: Proposed Falsifiable Invariants & Pass/Fail Criteria
+      description: State objective machine-checkable pass/fail criteria (and applicable CWE/CERT/formal lineage if proposing a JBC rule).
+    validations:
+      required: true
+
+  - type: textarea
+    id: placement
+    attributes:
+      label: Proposed Compartment Placement (Lot-Line Scope)
+      description: Identify whether this belongs inside an existing compartment, a new child compartment, or an external satellite package.
+    validations:
+      required: false

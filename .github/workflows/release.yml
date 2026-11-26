@@ -13,14 +13,18 @@ jobs:
     name: Verify Version Parity & Build Distributions
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
     steps:
       - name: Checkout repository with full Git graph
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           fetch-depth: 0
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v10.4.0
+        uses: astral-sh/setup-uv@1db35dd8eee11c5894872e0b383ae6c406cf738d # v10.4.0
         with:
           enable-cache: true
 
@@ -41,15 +45,16 @@ jobs:
             exit 1
           fi
 
-      - name: Enforce JBC Edition 1.3 & Dynamic Suite Gates
+      - name: Enforce JBC Edition 1.3, Z3 Proofs, & Dynamic Suite Gates
         run: |
           uv run jezz inspect .
+          uv run jezz prove . --require-deductive
           uv run mypy .
           uv run ruff check .
           uv run pytest -q --cov=jezz --cov-fail-under=92
 
       - name: Setup Node.js for @jezz/blueprint CAD package
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: "22"
           cache: "npm"
@@ -66,6 +71,11 @@ jobs:
           uv build
           ls -lh dist/*.whl dist/*.tar.gz
 
+      - name: Attest SLSA build provenance for distributions
+        uses: actions/attest-build-provenance@977bb373ede98d70efdf65b84cb5f73e068dcc2a # v3
+        with:
+          subject-path: "dist/*"
+
   publish-pypi:
     name: Publish to PyPI (Trusted Publisher)
     needs: build-dist
@@ -79,10 +89,10 @@ jobs:
       id-token: write
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v10.4.0
+        uses: astral-sh/setup-uv@1db35dd8eee11c5894872e0b383ae6c406cf738d # v10.4.0
 
       - name: Build and publish distributions via Trusted Publishing
         run: |
@@ -100,7 +110,7 @@ jobs:
         lang: [python, typescript, rust, go]
     steps:
       - name: Checkout jezz release tag
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
       - name: Push templates/${{ matrix.lang }} to jezz-template-${{ matrix.lang }}
         env:

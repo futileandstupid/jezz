@@ -1,0 +1,49 @@
+name: JBC Rule Precision Calibration
+description: Report a false positive or false negative in one of the 32 JBC Edition 1.3 provisions.
+labels: ["codes"]
+body:
+  - type: input
+    id: code_id
+    attributes:
+      label: Provision Identifier
+      placeholder: "e.g., JBC-DBC-004, JBC-SEC-001, JBC-COG-006"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: language
+    attributes:
+      label: Target Language
+      options:
+        - "python"
+        - "typescript"
+        - "rust"
+        - "go"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: direction
+    attributes:
+      label: Calibration Direction
+      options:
+        - "False Positive (idiomatic safe construct flagged)"
+        - "False Negative (violating hazard escaped detection)"
+    validations:
+      required: true
+
+  - type: textarea
+    id: snippet
+    attributes:
+      label: Minimal Source Snippet
+      description: Self-contained snippet demonstrating the false positive or escaped hazard.
+    validations:
+      required: true
+
+  - type: textarea
+    id: rationale
+    attributes:
+      label: Soundness Rationale
+      description: Explain why tightening or relaxing the rule preserves statutory safety invariants.
+    validations:
+      required: true

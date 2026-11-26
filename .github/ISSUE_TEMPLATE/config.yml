@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: "Security Vulnerability Disclosure"
+    url: "https://github.com/futileandstupid/jezz/security/advisories/new"
+    about: "Report security vulnerabilities privately via GitHub Security Advisories."
+  - name: "Documentation & JBC v1.3 Codebook Manual"
+    url: "https://futileandstupid.github.io/jezz/"
+    about: "Browse Getting Started, CLI/MCP Reference, the 32-rule JBC Codebook, and the interactive CAD blueprint."

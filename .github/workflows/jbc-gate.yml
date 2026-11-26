@@ -17,17 +17,17 @@ concurrency:
 
 jobs:
   jbc-occupancy-gate:
-    name: Enforce JBC Edition 1.2 & Verification Suite
+    name: Enforce JBC Edition 1.3 & Verification Suite
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
       - name: Checkout repository with full Git graph
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           fetch-depth: 0
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v10.4.0
+        uses: astral-sh/setup-uv@1db35dd8eee11c5894872e0b383ae6c406cf738d # v10.4.0
         with:
           enable-cache: true
 
@@ -54,24 +54,28 @@ jobs:
           BASE_REF: origin/${{ github.base_ref }}
         run: uv run jezz inspect . --changed-since "$BASE_REF"
 
-      - name: Gate 5 — Full-Repository JBC v1.2 Rough-In Inspection
+      - name: Gate 5 — Full-Repository JBC v1.3 Rough-In Inspection
         run: uv run jezz inspect .
 
-      - name: Gate 6 — Dogfood Reusable Composite GitHub Action (action.yml)
+      - name: Gate 6 — Polyglot Z3 Symbolic Contract Proofs
+        run: uv run jezz prove . --require-deductive
+
+      - name: Gate 7 — Dogfood Reusable Composite GitHub Action (action.yml)
         uses: ./
         with:
           working-directory: "."
           mode: "full"
           language: "python"
+          prove: "require-deductive"
 
       - name: Setup Node.js for @jezz/blueprint CAD package
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: "22"
           cache: "npm"
           cache-dependency-path: "packages/jezz-blueprint/package-lock.json"
 
-      - name: Gate 7 — @jezz/blueprint TypeScript strict check & Vitest CAD suite
+      - name: Gate 8 — @jezz/blueprint TypeScript strict check & Vitest CAD suite
         run: |
           npm --prefix packages/jezz-blueprint ci
           npm --prefix packages/jezz-blueprint run typecheck
