@@ -2,8 +2,8 @@ cff-version: 1.2.0
 message: "If you reference jezz, the Jezz Software Building Code (JBC), or Permit-and-Contract Engineering (PCE) in research or engineering documentation, please cite it using this metadata."
 type: software
 title: "jezz: Licensure-Grade Software Building Codes, Symbolic Contract Proofs, and Coding-Agent Runtime"
-version: "0.6.0"
-date-released: "2026-11-25"
+version: "0.6.1"
+date-released: "2026-11-26"
 license: "Apache-2.0"
 repository-code: "https://github.com/futileandstupid/jezz"
 url: "https://futileandstupid.github.io/jezz/"

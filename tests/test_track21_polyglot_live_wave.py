@@ -137,9 +137,9 @@ def _ensure_node_ts_runner(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> N
 def test_v040_version_alignment_and_track21_report_hygiene() -> None:
     root = _repo_root()
     pyproject = tomllib.loads(read_bounded_text(ContainedPath.from_parts(root, "pyproject.toml")))
-    assert __version__ == "0.6.0"
-    assert pyproject["project"]["version"] == "0.6.0"
-    assert SERVER_VERSION == "0.6.0"
+    assert __version__ == "0.6.1"
+    assert pyproject["project"]["version"] == "0.6.1"
+    assert SERVER_VERSION == "0.6.1"
 
     report_path = ContainedPath.from_parts(root, "docs/track-21-polyglot-live-benchmark.md")
     assert report_path.resolved_path.is_file()

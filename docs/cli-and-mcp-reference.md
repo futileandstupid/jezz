@@ -1,6 +1,6 @@
 # CLI, MCP Server, Configuration, & GitHub Action Reference
 
-Complete operational reference for `jezz` `v0.6.0`.
+Complete operational reference for `jezz` `v0.6.1`.
 
 ---
 

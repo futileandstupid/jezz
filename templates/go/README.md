@@ -12,7 +12,7 @@ Turnkey **Go (`1.23+`)** starter repository governed by the **Jezz Software Buil
 ## Quickstart
 
 ```bash
-uvx --from git+https://github.com/futileandstupid/jezz@v0.6.0 jezz init my-go-service --scaffold go
+uvx --from git+https://github.com/futileandstupid/jezz@v0.6.1 jezz init my-go-service --scaffold go
 cd my-go-service
 go vet ./... && go test ./...
 ```
@@ -20,7 +20,7 @@ go vet ./... && go test ./...
 ## Statutory Gates
 
 ```bash
-uvx --from git+https://github.com/futileandstupid/jezz@v0.6.0 jezz inspect .
-uvx --from git+https://github.com/futileandstupid/jezz@v0.6.0 jezz prove . --require-deductive
-uvx --from git+https://github.com/futileandstupid/jezz@v0.6.0 jezz blueprint . --verify-target blueprint.json --write-html blueprint.html
+uvx --from git+https://github.com/futileandstupid/jezz@v0.6.1 jezz inspect .
+uvx --from git+https://github.com/futileandstupid/jezz@v0.6.1 jezz prove . --require-deductive
+uvx --from git+https://github.com/futileandstupid/jezz@v0.6.1 jezz blueprint . --verify-target blueprint.json --write-html blueprint.html
 ```

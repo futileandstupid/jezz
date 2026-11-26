@@ -60,6 +60,6 @@ Live head-to-head trials pit **Control Arm (`Prose SDD` — `OpenSpec` / Kiro `s
 [`Containerfile`](Containerfile) packages Python 3.14, Node 22, Rust stable, Go 1.23, and locked `uv` / `npm` dependencies:
 
 ```bash
-docker build -f benchmarks/Containerfile -t jezz-repro:0.6.0 .
-docker run --rm jezz-repro:0.6.0
+docker build -f benchmarks/Containerfile -t jezz-repro:0.6.1 .
+docker run --rm jezz-repro:0.6.1
 ```

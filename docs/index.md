@@ -1,6 +1,6 @@
 # `jezz` — Licensure-Grade Software Building Codes, Symbolic Proofs, & Coding-Agent Framework
 
-`jezz` (`v0.6.0`) replaces unverified prose "Spec-Driven Development" (`spec.md` / `- [x]` checklists) with **Permit-and-Contract Engineering (`PCE`)**:
+`jezz` (`v0.6.1`) replaces unverified prose "Spec-Driven Development" (`spec.md` / `- [x]` checklists) with **Permit-and-Contract Engineering (`PCE`)**:
 
 1. **Complete Agent Behavior Basis ([Pillar 1](pillar-1-behavior-basis.md)):** $F_8 = 21$ atomic coding-agent behaviors verified via Kildall monotone dataflow fixed points.
 2. **Enforceable Software Building Codes, Z3 SMT Proofs, & Blueprint `LVS` ([Pillar 2](pillar-2-building-codes.md), [Codebook Reference](jbc-codebook-reference.md)):** 32 machine-checkable `JBC` Edition `1.3` provisions across **Python (`.py`), TypeScript (`.ts`/`.tsx`), Rust (`.rs`), and Go (`.go`)**, bounded AST/CST $\to$ Z3 contract discharge (`jezz prove`), and switchable [Sheet `A-1` / `E-1` CAD Blueprints](interactive-blueprint.md).
