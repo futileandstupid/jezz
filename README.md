@@ -4,7 +4,7 @@
 [![JBC Edition](https://img.shields.io/badge/JBC-Edition%201.3%20(32%20Codes)-0ea5e9.svg)](docs/jbc-codebook-reference.md)
 [![Languages](https://img.shields.io/badge/Languages-Python%20%7C%20TypeScript%20%7C%20Rust%20%7C%20Go-10b981.svg)](docs/getting-started.md)
 
-`jezz` (`v0.6.0`) replaces unverified prose "Spec-Driven Development" (`spec.md` / `- [x]` checklists) with **Permit-and-Contract Engineering (`PCE`)**: **32 machine-checkable Software Building Codes (`JBC` Edition 1.3)**, **bounded AST/CST $\to$ Z3 deductive contract proofs**, **switchable Sheet `A-1`/`E-1` architectural CAD + Layout-vs-Schematic (`LVS`) gates**, and a **Kildall-verified $F_8 = 21$ coding-agent runtime** across **Python, TypeScript, Rust, and Go**.
+`jezz` (`v0.6.1`) replaces unverified prose "Spec-Driven Development" (`spec.md` / `- [x]` checklists) with **Permit-and-Contract Engineering (`PCE`)**: **32 machine-checkable Software Building Codes (`JBC` Edition 1.3)**, **bounded AST/CST $\to$ Z3 deductive contract proofs**, **switchable Sheet `A-1`/`E-1` architectural CAD + Layout-vs-Schematic (`LVS`) gates**, and a **Kildall-verified $F_8 = 21$ coding-agent runtime** across **Python, TypeScript, Rust, and Go**.
 
 **Start Here:** [**Getting Started (`5 min`)**](docs/getting-started.md) · [**JBC v1.3 Codebook (`32` Rules)**](docs/jbc-codebook-reference.md) · [**Landscape Comparison**](docs/landscape-comparison.md) · [**Reproducibility (`$0` Audits)**](benchmarks/README.md) · [**Examples Gallery**](examples/README.md) · [**Technical White Paper**](docs/whitepaper.md)
 
@@ -14,16 +14,16 @@
 
 ```bash
 # 1. Inspect any Python, TypeScript, Rust, or Go repo (exit 0 = APPROVED, 1 = RED_TAG)
-uvx --from git+https://github.com/futileandstupid/jezz@v0.6.0 jezz inspect .
+uvx --from git+https://github.com/futileandstupid/jezz@v0.6.1 jezz inspect .
 
 # 2. Discharge @icontract / Pydantic / Zod / Rust / Go contracts deductively via Z3 SMT
-uvx --from git+https://github.com/futileandstupid/jezz@v0.6.0 jezz prove . --require-deductive
+uvx --from git+https://github.com/futileandstupid/jezz@v0.6.1 jezz prove . --require-deductive
 
 # 3. Extract interactive Sheet A-1 (Floor Plan) <-> Sheet E-1 (Wiring Schematic) CAD HTML
-uvx --from git+https://github.com/futileandstupid/jezz@v0.6.0 jezz blueprint . --write-html blueprint.html
+uvx --from git+https://github.com/futileandstupid/jezz@v0.6.1 jezz blueprint . --write-html blueprint.html
 
 # 4. Scaffold a turnkey CI-verified 2-room project (python | typescript | rust | go)
-uvx --from git+https://github.com/futileandstupid/jezz@v0.6.0 jezz init my-service --scaffold rust
+uvx --from git+https://github.com/futileandstupid/jezz@v0.6.1 jezz init my-service --scaffold rust
 ```
 
 ### 1-Click GitHub Starter Templates & Live PR Showcase
@@ -39,7 +39,7 @@ uvx --from git+https://github.com/futileandstupid/jezz@v0.6.0 jezz init my-servi
 
 ```yaml
 - name: Enforce JBC v1.3, Blueprint LVS, and Z3 Contract Proof Gate
-  uses: futileandstupid/jezz@v0.6.0
+  uses: futileandstupid/jezz@v0.6.1
   with:
     mode: ${{ github.event_name == 'pull_request' && 'both' || 'full' }}
     blueprint-target: "blueprint.json"

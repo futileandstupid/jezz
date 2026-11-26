@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "jezz"
-version = "0.6.0"
+version = "0.6.1"
 description = "Formalized agent behavior basis, enforceable software building codes, and Pydantic AI runtime."
 readme = "README.md"
 license = "Apache-2.0"

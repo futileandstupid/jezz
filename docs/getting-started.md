@@ -1,4 +1,4 @@
-# Getting Started with `jezz` (`v0.6.0`)
+# Getting Started with `jezz` (`v0.6.1`)
 
 `jezz` can be adopted incrementally across **Python (`.py`)**, **TypeScript (`.ts`/`.tsx`)**, **Rust (`.rs`)**, and **Go (`.go`)**—starting as a zero-config static/symbolic inspector in 30 seconds and scaling up to full 5-phase **Permit-and-Contract Engineering (`PCE`)**.
 
@@ -10,16 +10,16 @@ Run `jezz` directly against any repository via [`uvx`](https://docs.astral.sh/uv
 
 ```bash
 # 1. Inspect any Python, TypeScript, Rust, or Go codebase against 30 static JBC v1.3 provisions
-uvx --from git+https://github.com/futileandstupid/jezz@v0.6.0 jezz inspect .
+uvx --from git+https://github.com/futileandstupid/jezz@v0.6.1 jezz inspect .
 
 # 2. Differential Occupancy Ratchet: gate only files modified on your PR/branch
-uvx --from git+https://github.com/futileandstupid/jezz@v0.6.0 jezz inspect . --changed-since origin/main
+uvx --from git+https://github.com/futileandstupid/jezz@v0.6.1 jezz inspect . --changed-since origin/main
 
 # 3. Discharge @icontract / Pydantic / Zod / Rust / Go contracts deductively via Z3 SMT
-uvx --from git+https://github.com/futileandstupid/jezz@v0.6.0 jezz prove .
+uvx --from git+https://github.com/futileandstupid/jezz@v0.6.1 jezz prove .
 
 # 4. Render interactive Sheet A-1 (Floor Plan) <-> Sheet E-1 (Wiring Schematic) CAD HTML
-uvx --from git+https://github.com/futileandstupid/jezz@v0.6.0 jezz blueprint . --write-html blueprint.html
+uvx --from git+https://github.com/futileandstupid/jezz@v0.6.1 jezz blueprint . --write-html blueprint.html
 ```
 
 ---
@@ -30,7 +30,7 @@ Bootstrap a clean 2-room (`domain` + `gateway`) project pre-wired with closed wi
 
 ```bash
 # Materialize Python, TypeScript, Rust, or Go starter locally
-uvx --from git+https://github.com/futileandstupid/jezz@v0.6.0 jezz init my-service --scaffold typescript
+uvx --from git+https://github.com/futileandstupid/jezz@v0.6.1 jezz init my-service --scaffold typescript
 cd my-service
 npm install && npm run typecheck && npm test
 ```
@@ -50,7 +50,7 @@ Or click **Use this template** on GitHub:
 
 ```yaml
 - name: Enforce Jezz JBC v1.3, Blueprint LVS, and Z3 Contract Proof Gate
-  uses: futileandstupid/jezz@v0.6.0
+  uses: futileandstupid/jezz@v0.6.1
   with:
     mode: ${{ github.event_name == 'pull_request' && 'both' || 'full' }}
     profile: "standard"             # standard | strict_internal
@@ -76,7 +76,7 @@ timeout_sec = 120.0
 Install the read-only `stdio` MCP server (`14` tools including pre-write `jbc_preview_source` and `jbc_prove_contracts`) plus optional Git pre-commit / Stop lifecycle ratchets:
 
 ```bash
-uvx --from git+https://github.com/futileandstupid/jezz@v0.6.0 jezz init . --pre-commit
+uvx --from git+https://github.com/futileandstupid/jezz@v0.6.1 jezz init . --pre-commit
 ```
 
 ---

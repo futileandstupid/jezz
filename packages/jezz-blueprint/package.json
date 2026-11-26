@@ -1,6 +1,6 @@
 {
   "name": "@jezz/blueprint",
-  "version": "0.6.0",
+  "version": "0.6.1",
   "description": "Switchable A-1 Floor Plan and E-1 Wiring Schematic CAD projections for Jezz BlueprintGraph IR.",
   "type": "module",
   "main": "./dist/index.js",

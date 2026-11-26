@@ -1,4 +1,4 @@
-# Reproducible polyglot verification & benchmark environment for Jezz v0.6.0
+# Reproducible polyglot verification & benchmark environment for Jezz v0.6.1
 FROM python:3.14-slim-bookworm
 
 ENV DEBIAN_FRONTEND=noninteractive \

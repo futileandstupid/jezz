@@ -1,12 +1,12 @@
 # Ecosystem Landscape Comparison — Where `jezz` Fits (`2025–2026`)
 
-Coding-agent governance, architectural linting, and formal verification currently fragment into five disconnected tool categories. This document maps `jezz` `v0.6.0` against primary open-source and commercial offerings across each category, with clickable repository, specification, and paper citations.
+Coding-agent governance, architectural linting, and formal verification currently fragment into five disconnected tool categories. This document maps `jezz` `v0.6.1` against primary open-source and commercial offerings across each category, with clickable repository, specification, and paper citations.
 
 ---
 
 ## 1. Five-Category Capability Matrix
 
-| Capability / Guarantee | Prose SDD ([`spec-kit`](https://github.com/github/spec-kit), [`OpenSpec`](https://github.com/Fission-AI/OpenSpec), [`BMAD`](https://github.com/bmad-code-org/BMAD-METHOD)) | Contract-Aware SDD ([AWS Kiro](https://kiro.dev/), [Tessl](https://tessl.io/)) | Arch & AST Linters ([`Tach`](https://github.com/gauge-sh/tach), [`ArchUnit`](https://www.archunit.org/), [`Semgrep`](https://semgrep.dev/)) | Arch-as-Code ([`LikeC4`](https://likec4.dev/), [`Structurizr`](https://structurizr.com/)) | Deductive Vericoding ([`Dafny`](https://dafny.org/), [`Verus`](https://github.com/verus-lang/verus), [`Lean 4`](https://lean-lang.org/)) | **`jezz` `v0.6.0` (`PCE` + `JBC` v1.3)** |
+| Capability / Guarantee | Prose SDD ([`spec-kit`](https://github.com/github/spec-kit), [`OpenSpec`](https://github.com/Fission-AI/OpenSpec), [`BMAD`](https://github.com/bmad-code-org/BMAD-METHOD)) | Contract-Aware SDD ([AWS Kiro](https://kiro.dev/), [Tessl](https://tessl.io/)) | Arch & AST Linters ([`Tach`](https://github.com/gauge-sh/tach), [`ArchUnit`](https://www.archunit.org/), [`Semgrep`](https://semgrep.dev/)) | Arch-as-Code ([`LikeC4`](https://likec4.dev/), [`Structurizr`](https://structurizr.com/)) | Deductive Vericoding ([`Dafny`](https://dafny.org/), [`Verus`](https://github.com/verus-lang/verus), [`Lean 4`](https://lean-lang.org/)) | **`jezz` `v0.6.1` (`PCE` + `JBC` v1.3)** |
 | :--- | :---: | :---: | :---: | :---: | :---: | :---: |
 | **Target Languages** | Prompt-only (any) | IDE-coupled | Single-lang or pattern rules | Hand-authored DSL | Proof languages / Rust subset | **Native `.py`, `.ts`/`.tsx`, `.rs`, `.go`** |
 | **Specification Medium** | Multi-hundred-line Markdown + `- [ ]` | EARS prose + generated PBT | Config TOML / YAML rules | C4 DSL files (drift-prone) | Full theorem-prover annotations | **Typed `EngineeringMandate` + compiled DbC + PBT** |
