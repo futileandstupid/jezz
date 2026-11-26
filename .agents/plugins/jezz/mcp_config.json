@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "jezz": {
+      "command": "sh",
+      "args": [
+        "-c",
+        "REPO_ROOT=\"$(CDPATH= cd -- \"${PLUGIN_ROOT:-.}/../../..\" && pwd)\"; JEZZ_BIN=\"$REPO_ROOT/.venv/bin/jezz\"; [ -x \"$JEZZ_BIN\" ] || JEZZ_BIN=jezz; exec \"$JEZZ_BIN\" mcp --root \"$REPO_ROOT\""
+      ]
+    }
+  }
+}

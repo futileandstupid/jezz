@@ -21,8 +21,11 @@
 - **Design Discipline:** Prefer explicit data models, invariants, preconditions/postconditions (`icontract`), property-based verification (`hypothesis`), and deterministic static checks over untyped dicts or prompt-only guardrails. Keep every production Python module under `src/jezz/**/*.py` at `<= 1,000` LOC (`tests/test_track18_module_decomposition.py`).
 - **Dynamic Path Anchoring (`JBC-SEC-006`):** Never hardcode filesystem paths (nor pass string literals directly to `Path(...)` / `os.path.*(...)` in production code, nor bake host paths into generated configs/hooks). Every path must be calculated dynamically from known file, package, or injected root locations (`Path(__file__).resolve()`, `importlib.resources`, `tmp_path` / `tempfile`, `${PLUGIN_ROOT}` / `dirname -- "$0"`, or `ContainedPath.from_parts(anchor, rel)`).
 
-## Verification Commands
+## Verification & Governance Commands
 - **Tests, Property-Based Suites, & Coverage Gate (`>=92%`):** `uv run pytest --cov=jezz --cov-fail-under=92`
-- **Whole-Workspace `JBC` v1.2 Inspection:** `uv run jezz inspect .`
-- **Static Type Checking:** `uv run mypy .`
+- **Whole-Workspace `JBC` Edition 1.3 Inspection (`30` Static + `2` Dynamic Provisions):** `uv run jezz inspect .`
+- **Polyglot Z3 Symbolic Contract Proofs:** `uv run jezz prove . --require-deductive`
+- **Blueprint CAD Extraction & LVS Verification:** `uv run jezz blueprint .` and `npm --prefix packages/jezz-blueprint test`
+- **Static Type Checking (`mypy --strict`):** `uv run mypy .`
 - **Lint & Format Check:** `uv run ruff check .` and `uv run ruff format --check .`
+- **Protected Branch Workflow (`main-statutory-protection`):** `futileandstupid/jezz` enforces `bypass_actors = []` on `main` (PR + green CI required; never push directly to `main`). Account-wide fleet settings and cross-repo `BlueprintGraph` snapshots are governed by sibling control-plane repository `futileandstupid/steward`.
